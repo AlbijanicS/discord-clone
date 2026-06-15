@@ -1,0 +1,36 @@
+defmodule DiscordClone.Workspaces.Workspace do
+  use Ecto.Schema
+  import Ecto.Changeset
+
+  @invite_policies ~w(owner_only members_can_invite)
+
+  schema "workspaces" do
+    field :name, :string
+    field :invite_policy, :string, default: "owner_only"
+
+    belongs_to :owner, DiscordClone.Accounts.User
+    belongs_to :default_channel, DiscordClone.Workspaces.Channel
+
+    has_many :channels, DiscordClone.Workspaces.Channel
+    has_many :memberships, DiscordClone.Workspaces.WorkspaceMembership
+    has_many :invites, DiscordClone.Workspaces.WorkspaceInvite
+
+    timestamps(type: :utc_datetime)
+  end
+
+  def changeset(workspace, attrs) do
+    workspace
+    |> cast(attrs, [:name, :owner_id, :default_channel_id, :invite_policy])
+    |> update_change(:name, &normalize_name/1)
+    |> validate_required([:name, :owner_id, :invite_policy])
+    |> validate_length(:name, min: 1, max: 80)
+    |> validate_inclusion(:invite_policy, @invite_policies)
+    |> foreign_key_constraint(:owner_id)
+    |> foreign_key_constraint(:default_channel_id)
+  end
+
+  def invite_policies, do: @invite_policies
+
+  defp normalize_name(name) when is_binary(name), do: String.trim(name)
+  defp normalize_name(name), do: name
+end
