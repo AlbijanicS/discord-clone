@@ -96,18 +96,22 @@ A workspace is the top-level collaboration boundary.
 - A workspace has many users through `workspace_memberships`.
 - The owner should also have a membership row so membership checks have one
   consistent path.
-- A workspace has one default channel through `default_channel_id`.
-- The UI should call this the "Main channel", but the database field should stay
-  precise and system-oriented.
+- A workspace may have one default channel through `default_channel_id`.
+- `default_channel_id` may be `nil` while the workspace has no channels.
+- The UI can call a selected default the "Main channel", but the database field
+  should stay precise and system-oriented.
 - A workspace has an invite policy, starting with `owner_only` or
   `members_can_invite`.
 
 Workspace creation should happen in a transaction:
 
 1. Create the workspace.
-2. Create the first channel with the user-provided main channel name.
-3. Update `workspaces.default_channel_id`.
-4. Create the owner's `workspace_membership`.
+2. Create the owner's `workspace_membership`.
+
+Channel creation is a separate workflow. Creating a channel does not update
+`workspaces.default_channel_id`. Workspace entry should resolve the landing
+channel by checking the explicit default channel first, falling back to the
+oldest channel when no explicit default is set.
 
 ### Workspace Memberships
 
@@ -127,7 +131,9 @@ A channel belongs to one workspace and groups messages plus live process state.
 - Deleting a channel should delete its messages.
 - Every active channel may have one associated `ChannelServer` process.
 - Channel names do not have to be `general`.
-- A workspace must always have at least one channel.
+- A workspace may temporarily have zero channels.
+- A workspace with channels should have a resolvable landing channel: explicit
+  default first, otherwise the oldest channel.
 - Deleting the default channel should require selecting a replacement first.
 
 ### Workspace Invites
@@ -137,8 +143,8 @@ Invites model how users join existing workspaces.
 - An invite belongs to one workspace.
 - An invite belongs to the user who created it through `created_by_user_id`.
 - An invite grants membership to the workspace, not to one channel.
-- After accepting an invite, the user should land in the workspace's default
-  channel.
+- After accepting an invite, the user should land in the workspace's resolved
+  landing channel when one exists.
 - Use a unique index on `code`.
 - `expires_at`, `max_uses`, and `revoked_at` make invites easy to invalidate
   without deleting audit history.
@@ -149,7 +155,7 @@ Invite redemption should happen in a transaction:
 2. Reject revoked, expired, or fully-used invites.
 3. Create the `workspace_membership` if the user is not already a member.
 4. Increment `uses_count`.
-5. Navigate the user to the workspace default channel.
+5. Navigate the user to the workspace landing channel when one exists.
 
 ### Messages
 

@@ -23,7 +23,7 @@ defmodule DiscordClone.Workspaces.Channel do
         "must start with a letter or number and use lowercase letters, numbers, dashes, or underscores"
     )
     |> foreign_key_constraint(:workspace_id)
-    |> unique_constraint([:workspace_id, :name])
+    |> unique_constraint(:name, name: :channels_workspace_id_name_index)
   end
 
   defp normalize_name(name) when is_binary(name) do

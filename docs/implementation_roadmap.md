@@ -39,7 +39,7 @@ Vertical work builds a thin path through multiple layers.
 
 Examples:
 
-- register, create workspace, and land in the main channel
+- register, create workspace, create a channel, and enter it
 - accept invite and enter workspace
 - send a message and see it after reload
 - send a message and see it live in another browser
@@ -87,9 +87,14 @@ Prove:
 
 Important decisions:
 
-- `workspaces.default_channel_id` points to the main channel.
-- workspace creation will eventually create workspace, first channel, default
-  channel assignment, and owner membership in one transaction.
+- `workspaces.default_channel_id` points to the selected default channel when
+  one exists.
+- workspace creation creates the workspace and owner membership in one
+  transaction.
+- channel creation is separate and does not update the workspace's default
+  channel.
+- workspace landing resolves to the explicit default channel when set,
+  otherwise the oldest channel.
 - messages are always persisted in Postgres.
 
 ## Phase 2: Authentication
@@ -121,7 +126,6 @@ Goal: authenticated users can create and enter workspaces with channels.
 Build:
 
 - create workspace flow
-- main channel name field in the UI
 - owner membership creation
 - workspace list
 - workspace show page
@@ -133,7 +137,9 @@ Build:
 
 Prove:
 
-- creating a workspace also creates a main channel
+- creating a workspace creates owner membership
+- creating a channel does not change the workspace default channel
+- workspace entry can resolve an oldest-channel landing fallback
 - owner can see the workspace
 - non-members cannot access workspace channels
 - deleting the default channel requires selecting a replacement
@@ -152,7 +158,7 @@ Build:
 - reject revoked, expired, or fully-used invites
 - increment invite usage
 - join workspace by creating membership
-- navigate joined user to the workspace default channel
+- navigate joined user to the workspace landing channel when one exists
 
 Prove:
 
