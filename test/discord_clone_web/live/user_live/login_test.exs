@@ -56,7 +56,7 @@ defmodule DiscordCloneWeb.UserLive.LoginTest do
 
       conn = submit_form(form, conn)
 
-      assert redirected_to(conn) == ~p"/"
+      assert redirected_to(conn) == ~p"/workspaces"
     end
 
     test "redirects to login page with a flash error if credentials are invalid", %{
@@ -81,7 +81,7 @@ defmodule DiscordCloneWeb.UserLive.LoginTest do
 
       {:ok, _login_live, login_html} =
         lv
-        |> element("main a", "Sign up")
+        |> element("a[href='/users/register']", "Sign up")
         |> render_click()
         |> follow_redirect(conn, ~p"/users/register")
 

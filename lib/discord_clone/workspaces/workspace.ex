@@ -29,6 +29,13 @@ defmodule DiscordClone.Workspaces.Workspace do
     |> foreign_key_constraint(:default_channel_id)
   end
 
+  def default_channel_changeset(workspace, attrs) do
+    workspace
+    |> cast(attrs, [:default_channel_id])
+    |> validate_required([:default_channel_id])
+    |> foreign_key_constraint(:default_channel_id)
+  end
+
   def invite_policies, do: @invite_policies
 
   defp normalize_name(name) when is_binary(name), do: String.trim(name)

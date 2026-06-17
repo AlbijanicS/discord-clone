@@ -60,59 +60,97 @@ defmodule DiscordClone.Workspaces do
 
   def resolve_landing_channel(%Scope{} = scope, workspace_id) do
     with {:ok, %Workspace{} = workspace} <- fetch_workspace(scope, workspace_id) do
-      case default_channel(workspace) do
-        %Channel{} = channel -> {:ok, channel}
-        nil -> {:error, :landing_channel_missing}
-      end
+      {:ok, default_channel(workspace) || oldest_channel(workspace)}
     end
   end
 
   def resolve_landing_channel(_scope, _workspace_id), do: {:error, :unauthenticated}
 
-  def create_workspace(%Scope{user: %User{} = user}, attrs) when is_map(attrs) do
+  def change_workspace(scope, attrs \\ %{})
+
+  def change_workspace(%Scope{user: %User{} = user}, attrs) when is_map(attrs) do
     workspace_attrs = %{
       name: get_attr(attrs, :name),
       owner_id: user.id,
       invite_policy: "owner_only"
     }
 
-    Multi.new()
-    |> Multi.insert(
-      :workspace,
-      Workspace.changeset(%Workspace{}, workspace_attrs)
-    )
-    |> Multi.insert(:owner_membership, fn %{workspace: workspace} ->
-      WorkspaceMembership.changeset(%WorkspaceMembership{}, %{
-        workspace_id: workspace.id,
-        user_id: user.id,
-        role: "owner"
-      })
-    end)
-    |> Multi.insert(:default_channel, fn %{workspace: workspace} ->
-      Channel.changeset(%Channel{}, %{workspace_id: workspace.id, name: "general"})
-    end)
-    |> Multi.update(:workspace_with_default_channel, fn %{
-                                                          workspace: workspace,
-                                                          default_channel: default_channel
-                                                        } ->
-      Workspace.changeset(workspace, %{default_channel_id: default_channel.id})
-    end)
+    Workspace.changeset(%Workspace{}, workspace_attrs)
+  end
+
+  def change_workspace(_scope, _attrs), do: Workspace.changeset(%Workspace{}, %{})
+
+  def create_workspace(%Scope{user: %User{} = user}, attrs) when is_map(attrs) do
+    user
+    |> create_workspace_multi(attrs)
     |> Repo.transaction()
-    |> case do
-      {:ok, %{workspace_with_default_channel: workspace}} ->
-        {:ok, workspace}
-
-      {:error, :workspace, changeset, _changes_so_far} ->
-        {:error, :invalid_workspace, changeset}
-
-      {:error, failed_operation, failed_value, changes_so_far} ->
-        {:error, :workspace_creation_failed, failed_operation, failed_value, changes_so_far}
-    end
+    |> handle_create_workspace_result()
   end
 
   def create_workspace(%Scope{user: %User{}}, _attrs), do: {:error, :invalid_attrs}
 
   def create_workspace(_scope, _attrs), do: {:error, :unauthenticated}
+
+  defp create_workspace_multi(%User{} = user, attrs) do
+    Multi.new()
+    |> Multi.insert(:workspace, Workspace.changeset(%Workspace{}, workspace_attrs(user, attrs)))
+    |> Multi.insert(:owner_membership, fn %{workspace: workspace} ->
+      owner_membership_changeset(workspace, user)
+    end)
+    |> Multi.insert(:default_channel, fn %{workspace: workspace} ->
+      default_channel_changeset(workspace)
+    end)
+    |> Multi.update(:workspace_with_default_channel, fn %{
+                                                          workspace: workspace,
+                                                          default_channel: default_channel
+                                                        } ->
+      workspace_default_channel_changeset(workspace, default_channel)
+    end)
+  end
+
+  defp workspace_attrs(%User{id: user_id}, attrs) do
+    %{
+      name: get_attr(attrs, :name),
+      owner_id: user_id,
+      invite_policy: "owner_only"
+    }
+  end
+
+  defp owner_membership_changeset(%Workspace{id: workspace_id}, %User{id: user_id}) do
+    WorkspaceMembership.changeset(%WorkspaceMembership{}, %{
+      workspace_id: workspace_id,
+      user_id: user_id,
+      role: "owner"
+    })
+  end
+
+  defp default_channel_changeset(%Workspace{id: workspace_id}) do
+    Channel.changeset(%Channel{}, %{
+      workspace_id: workspace_id,
+      name: "general"
+    })
+  end
+
+  defp workspace_default_channel_changeset(
+         %Workspace{} = workspace,
+         %Channel{id: default_channel_id}
+       ) do
+    Workspace.default_channel_changeset(workspace, %{
+      default_channel_id: default_channel_id
+    })
+  end
+
+  defp handle_create_workspace_result({:ok, %{workspace_with_default_channel: workspace}}) do
+    {:ok, workspace}
+  end
+
+  defp handle_create_workspace_result({:error, :workspace, changeset, _changes_so_far}) do
+    {:error, :invalid_workspace, changeset}
+  end
+
+  defp handle_create_workspace_result({:error, failed_operation, failed_value, changes_so_far}) do
+    {:error, :workspace_creation_failed, failed_operation, failed_value, changes_so_far}
+  end
 
   def change_channel(workspace_id, attrs \\ %{}) when is_map(attrs) do
     %Channel{}
@@ -152,6 +190,13 @@ defmodule DiscordClone.Workspaces do
 
   defp default_channel(%Workspace{id: workspace_id, default_channel_id: channel_id}) do
     Repo.get_by(Channel, id: channel_id, workspace_id: workspace_id)
+  end
+
+  defp oldest_channel(%Workspace{id: workspace_id}) do
+    workspace_id
+    |> channels_for_workspace_query()
+    |> limit(1)
+    |> Repo.one()
   end
 
   defp channels_for_workspace_query(workspace_id) do
