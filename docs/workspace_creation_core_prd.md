@@ -19,11 +19,10 @@ user can create a workspace, and the system will create the owner's membership
 in the same transaction.
 
 This gives the application a trustworthy durable invariant: every workspace
-created through the public context starts with an authenticated owner and an
-owner membership. Channels are created by a later workflow. A workspace may
-temporarily have no default channel, and workspace entry will later resolve a
-landing channel by using the explicit default channel when present, falling back
-to the oldest channel when needed.
+created through the public context starts with an authenticated owner, an owner
+membership, and a default `general` landing channel. Later users may rename
+that channel, but the workspace continues to enter through the channel stored
+in `default_channel_id`.
 
 ## User Stories
 
@@ -34,7 +33,7 @@ to the oldest channel when needed.
 5. As a developer, I want workspace creation to be a public context function, so that LiveViews and controllers do not assemble domain state manually.
 6. As a developer, I want workspace creation to be transactional, so that partial workspace state is rolled back if any step fails.
 7. As a developer, I want caller-provided owner IDs and invite policies to be ignored, so that client params cannot override server-owned workflow decisions.
-8. As a developer, I want workspace creation to leave channel setup to a separate workflow, so that workspace ownership and channel lifecycle rules stay readable.
+8. As a developer, I want workspace creation to create the first landing channel in the same transaction, so that new workspaces are immediately enterable.
 9. As a developer, I want transaction failures to preserve their operation context, so that test failures and form integration remain easy to debug.
 10. As a developer, I want every workspace test fixture to use the public context, so that test data follows the same invariants as production data.
 11. As a learner, I want this slice to stay focused on durable workspace behavior, so that the next implementation step remains understandable and reviewable.
@@ -44,14 +43,14 @@ to the oldest channel when needed.
 - Build the first public workspace workflow: `create_workspace(current_scope, attrs)`.
 - The workflow belongs in the Workspaces context, which should remain the public entry point for workspace structure, memberships, channels, invites, and access rules.
 - The workflow requires an authenticated scope containing a user. Missing or anonymous users return `{:error, :unauthenticated}`.
-- Workspace creation uses one transaction to create the workspace and create the owner membership.
-- Keep the existing `workspaces.default_channel_id` model, but allow it to be `nil`.
-- A workspace may exist before any channels have been created.
-- The workflow accepts a workspace name only. Channel input such as `main_channel_name` is ignored in this workflow.
+- Workspace creation uses one transaction to create the workspace, create the owner membership, create the default `general` channel, and set `default_channel_id`.
+- Keep the existing `workspaces.default_channel_id` model and set it during workspace creation.
+- A workspace created through the public workflow starts with a default `general` channel.
+- The workflow accepts a workspace name only. Channel input such as `main_channel_name` is ignored; the first channel is always named `general`.
 - Caller-provided owner IDs are ignored. Ownership always comes from the authenticated scope's user.
 - Caller-provided invite policy is ignored in this first slice. New workspaces use `owner_only`.
 - Owner membership is created with role `owner`.
-- The successful return shape is `{:ok, workspace}` with `default_channel_id` left as `nil`.
+- The successful return shape is `{:ok, workspace}` with `default_channel_id` pointing to the `general` channel.
 - Failed transactions preserve the raw multi-step failure shape: `{:error, failed_operation, changeset_or_reason, changes_so_far}`.
 - Workspace names remain non-unique.
 - Add a workspace fixture helper that creates workspaces through the public context rather than direct schema inserts.
@@ -63,8 +62,8 @@ to the oldest channel when needed.
 - The main test surface is the Workspaces context.
 - Add workspace fixture coverage through a helper that calls the public creation workflow.
 - Use existing account fixture patterns to create authenticated user scopes.
-- Good tests should prove durable outcomes: workspace creation returns a workspace with no default channel, creates no channel, and persists an owner membership.
-- Test that channel-related params such as `main_channel_name` are ignored by this workflow.
+- Good tests should prove durable outcomes: workspace creation returns a workspace with a default channel, creates the `general` channel, and persists an owner membership.
+- Test that channel-related params such as `main_channel_name` do not override the default `general` channel.
 - Test unauthenticated scope handling: missing users return `{:error, :unauthenticated}`.
 - Test ownership protection: caller-provided owner IDs do not override the authenticated user.
 - Test invite policy protection: caller-provided invite policy does not override the first-slice `owner_only` behavior.
@@ -74,9 +73,9 @@ to the oldest channel when needed.
 ## Out of Scope
 
 - Workspace LiveViews, forms, navigation, or router changes.
-- Channel creation.
-- First-channel default assignment.
-- Workspace landing-channel resolution.
+- Additional channel creation.
+- Alternate first-channel default assignment.
+- Workspace landing-channel resolution beyond reading the stored default channel.
 - Channel deletion and default channel replacement rules.
 - Workspace list or workspace show pages.
 - Invite creation, invite redemption, invite permissions, and invite landing navigation.

@@ -96,8 +96,11 @@ A workspace is the top-level collaboration boundary.
 - A workspace has many users through `workspace_memberships`.
 - The owner should also have a membership row so membership checks have one
   consistent path.
-- A workspace may have one default channel through `default_channel_id`.
-- `default_channel_id` may be `nil` while the workspace has no channels.
+- A workspace has one default channel through `default_channel_id` when created
+  through the public workspace workflow.
+- `default_channel_id` is expected to point at the workspace's landing channel.
+  A missing default channel is treated as broken workspace state, not a normal
+  product state.
 - The UI can call a selected default the "Main channel", but the database field
   should stay precise and system-oriented.
 - A workspace has an invite policy, starting with `owner_only` or
@@ -107,11 +110,12 @@ Workspace creation should happen in a transaction:
 
 1. Create the workspace.
 2. Create the owner's `workspace_membership`.
+3. Create the default `general` channel.
+4. Store that channel ID on `workspaces.default_channel_id`.
 
 Channel creation is a separate workflow. Creating a channel does not update
 `workspaces.default_channel_id`. Workspace entry should resolve the landing
-channel by checking the explicit default channel first, falling back to the
-oldest channel when no explicit default is set.
+channel by reading the stored default channel.
 
 ### Workspace Memberships
 
@@ -130,10 +134,11 @@ A channel belongs to one workspace and groups messages plus live process state.
 - Channel names should be normalized to a predictable format before insert.
 - Deleting a channel should delete its messages.
 - Every active channel may have one associated `ChannelServer` process.
-- Channel names do not have to be `general`.
-- A workspace may temporarily have zero channels.
-- A workspace with channels should have a resolvable landing channel: explicit
-  default first, otherwise the oldest channel.
+- New workspaces start with a `general` channel.
+- Channel names do not have to remain `general`; renaming the default channel
+  later should preserve the landing role because the workspace stores the
+  channel ID.
+- A workspace created through the public workflow should not have zero channels.
 - Deleting the default channel should require selecting a replacement first.
 
 ### Workspace Invites
@@ -143,8 +148,8 @@ Invites model how users join existing workspaces.
 - An invite belongs to one workspace.
 - An invite belongs to the user who created it through `created_by_user_id`.
 - An invite grants membership to the workspace, not to one channel.
-- After accepting an invite, the user should land in the workspace's resolved
-  landing channel when one exists.
+- After accepting an invite, the user should land in the workspace's landing
+  channel.
 - Use a unique index on `code`.
 - `expires_at`, `max_uses`, and `revoked_at` make invites easy to invalidate
   without deleting audit history.
@@ -155,7 +160,7 @@ Invite redemption should happen in a transaction:
 2. Reject revoked, expired, or fully-used invites.
 3. Create the `workspace_membership` if the user is not already a member.
 4. Increment `uses_count`.
-5. Navigate the user to the workspace landing channel when one exists.
+5. Navigate the user to the workspace landing channel.
 
 ### Messages
 

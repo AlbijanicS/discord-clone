@@ -87,14 +87,12 @@ Prove:
 
 Important decisions:
 
-- `workspaces.default_channel_id` points to the selected default channel when
-  one exists.
-- workspace creation creates the workspace and owner membership in one
-  transaction.
+- `workspaces.default_channel_id` points to the workspace landing channel.
+- workspace creation creates the workspace, owner membership, and default
+  `general` landing channel in one transaction.
 - channel creation is separate and does not update the workspace's default
   channel.
-- workspace landing resolves to the explicit default channel when set,
-  otherwise the oldest channel.
+- workspace landing resolves to the stored default channel.
 - messages are always persisted in Postgres.
 
 ## Phase 2: Authentication
@@ -137,9 +135,10 @@ Build:
 
 Prove:
 
-- creating a workspace creates owner membership
+- creating a workspace creates owner membership and a default `general` landing
+  channel
 - creating a channel does not change the workspace default channel
-- workspace entry can resolve an oldest-channel landing fallback
+- workspace entry resolves the stored landing channel
 - owner can see the workspace
 - non-members cannot access workspace channels
 - deleting the default channel requires selecting a replacement
@@ -158,7 +157,7 @@ Build:
 - reject revoked, expired, or fully-used invites
 - increment invite usage
 - join workspace by creating membership
-- navigate joined user to the workspace landing channel when one exists
+- navigate joined user to the workspace landing channel
 
 Prove:
 

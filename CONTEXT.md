@@ -31,8 +31,15 @@ A named conversation space inside a workspace.
 _Avoid_: Room
 
 **Landing Channel**:
-The channel a user should enter when opening or joining a workspace.
+The default channel a user should enter when opening or joining a workspace.
+New workspaces start with a `general` landing channel, and later renaming that
+channel does not change its landing role because the role is tied to the
+channel ID.
 _Avoid_: Main channel, default page
+
+**Workspace Entry**:
+The workflow of opening a workspace and navigating to its landing channel.
+_Avoid_: Workspace details page
 
 ## Relationships
 
@@ -40,7 +47,8 @@ _Avoid_: Main channel, default page
 - A **Workspace Identifier** points to one **Workspace**
 - A **Workspace** has zero or more **Workspace Members**
 - A **Workspace Member** has one **Workspace Role**
-- A **Workspace** contains zero or more **Channels**
+- A **Workspace** contains one or more **Channels** when created through the
+  public workspace workflow
 - A **Workspace Member** may create **Channels** until role-specific channel
   permissions are introduced
 - A **User** who is not a **Workspace Member** must not be able to view or
@@ -56,10 +64,11 @@ _Avoid_: Main channel, default page
   validation details
 - Channel forms are backed by a public workspace-context change workflow rather
   than direct schema access from the web layer
-- A **Landing Channel** is the explicitly selected default channel when one is
-  set, otherwise the oldest **Channel** in the **Workspace**
-- Resolving a **Landing Channel** is a scoped navigation workflow, not part of
-  **Channel** creation
+- A **Landing Channel** is the channel stored on the **Workspace** as its
+  default channel
+- **Workspace Entry** redirects to the **Landing Channel**
+- Resolving a **Landing Channel** is a scoped **Workspace Entry** workflow, not
+  part of **Channel** creation
 
 ## Example Dialogue
 
@@ -67,7 +76,7 @@ _Avoid_: Main channel, default page
 > **Domain expert:** "For now, yes. Later we will use **Workspace Roles** so only admin-like members can manage channels and members."
 >
 > **Dev:** "Does creating the first **Channel** make it the **Landing Channel**?"
-> **Domain expert:** "No. Creating a **Channel** only creates the **Channel**; landing falls back to the oldest **Channel** until a default is explicitly selected."
+> **Domain expert:** "No. Workspace creation creates the `general` **Landing Channel**. Creating additional **Channels** only creates channels and does not change the landing channel."
 
 ## Flagged Ambiguities
 

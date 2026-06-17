@@ -2,10 +2,10 @@
 
 ## Problem Statement
 
-The Discord clone can create authenticated workspaces with owner memberships,
-but workspace members cannot yet create channels. This blocks the first useful
-workspace flow: a user can register, log in, create a workspace, and then create
-the first conversation space inside it.
+The Discord clone can create authenticated workspaces with owner memberships and
+a default `general` landing channel, but workspace members cannot yet create
+additional channels. This blocks workspace organization beyond the initial
+landing channel.
 
 The immediate problem is to add a small, explicit channel creation workflow
 without mixing it with workspace landing rules, default-channel settings,
@@ -19,9 +19,8 @@ valid channel attributes. The workflow returns the created channel and does not
 select or change the workspace landing channel.
 
 This keeps the domain boundary readable: channel creation creates channels,
-while landing-channel resolution remains a separate navigation workflow. Until a
-future settings flow explicitly selects a default channel, workspace entry can
-resolve to the oldest channel.
+while landing-channel resolution remains a separate navigation workflow that
+reads the workspace's stored default channel.
 
 ## User Stories
 
@@ -33,8 +32,8 @@ resolve to the oldest channel.
 6. As a workspace member, I want the same channel name to be allowed in different workspaces, so that each workspace can organize itself independently.
 7. As a workspace member, I want channel creation to ignore hidden or spoofed workspace fields, so that the selected workspace remains the source of truth.
 8. As a workspace member, I want creating a channel to return the created channel, so that the UI can navigate directly to it later.
-9. As a workspace member, I want channel creation to avoid changing the workspace landing channel, so that default-channel selection remains an explicit future setting.
-10. As a workspace member, I want a first channel to be creatable even when the workspace has no landing channel set, so that a new workspace can become useful gradually.
+9. As a workspace member, I want channel creation to avoid changing the workspace landing channel, so that entering a workspace remains stable.
+10. As a workspace member, I want additional channels to be creatable after the default `general` channel, so that the workspace can grow gradually.
 11. As a logged-in non-member, I should not be able to create a channel in a workspace I do not belong to, so that private workspace boundaries are respected.
 12. As an anonymous visitor, I should not be able to create a channel, so that workspace changes require an authenticated user.
 13. As a developer, I want unauthenticated, unauthorized, not-found, and validation failures to have distinct return shapes, so that LiveViews can handle each outcome clearly.
@@ -61,7 +60,7 @@ resolve to the oldest channel.
 - The workflow creates only a channel.
 - The workflow does not update the workspace default channel.
 - The workflow does not resolve the workspace landing channel.
-- Landing-channel resolution remains explicit default channel first, oldest channel fallback second.
+- Landing-channel resolution reads the workspace's stored default channel.
 - The workflow requires an explicit valid channel name.
 - The workflow does not default blank or missing names to `general`.
 - Channel names continue to be normalized by the existing channel validation rules.
@@ -101,7 +100,7 @@ resolve to the oldest channel.
 - Workspace LiveViews, channel LiveViews, forms, navigation, or router changes.
 - Landing-channel resolution helper.
 - Setting or changing a workspace default channel.
-- Automatically assigning the first channel as the default channel.
+- Changing the workspace default channel.
 - Channel deletion.
 - Default-channel replacement rules.
 - Workspace member role permissions beyond the current membership gate.

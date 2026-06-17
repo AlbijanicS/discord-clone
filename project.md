@@ -1015,10 +1015,10 @@ No messages yet:
 No messages yet. Start the conversation.
 ```
 
-No channels yet:
+Channels unavailable:
 
 ```text
-No channels yet. Create #general to begin.
+No channels available. Try refreshing or contact the workspace owner.
 ```
 
 No workspace selected:
