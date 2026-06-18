@@ -731,6 +731,35 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
   describe "/workspaces/:workspace_id/invites/new" do
     setup :register_and_log_in_user
 
+    test "hides the invite action from non-owner members in owner-only workspaces", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      refute has_element?(view, "#workspace-#{workspace.id}-invite-new")
+    end
+
+    test "shows the invite action to members in members-can-invite workspaces", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      workspace = set_invite_policy!(workspace, "members_can_invite")
+      add_workspace_member!(workspace, member_scope)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#workspace-#{workspace.id}-invite-new")
+    end
+
     test "renders the workspace shell without creating an invite", %{conn: conn, scope: scope} do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
 
@@ -794,6 +823,34 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#workspace-invite-url[value='#{second_url}']")
       refute has_element?(view, "#workspace-invite-url[value='#{first_url}']")
     end
+
+    test "redirects disallowed members back to workspace entry with an error flash", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      assert {:error, {:redirect, %{to: path, flash: flash}}} =
+               live(conn, ~p"/workspaces/#{workspace.id}/invites/new")
+
+      assert path == ~p"/workspaces/#{workspace.id}"
+      assert flash["error"] =~ "not allowed to create invites"
+    end
+
+    test "redirects non-members to the workspace app with the generic access flash", %{
+      conn: conn
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      assert {:error, {:redirect, %{to: path, flash: flash}}} =
+               live(conn, ~p"/workspaces/#{workspace.id}/invites/new")
+
+      assert path == ~p"/workspaces"
+      assert flash["error"] =~ "Workspace not found or you do not have access"
+    end
   end
 
   defp add_workspace_member!(workspace, scope) do
@@ -804,5 +861,11 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       role: "member"
     })
     |> Repo.insert!()
+  end
+
+  defp set_invite_policy!(workspace, invite_policy) do
+    workspace
+    |> Ecto.Changeset.change(invite_policy: invite_policy)
+    |> Repo.update!()
   end
 end

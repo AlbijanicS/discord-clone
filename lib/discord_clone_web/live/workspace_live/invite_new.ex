@@ -8,6 +8,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
   def mount(%{"workspace_id" => workspace_id}, _session, socket) do
     with {:ok, workspace} <-
            Workspaces.fetch_workspace(socket.assigns.current_scope, workspace_id),
+         :ok <- authorize_invite_screen(socket.assigns.current_scope, workspace),
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
          {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id) do
       socket =
@@ -28,6 +29,12 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
 
       {:ok, socket}
     else
+      {:error, :invite_permission_required, workspace} ->
+        {:ok,
+         socket
+         |> put_flash(:error, "You are not allowed to create invites for this workspace.")
+         |> redirect(to: ~p"/workspaces/#{workspace.id}")}
+
       {:error, _reason} ->
         {:ok,
          socket
@@ -159,5 +166,13 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
 
   defp invite_url(invite) do
     DiscordCloneWeb.Endpoint.url() <> "/invites/#{invite.code}"
+  end
+
+  defp authorize_invite_screen(current_scope, workspace) do
+    if Workspaces.can_create_workspace_invite?(current_scope, workspace) do
+      :ok
+    else
+      {:error, :invite_permission_required, workspace}
+    end
   end
 end

@@ -202,7 +202,8 @@ defmodule DiscordClone.Workspaces do
 
   def create_workspace_invite(%Scope{user: %User{} = user} = scope, workspace_id, attrs)
       when is_map(attrs) do
-    with {:ok, %Workspace{id: workspace_id}} <- fetch_workspace(scope, workspace_id) do
+    with {:ok, %Workspace{id: workspace_id} = workspace} <- fetch_workspace(scope, workspace_id),
+         :ok <- authorize_workspace_invite_creation(workspace, user) do
       %WorkspaceInvite{}
       |> WorkspaceInvite.changeset(invite_creation_attrs(workspace_id, user, attrs))
       |> Repo.insert()
@@ -217,6 +218,13 @@ defmodule DiscordClone.Workspaces do
     do: {:error, :invalid_attrs}
 
   def create_workspace_invite(_scope, _workspace_id, _attrs), do: {:error, :unauthenticated}
+
+  def can_create_workspace_invite?(%Scope{user: %User{} = user}, %Workspace{} = workspace) do
+    workspace_member?(workspace.id, user.id) and
+      workspace_invite_policy_allows?(workspace, user)
+  end
+
+  def can_create_workspace_invite?(_scope, _workspace), do: false
 
   def rename_channel(%Scope{} = scope, workspace_id, channel_id, attrs) when is_map(attrs) do
     with {:ok, channel} <- fetch_channel(scope, workspace_id, channel_id) do
@@ -350,6 +358,23 @@ defmodule DiscordClone.Workspaces do
 
   defp authorize_channel_creation(workspace, user),
     do: authorize_workspace_access(workspace, user)
+
+  defp authorize_workspace_invite_creation(workspace, user) do
+    if workspace_invite_policy_allows?(workspace, user),
+      do: :ok,
+      else: {:error, :invite_permission_required}
+  end
+
+  defp workspace_invite_policy_allows?(
+         %Workspace{invite_policy: "owner_only", owner_id: owner_id},
+         %User{id: user_id}
+       ),
+       do: owner_id == user_id
+
+  defp workspace_invite_policy_allows?(%Workspace{invite_policy: "members_can_invite"}, %User{}),
+    do: true
+
+  defp workspace_invite_policy_allows?(_workspace, _user), do: false
 
   defp authorize_workspace_owner(%Workspace{owner_id: owner_id}, user_id)
        when owner_id == user_id,

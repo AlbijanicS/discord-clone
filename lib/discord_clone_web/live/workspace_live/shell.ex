@@ -1,6 +1,8 @@
 defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   use DiscordCloneWeb, :html
 
+  alias DiscordClone.Workspaces
+
   attr :workspace_stream, :any, required: true
   attr :channel_stream, :any, default: nil
   attr :selected_workspace, :any, default: nil
@@ -126,7 +128,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                   </p>
                 <% end %>
                 <.link
-                  :if={workspace_owner?(@selected_workspace, @current_scope)}
+                  :if={can_create_workspace_invite?(@selected_workspace, @current_scope)}
                   id={"workspace-#{@selected_workspace.id}-invite-new"}
                   navigate={~p"/workspaces/#{@selected_workspace.id}/invites/new"}
                   class="btn btn-square btn-xs btn-ghost shrink-0 transition hover:scale-105"
@@ -477,6 +479,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
 
   defp workspace_owner?(workspace, current_scope) do
     current_scope && current_scope.user && workspace.owner_id == current_scope.user.id
+  end
+
+  defp can_create_workspace_invite?(workspace, current_scope) do
+    Workspaces.can_create_workspace_invite?(current_scope, workspace)
   end
 
   defp context_menu_style(%{x: x, y: y}), do: "left: #{x}px; top: #{y}px;"

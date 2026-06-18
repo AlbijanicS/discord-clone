@@ -498,6 +498,31 @@ defmodule DiscordClone.WorkspacesTest do
       assert DateTime.compare(invite.expires_at, expires_at_upper_bound) in [:eq, :lt]
     end
 
+    test "rejects non-owner members in owner-only workspaces" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      assert Workspaces.create_workspace_invite(member_scope, workspace.id) ==
+               {:error, :invite_permission_required}
+
+      assert Repo.aggregate(WorkspaceInvite, :count) == 0
+    end
+
+    test "allows any member in members-can-invite workspaces to create an invite" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      workspace = set_invite_policy!(workspace, "members_can_invite")
+      add_workspace_member!(workspace, member_scope)
+
+      assert {:ok, invite} = Workspaces.create_workspace_invite(member_scope, workspace.id)
+
+      assert invite.workspace_id == workspace.id
+      assert invite.created_by_user_id == member_scope.user.id
+    end
+
     test "ignores server-owned attributes while accepting controlled expiration and max uses" do
       scope = user_scope_fixture()
       other_scope = user_scope_fixture()
@@ -835,5 +860,11 @@ defmodule DiscordClone.WorkspacesTest do
       role: "member"
     })
     |> Repo.insert!()
+  end
+
+  defp set_invite_policy!(workspace, invite_policy) do
+    workspace
+    |> Ecto.Changeset.change(invite_policy: invite_policy)
+    |> Repo.update!()
   end
 end
