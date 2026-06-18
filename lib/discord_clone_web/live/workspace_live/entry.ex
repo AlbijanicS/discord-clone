@@ -16,6 +16,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
           socket =
             socket
             |> assign(:selected_workspace, workspace)
+            |> assign(:workspace_form, workspace_form(socket.assigns.current_scope))
+            |> assign(:show_workspace_form?, false)
             |> assign(:channel_form, channel_form(workspace.id))
             |> assign(:show_channel_form?, channels == [])
             |> assign(:workspace_action_menu_id, nil)
@@ -46,6 +48,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
         workspace_stream={@streams.workspaces}
         channel_stream={@streams.channels}
         selected_workspace={@selected_workspace}
+        workspace_form={@workspace_form}
+        show_workspace_form?={@show_workspace_form?}
         channel_form={@channel_form}
         show_channel_form?={@show_channel_form?}
         workspace_action_menu_id={@workspace_action_menu_id}
@@ -60,6 +64,23 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
   end
 
   @impl true
+  def handle_event("show_workspace_form", _params, socket) do
+    {:noreply, assign(socket, :show_workspace_form?, true)}
+  end
+
+  def handle_event("create_workspace", %{"workspace" => workspace_params}, socket) do
+    case Workspaces.create_workspace(socket.assigns.current_scope, workspace_params) do
+      {:ok, workspace} ->
+        {:noreply, push_navigate(socket, to: ~p"/workspaces/#{workspace.id}")}
+
+      {:error, :invalid_workspace, changeset} ->
+        {:noreply,
+         socket
+         |> assign(:show_workspace_form?, true)
+         |> assign(:workspace_form, to_form(changeset, as: :workspace, action: :insert))}
+    end
+  end
+
   def handle_event("show_channel_form", _params, socket) do
     {:noreply, assign(socket, :show_channel_form?, true)}
   end
@@ -224,7 +245,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
     |> to_form(as: :channel)
   end
 
-  defp workspace_form(scope, attrs) do
+  defp workspace_form(scope, attrs \\ %{}) do
     scope
     |> Workspaces.change_workspace(attrs)
     |> to_form(as: :workspace)

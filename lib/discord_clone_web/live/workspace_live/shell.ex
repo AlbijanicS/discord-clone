@@ -434,6 +434,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                       type="button"
                       class="btn btn-square btn-outline"
                       aria-label="Copy invite link"
+                      phx-hook="ClipboardCopy"
+                      phx-update="ignore"
                       data-copy-target="workspace-invite-url"
                     >
                       <.icon name="hero-clipboard-document" class="size-4" />

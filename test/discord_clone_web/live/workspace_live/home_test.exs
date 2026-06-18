@@ -107,6 +107,25 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#workspace-main-empty-channel")
     end
 
+    test "shows and opens the workspace create action from an empty-channel shell", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      Repo.delete_all(Channel)
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}")
+
+      assert has_element?(view, "#workspace-create-toggle")
+      refute has_element?(view, "#workspace-create-form")
+
+      view
+      |> element("#workspace-create-toggle")
+      |> render_click()
+
+      assert has_element?(view, "#workspace-create-form")
+    end
+
     test "creates the first channel from an empty workspace entry", %{conn: conn, scope: scope} do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
       Repo.delete_all(Channel)
@@ -220,6 +239,25 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#channel-#{channel.id}-actions")
       assert has_element?(view, "#channel-create-toggle")
       assert has_element?(view, "#message-composer-placeholder[disabled]")
+    end
+
+    test "shows and opens the workspace create action from a selected channel", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, channel} = Workspaces.create_channel(scope, workspace.id, %{name: "Planning"})
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/channels/#{channel.id}")
+
+      assert has_element?(view, "#workspace-create-toggle")
+      refute has_element?(view, "#workspace-create-form")
+
+      view
+      |> element("#workspace-create-toggle")
+      |> render_click()
+
+      assert has_element?(view, "#workspace-create-form")
     end
 
     test "marks workspace and channel targets for context menu hooks", %{
@@ -774,6 +812,24 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert Repo.aggregate(WorkspaceInvite, :count) == 0
     end
 
+    test "shows and opens the workspace create action from the invite screen", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/invites/new")
+
+      assert has_element?(view, "#workspace-create-toggle")
+      refute has_element?(view, "#workspace-create-form")
+
+      view
+      |> element("#workspace-create-toggle")
+      |> render_click()
+
+      assert has_element?(view, "#workspace-create-form")
+    end
+
     test "submitting the form creates and displays a selectable absolute invite URL", %{
       conn: conn,
       scope: scope
@@ -789,7 +845,11 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       invite_url = DiscordCloneWeb.Endpoint.url() <> "/invites/#{invite.code}"
 
       assert has_element?(view, "#workspace-invite-url[value='#{invite_url}']")
-      assert has_element?(view, "#workspace-invite-copy")
+
+      assert has_element?(
+               view,
+               "#workspace-invite-copy[phx-hook='ClipboardCopy'][phx-update='ignore'][data-copy-target='workspace-invite-url']"
+             )
     end
 
     test "submitting twice replaces the displayed link with a fresh invite URL", %{

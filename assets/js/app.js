@@ -24,8 +24,11 @@ import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/discord_clone"
 import topbar from "../vendor/topbar"
+import ClipboardCopy from "./hooks/clipboard_copy"
 
 const Hooks = {
+  ClipboardCopy,
+
   ContextMenu: {
     mounted() {
       this.handleContextMenu = event => {
