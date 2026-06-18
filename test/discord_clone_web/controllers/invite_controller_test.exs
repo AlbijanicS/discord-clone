@@ -5,6 +5,7 @@ defmodule DiscordCloneWeb.InviteControllerTest do
   alias DiscordClone.Workspaces
   alias DiscordClone.Workspaces.WorkspaceMembership
 
+  import Ecto.Query
   import DiscordClone.AccountsFixtures
 
   describe "GET /invites/:code" do
@@ -84,5 +85,47 @@ defmodule DiscordCloneWeb.InviteControllerTest do
                  user_id: invited_user.id
                )
     end
+
+    test "redirects existing members to the landing channel with an informational flash", %{
+      conn: conn
+    } do
+      owner_scope = user_scope_fixture()
+      existing_user = user_fixture()
+      existing_scope = user_scope_fixture(existing_user)
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, existing_scope)
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      conn =
+        conn
+        |> log_in_user(existing_user)
+        |> post(~p"/invites/#{invite.code}/accept")
+
+      assert redirected_to(conn) ==
+               ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+
+      assert Phoenix.Flash.get(conn.assigns.flash, :info) == "You're already in this workspace."
+
+      assert Repo.aggregate(
+               from(membership in WorkspaceMembership,
+                 where:
+                   membership.workspace_id == ^workspace.id and
+                     membership.user_id == ^existing_user.id
+               ),
+               :count
+             ) == 1
+
+      assert Repo.get!(DiscordClone.Workspaces.WorkspaceInvite, invite.id).uses_count == 0
+    end
+  end
+
+  defp add_workspace_member!(workspace, scope) do
+    %WorkspaceMembership{}
+    |> WorkspaceMembership.changeset(%{
+      workspace_id: workspace.id,
+      user_id: scope.user.id,
+      role: "member"
+    })
+    |> Repo.insert!()
   end
 end

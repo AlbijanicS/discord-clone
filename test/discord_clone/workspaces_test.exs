@@ -632,6 +632,54 @@ defmodule DiscordClone.WorkspacesTest do
 
       assert Repo.get!(WorkspaceInvite, invite.id).uses_count == 1
     end
+
+    test "existing workspace members enter the landing channel without duplicate membership or usage" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      assert {:ok, landing} = Workspaces.accept_workspace_invite(member_scope, invite.code)
+
+      assert landing.workspace_id == workspace.id
+      assert landing.channel_id == workspace.default_channel_id
+      assert landing.already_member? == true
+
+      assert Repo.aggregate(
+               from(membership in WorkspaceMembership,
+                 where:
+                   membership.workspace_id == ^workspace.id and
+                     membership.user_id == ^member_scope.user.id
+               ),
+               :count
+             ) == 1
+
+      assert Repo.get!(WorkspaceInvite, invite.id).uses_count == 0
+    end
+
+    test "workspace owners accept their own invites as navigation-only" do
+      owner_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      assert {:ok, landing} = Workspaces.accept_workspace_invite(owner_scope, invite.code)
+
+      assert landing.workspace_id == workspace.id
+      assert landing.channel_id == workspace.default_channel_id
+      assert landing.already_member? == true
+
+      assert Repo.aggregate(
+               from(membership in WorkspaceMembership,
+                 where:
+                   membership.workspace_id == ^workspace.id and
+                     membership.user_id == ^owner_scope.user.id
+               ),
+               :count
+             ) == 1
+
+      assert Repo.get!(WorkspaceInvite, invite.id).uses_count == 0
+    end
   end
 
   describe "rename_workspace/3" do

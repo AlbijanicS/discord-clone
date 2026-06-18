@@ -248,16 +248,21 @@ defmodule DiscordClone.Workspaces do
       get_invite_by_code_for_update(repo, code)
     end)
     |> Multi.run(:membership, fn repo, %{invite: invite} ->
-      insert_invite_membership(repo, invite, user)
+      ensure_invite_membership(repo, invite, user)
     end)
-    |> Multi.update(:invite_usage, fn %{invite: invite} ->
-      WorkspaceInvite.changeset(invite, %{uses_count: invite.uses_count + 1})
+    |> Multi.run(:invite_usage, fn repo, %{invite: invite, membership: membership_result} ->
+      update_invite_usage(repo, invite, membership_result)
     end)
     |> Repo.transaction()
     |> case do
-      {:ok, %{invite: invite}} ->
+      {:ok, %{invite: invite, membership: membership_result}} ->
         with {:ok, channel} <- resolve_landing_channel(scope, invite.workspace_id) do
-          {:ok, %{workspace_id: invite.workspace_id, channel_id: channel.id}}
+          {:ok,
+           %{
+             workspace_id: invite.workspace_id,
+             channel_id: channel.id,
+             already_member?: already_member?(membership_result)
+           }}
         end
 
       {:error, _operation, reason, _changes_so_far} ->
@@ -383,10 +388,24 @@ defmodule DiscordClone.Workspaces do
     end
   end
 
-  defp insert_invite_membership(
+  defp ensure_invite_membership(
          repo,
          %WorkspaceInvite{workspace_id: workspace_id},
          %User{id: user_id}
+       ) do
+    case repo.get_by(WorkspaceMembership, workspace_id: workspace_id, user_id: user_id) do
+      %WorkspaceMembership{} = membership ->
+        {:ok, {:existing_member, membership}}
+
+      nil ->
+        insert_invite_membership(repo, workspace_id, user_id)
+    end
+  end
+
+  defp insert_invite_membership(
+         repo,
+         workspace_id,
+         user_id
        ) do
     %WorkspaceMembership{}
     |> WorkspaceMembership.changeset(%{
@@ -396,10 +415,23 @@ defmodule DiscordClone.Workspaces do
     })
     |> repo.insert()
     |> case do
-      {:ok, membership} -> {:ok, membership}
+      {:ok, membership} -> {:ok, {:new_member, membership}}
       {:error, changeset} -> {:error, {:error, :invalid_membership, changeset}}
     end
   end
+
+  defp update_invite_usage(repo, %WorkspaceInvite{} = invite, {:new_member, _membership}) do
+    invite
+    |> WorkspaceInvite.changeset(%{uses_count: invite.uses_count + 1})
+    |> repo.update()
+  end
+
+  defp update_invite_usage(_repo, %WorkspaceInvite{} = invite, {:existing_member, _membership}) do
+    {:ok, invite}
+  end
+
+  defp already_member?({:existing_member, _membership}), do: true
+  defp already_member?({:new_member, _membership}), do: false
 
   defp inviter_username(%WorkspaceInvite{created_by_user: %User{username: username}}),
     do: username

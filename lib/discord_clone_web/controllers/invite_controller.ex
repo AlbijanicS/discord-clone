@@ -18,7 +18,9 @@ defmodule DiscordCloneWeb.InviteController do
   def accept(conn, %{"code" => code}) do
     case Workspaces.accept_workspace_invite(conn.assigns.current_scope, code) do
       {:ok, landing} ->
-        redirect(conn, to: ~p"/workspaces/#{landing.workspace_id}/channels/#{landing.channel_id}")
+        conn
+        |> maybe_put_already_member_flash(landing)
+        |> redirect(to: ~p"/workspaces/#{landing.workspace_id}/channels/#{landing.channel_id}")
 
       {:error, :not_found} ->
         conn
@@ -26,4 +28,9 @@ defmodule DiscordCloneWeb.InviteController do
         |> render(:not_found)
     end
   end
+
+  defp maybe_put_already_member_flash(conn, %{already_member?: true}),
+    do: put_flash(conn, :info, "You're already in this workspace.")
+
+  defp maybe_put_already_member_flash(conn, _landing), do: conn
 end
