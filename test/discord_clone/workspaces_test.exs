@@ -603,6 +603,47 @@ defmodule DiscordClone.WorkspacesTest do
       assert Workspaces.preview_workspace_invite(scope, "missing-code") == {:error, :not_found}
     end
 
+    test "returns revoked for a revoked invite" do
+      owner_scope = user_scope_fixture()
+      invited_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      invite
+      |> Ecto.Changeset.change(revoked_at: DateTime.utc_now(:second))
+      |> Repo.update!()
+
+      assert Workspaces.preview_workspace_invite(invited_scope, invite.code) == {:error, :revoked}
+    end
+
+    test "returns expired for an expired invite" do
+      owner_scope = user_scope_fixture()
+      invited_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, invite} =
+        Workspaces.create_workspace_invite(owner_scope, workspace.id, %{
+          expires_at: DateTime.add(DateTime.utc_now(:second), -1, :second)
+        })
+
+      assert Workspaces.preview_workspace_invite(invited_scope, invite.code) == {:error, :expired}
+    end
+
+    test "returns full for a fully-used invite" do
+      owner_scope = user_scope_fixture()
+      invited_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, invite} =
+        Workspaces.create_workspace_invite(owner_scope, workspace.id, %{max_uses: 1})
+
+      invite
+      |> Ecto.Changeset.change(uses_count: 1)
+      |> Repo.update!()
+
+      assert Workspaces.preview_workspace_invite(invited_scope, invite.code) == {:error, :full}
+    end
+
     test "requires an authenticated scope" do
       assert Workspaces.preview_workspace_invite(nil, "missing-code") ==
                {:error, :unauthenticated}
@@ -679,6 +720,101 @@ defmodule DiscordClone.WorkspacesTest do
              ) == 1
 
       assert Repo.get!(WorkspaceInvite, invite.id).uses_count == 0
+    end
+
+    test "rejects revoked invites without creating membership or consuming usage" do
+      owner_scope = user_scope_fixture()
+      invited_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      invite
+      |> Ecto.Changeset.change(revoked_at: DateTime.utc_now(:second))
+      |> Repo.update!()
+
+      assert Workspaces.accept_workspace_invite(invited_scope, invite.code) == {:error, :revoked}
+
+      refute Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: invited_scope.user.id
+             )
+
+      assert Repo.get!(WorkspaceInvite, invite.id).uses_count == 0
+    end
+
+    test "rejects expired invites without creating membership or consuming usage" do
+      owner_scope = user_scope_fixture()
+      invited_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, invite} =
+        Workspaces.create_workspace_invite(owner_scope, workspace.id, %{
+          expires_at: DateTime.add(DateTime.utc_now(:second), -1, :second)
+        })
+
+      assert Workspaces.accept_workspace_invite(invited_scope, invite.code) == {:error, :expired}
+
+      refute Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: invited_scope.user.id
+             )
+
+      assert Repo.get!(WorkspaceInvite, invite.id).uses_count == 0
+    end
+
+    test "rejects fully-used invites without creating membership or consuming usage" do
+      owner_scope = user_scope_fixture()
+      invited_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, invite} =
+        Workspaces.create_workspace_invite(owner_scope, workspace.id, %{max_uses: 1})
+
+      invite
+      |> Ecto.Changeset.change(uses_count: 1)
+      |> Repo.update!()
+
+      assert Workspaces.accept_workspace_invite(invited_scope, invite.code) == {:error, :full}
+
+      refute Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: invited_scope.user.id
+             )
+
+      assert Repo.get!(WorkspaceInvite, invite.id).uses_count == 1
+    end
+
+    test "treats nil max uses as unlimited until expiration or revocation" do
+      owner_scope = user_scope_fixture()
+      invited_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      invite
+      |> Ecto.Changeset.change(uses_count: 3)
+      |> Repo.update!()
+
+      assert {:ok, landing} = Workspaces.accept_workspace_invite(invited_scope, invite.code)
+
+      assert landing.workspace_id == workspace.id
+      assert landing.channel_id == workspace.default_channel_id
+
+      assert %WorkspaceMembership{role: "member"} =
+               Repo.get_by(WorkspaceMembership,
+                 workspace_id: workspace.id,
+                 user_id: invited_scope.user.id
+               )
+
+      assert Repo.get!(WorkspaceInvite, invite.id).uses_count == 4
+    end
+
+    test "returns not found for a missing invite without creating membership" do
+      invited_scope = user_scope_fixture()
+
+      assert Workspaces.accept_workspace_invite(invited_scope, "missing-code") ==
+               {:error, :not_found}
+
+      refute Repo.get_by(WorkspaceMembership, user_id: invited_scope.user.id)
     end
   end
 

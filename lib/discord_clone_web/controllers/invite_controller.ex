@@ -8,10 +8,8 @@ defmodule DiscordCloneWeb.InviteController do
       {:ok, preview} ->
         render(conn, :show, preview: preview)
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> render(:not_found)
+      {:error, reason} ->
+        render_invite_failure(conn, reason)
     end
   end
 
@@ -22,11 +20,49 @@ defmodule DiscordCloneWeb.InviteController do
         |> maybe_put_already_member_flash(landing)
         |> redirect(to: ~p"/workspaces/#{landing.workspace_id}/channels/#{landing.channel_id}")
 
-      {:error, :not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> render(:not_found)
+      {:error, reason} ->
+        render_invite_failure(conn, reason)
     end
+  end
+
+  defp render_invite_failure(conn, reason) do
+    failure = invite_failure(reason)
+
+    conn
+    |> put_status(failure.status)
+    |> render(:not_found, title: failure.title, body: failure.body)
+  end
+
+  defp invite_failure(:not_found) do
+    %{
+      status: :not_found,
+      title: "This invite link cannot be used.",
+      body: "Ask for a fresh invite link and try again."
+    }
+  end
+
+  defp invite_failure(:revoked) do
+    %{
+      status: :gone,
+      title: "This invite link is no longer active.",
+      body: "Ask for a fresh invite link and try again."
+    }
+  end
+
+  defp invite_failure(:expired) do
+    %{
+      status: :gone,
+      title: "This invite link has expired.",
+      body: "Ask for a fresh invite link and try again."
+    }
+  end
+
+  defp invite_failure(:full) do
+    %{
+      status: :gone,
+      title: "This invite link has no remaining uses.",
+      body: "Ask for a fresh invite link and try again."
+    }
   end
 
   defp maybe_put_already_member_flash(conn, %{already_member?: true}),

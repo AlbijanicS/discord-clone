@@ -227,7 +227,8 @@ defmodule DiscordClone.Workspaces do
   def can_create_workspace_invite?(_scope, _workspace), do: false
 
   def preview_workspace_invite(%Scope{user: %User{} = user}, code) when is_binary(code) do
-    with {:ok, invite} <- get_invite_by_code(code) do
+    with {:ok, invite} <- get_invite_by_code(code),
+         :ok <- validate_invite_usable(invite) do
       {:ok,
        %{
          invite_code: invite.code,
@@ -246,6 +247,12 @@ defmodule DiscordClone.Workspaces do
     Multi.new()
     |> Multi.run(:invite, fn repo, _changes ->
       get_invite_by_code_for_update(repo, code)
+    end)
+    |> Multi.run(:invite_usable, fn _repo, %{invite: invite} ->
+      case validate_invite_usable(invite) do
+        :ok -> {:ok, invite}
+        {:error, reason} -> {:error, {:error, reason}}
+      end
     end)
     |> Multi.run(:membership, fn repo, %{invite: invite} ->
       ensure_invite_membership(repo, invite, user)
@@ -387,6 +394,25 @@ defmodule DiscordClone.Workspaces do
       nil -> {:error, {:error, :not_found}}
     end
   end
+
+  defp validate_invite_usable(%WorkspaceInvite{revoked_at: %DateTime{}}),
+    do: {:error, :revoked}
+
+  defp validate_invite_usable(%WorkspaceInvite{expires_at: %DateTime{} = expires_at} = invite) do
+    if DateTime.compare(expires_at, DateTime.utc_now(:second)) == :gt do
+      validate_invite_capacity(invite)
+    else
+      {:error, :expired}
+    end
+  end
+
+  defp validate_invite_usable(%WorkspaceInvite{} = invite), do: validate_invite_capacity(invite)
+
+  defp validate_invite_capacity(%WorkspaceInvite{max_uses: max_uses, uses_count: uses_count})
+       when is_integer(max_uses) and uses_count >= max_uses,
+       do: {:error, :full}
+
+  defp validate_invite_capacity(%WorkspaceInvite{}), do: :ok
 
   defp ensure_invite_membership(
          repo,

@@ -60,6 +60,77 @@ defmodule DiscordCloneWeb.InviteControllerTest do
       refute response =~ "Accept invite"
       refute response =~ "invite-preview-accept-form"
     end
+
+    test "renders a revoked failure state without an accept control", %{conn: conn} do
+      owner_scope = user_scope_fixture()
+      invited_user = user_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      invite
+      |> Ecto.Changeset.change(revoked_at: DateTime.utc_now(:second))
+      |> Repo.update!()
+
+      conn =
+        conn
+        |> log_in_user(invited_user)
+        |> get(~p"/invites/#{invite.code}")
+
+      response = html_response(conn, 410)
+
+      assert response =~ "This invite link is no longer active."
+      assert response =~ "Ask for a fresh invite link"
+      refute response =~ "Accept invite"
+      refute response =~ "invite-preview-accept-form"
+    end
+
+    test "renders an expired failure state without an accept control", %{conn: conn} do
+      owner_scope = user_scope_fixture()
+      invited_user = user_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, invite} =
+        Workspaces.create_workspace_invite(owner_scope, workspace.id, %{
+          expires_at: DateTime.add(DateTime.utc_now(:second), -1, :second)
+        })
+
+      conn =
+        conn
+        |> log_in_user(invited_user)
+        |> get(~p"/invites/#{invite.code}")
+
+      response = html_response(conn, 410)
+
+      assert response =~ "This invite link has expired."
+      assert response =~ "Ask for a fresh invite link"
+      refute response =~ "Accept invite"
+      refute response =~ "invite-preview-accept-form"
+    end
+
+    test "renders a fully-used failure state without an accept control", %{conn: conn} do
+      owner_scope = user_scope_fixture()
+      invited_user = user_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, invite} =
+        Workspaces.create_workspace_invite(owner_scope, workspace.id, %{max_uses: 1})
+
+      invite
+      |> Ecto.Changeset.change(uses_count: 1)
+      |> Repo.update!()
+
+      conn =
+        conn
+        |> log_in_user(invited_user)
+        |> get(~p"/invites/#{invite.code}")
+
+      response = html_response(conn, 410)
+
+      assert response =~ "This invite link has no remaining uses."
+      assert response =~ "Ask for a fresh invite link"
+      refute response =~ "Accept invite"
+      refute response =~ "invite-preview-accept-form"
+    end
   end
 
   describe "POST /invites/:code/accept" do
@@ -114,6 +185,33 @@ defmodule DiscordCloneWeb.InviteControllerTest do
                ),
                :count
              ) == 1
+
+      assert Repo.get!(DiscordClone.Workspaces.WorkspaceInvite, invite.id).uses_count == 0
+    end
+
+    test "renders a failure page for expired invites without creating membership", %{conn: conn} do
+      owner_scope = user_scope_fixture()
+      invited_user = user_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, invite} =
+        Workspaces.create_workspace_invite(owner_scope, workspace.id, %{
+          expires_at: DateTime.add(DateTime.utc_now(:second), -1, :second)
+        })
+
+      conn =
+        conn
+        |> log_in_user(invited_user)
+        |> post(~p"/invites/#{invite.code}/accept")
+
+      response = html_response(conn, 410)
+
+      assert response =~ "This invite link has expired."
+
+      refute Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: invited_user.id
+             )
 
       assert Repo.get!(DiscordClone.Workspaces.WorkspaceInvite, invite.id).uses_count == 0
     end
