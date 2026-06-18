@@ -51,6 +51,7 @@ defmodule DiscordCloneWeb.Router do
     pipe_through [:browser, :require_authenticated_user]
 
     get "/invites/:code", InviteController, :show
+    post "/invites/:code/accept", InviteController, :accept
 
     live_session :require_authenticated_user,
       on_mount: [{DiscordCloneWeb.UserAuth, :require_authenticated}] do

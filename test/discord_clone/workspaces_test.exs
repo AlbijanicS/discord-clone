@@ -612,6 +612,28 @@ defmodule DiscordClone.WorkspacesTest do
     end
   end
 
+  describe "accept_workspace_invite/2" do
+    test "creates a member membership, consumes one use, and returns the landing channel" do
+      owner_scope = user_scope_fixture()
+      invited_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      assert {:ok, landing} = Workspaces.accept_workspace_invite(invited_scope, invite.code)
+
+      assert landing.workspace_id == workspace.id
+      assert landing.channel_id == workspace.default_channel_id
+
+      assert %WorkspaceMembership{role: "member"} =
+               Repo.get_by(WorkspaceMembership,
+                 workspace_id: workspace.id,
+                 user_id: invited_scope.user.id
+               )
+
+      assert Repo.get!(WorkspaceInvite, invite.id).uses_count == 1
+    end
+  end
+
   describe "rename_workspace/3" do
     test "allows a workspace member to rename a workspace" do
       scope = user_scope_fixture()

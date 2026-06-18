@@ -242,6 +242,33 @@ defmodule DiscordClone.Workspaces do
 
   def preview_workspace_invite(_scope, _code), do: {:error, :unauthenticated}
 
+  def accept_workspace_invite(%Scope{user: %User{} = user} = scope, code) when is_binary(code) do
+    Multi.new()
+    |> Multi.run(:invite, fn repo, _changes ->
+      get_invite_by_code_for_update(repo, code)
+    end)
+    |> Multi.run(:membership, fn repo, %{invite: invite} ->
+      insert_invite_membership(repo, invite, user)
+    end)
+    |> Multi.update(:invite_usage, fn %{invite: invite} ->
+      WorkspaceInvite.changeset(invite, %{uses_count: invite.uses_count + 1})
+    end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{invite: invite}} ->
+        with {:ok, channel} <- resolve_landing_channel(scope, invite.workspace_id) do
+          {:ok, %{workspace_id: invite.workspace_id, channel_id: channel.id}}
+        end
+
+      {:error, _operation, reason, _changes_so_far} ->
+        reason
+    end
+  end
+
+  def accept_workspace_invite(%Scope{user: %User{}}, _code), do: {:error, :not_found}
+
+  def accept_workspace_invite(_scope, _code), do: {:error, :unauthenticated}
+
   def rename_channel(%Scope{} = scope, workspace_id, channel_id, attrs) when is_map(attrs) do
     with {:ok, channel} <- fetch_channel(scope, workspace_id, channel_id) do
       channel
@@ -341,6 +368,36 @@ defmodule DiscordClone.Workspaces do
     case Repo.one(query) do
       %WorkspaceInvite{} = invite -> {:ok, invite}
       nil -> {:error, :not_found}
+    end
+  end
+
+  defp get_invite_by_code_for_update(repo, code) do
+    query =
+      from invite in WorkspaceInvite,
+        where: invite.code == ^code,
+        lock: "FOR UPDATE"
+
+    case repo.one(query) do
+      %WorkspaceInvite{} = invite -> {:ok, invite}
+      nil -> {:error, {:error, :not_found}}
+    end
+  end
+
+  defp insert_invite_membership(
+         repo,
+         %WorkspaceInvite{workspace_id: workspace_id},
+         %User{id: user_id}
+       ) do
+    %WorkspaceMembership{}
+    |> WorkspaceMembership.changeset(%{
+      workspace_id: workspace_id,
+      user_id: user_id,
+      role: "member"
+    })
+    |> repo.insert()
+    |> case do
+      {:ok, membership} -> {:ok, membership}
+      {:error, changeset} -> {:error, {:error, :invalid_membership, changeset}}
     end
   end
 
