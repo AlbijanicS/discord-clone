@@ -226,6 +226,22 @@ defmodule DiscordClone.Workspaces do
 
   def can_create_workspace_invite?(_scope, _workspace), do: false
 
+  def preview_workspace_invite(%Scope{user: %User{} = user}, code) when is_binary(code) do
+    with {:ok, invite} <- get_invite_by_code(code) do
+      {:ok,
+       %{
+         invite_code: invite.code,
+         workspace_name: invite.workspace.name,
+         inviter_username: inviter_username(invite),
+         accepting_username: user.username
+       }}
+    end
+  end
+
+  def preview_workspace_invite(%Scope{user: %User{}}, _code), do: {:error, :not_found}
+
+  def preview_workspace_invite(_scope, _code), do: {:error, :unauthenticated}
+
   def rename_channel(%Scope{} = scope, workspace_id, channel_id, attrs) when is_map(attrs) do
     with {:ok, channel} <- fetch_channel(scope, workspace_id, channel_id) do
       channel
@@ -315,6 +331,23 @@ defmodule DiscordClone.Workspaces do
       nil -> {:error, :not_found}
     end
   end
+
+  defp get_invite_by_code(code) do
+    query =
+      from invite in WorkspaceInvite,
+        where: invite.code == ^code,
+        preload: [:workspace, :created_by_user]
+
+    case Repo.one(query) do
+      %WorkspaceInvite{} = invite -> {:ok, invite}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp inviter_username(%WorkspaceInvite{created_by_user: %User{username: username}}),
+    do: username
+
+  defp inviter_username(_invite), do: nil
 
   defp get_workspace_membership(workspace_id, user_id) do
     case Repo.get_by(WorkspaceMembership, workspace_id: workspace_id, user_id: user_id) do

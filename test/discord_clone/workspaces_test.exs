@@ -571,6 +571,47 @@ defmodule DiscordClone.WorkspacesTest do
     end
   end
 
+  describe "preview_workspace_invite/2" do
+    test "returns privacy-safe invite details without joining or incrementing usage" do
+      owner_scope = user_scope_fixture()
+      invited_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      assert {:ok, preview} = Workspaces.preview_workspace_invite(invited_scope, invite.code)
+
+      assert preview.invite_code == invite.code
+      assert preview.workspace_name == "Foundry"
+      assert preview.inviter_username == owner_scope.user.username
+      assert preview.accepting_username == invited_scope.user.username
+      refute Map.has_key?(preview, :channels)
+      refute Map.has_key?(preview, :members)
+      refute Map.has_key?(preview, :owner_email)
+      refute Map.has_key?(preview, :inviter_email)
+
+      assert Repo.get!(WorkspaceInvite, invite.id).uses_count == 0
+
+      refute Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: invited_scope.user.id
+             )
+    end
+
+    test "returns not found for a missing invite code" do
+      scope = user_scope_fixture()
+
+      assert Workspaces.preview_workspace_invite(scope, "missing-code") == {:error, :not_found}
+    end
+
+    test "requires an authenticated scope" do
+      assert Workspaces.preview_workspace_invite(nil, "missing-code") ==
+               {:error, :unauthenticated}
+
+      assert Workspaces.preview_workspace_invite(%DiscordClone.Accounts.Scope{}, "missing-code") ==
+               {:error, :unauthenticated}
+    end
+  end
+
   describe "rename_workspace/3" do
     test "allows a workspace member to rename a workspace" do
       scope = user_scope_fixture()

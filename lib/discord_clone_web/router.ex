@@ -50,6 +50,8 @@ defmodule DiscordCloneWeb.Router do
   scope "/", DiscordCloneWeb do
     pipe_through [:browser, :require_authenticated_user]
 
+    get "/invites/:code", InviteController, :show
+
     live_session :require_authenticated_user,
       on_mount: [{DiscordCloneWeb.UserAuth, :require_authenticated}] do
       live "/workspaces", WorkspaceLive.Home, :index
