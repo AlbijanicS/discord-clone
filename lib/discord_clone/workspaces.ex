@@ -91,6 +91,23 @@ defmodule DiscordClone.Workspaces do
 
   def create_workspace(_scope, _attrs), do: {:error, :unauthenticated}
 
+  def rename_workspace(%Scope{} = scope, workspace_id, attrs) when is_map(attrs) do
+    with {:ok, workspace} <- fetch_workspace(scope, workspace_id) do
+      workspace
+      |> Workspace.changeset(workspace_attrs(workspace, attrs))
+      |> Repo.update()
+      |> case do
+        {:ok, workspace} -> {:ok, workspace}
+        {:error, changeset} -> {:error, :invalid_workspace, changeset}
+      end
+    end
+  end
+
+  def rename_workspace(%Scope{user: %User{}}, _workspace_id, _attrs),
+    do: {:error, :invalid_attrs}
+
+  def rename_workspace(_scope, _workspace_id, _attrs), do: {:error, :unauthenticated}
+
   defp create_workspace_multi(%User{} = user, attrs) do
     Multi.new()
     |> Multi.insert(:workspace, Workspace.changeset(%Workspace{}, workspace_attrs(user, attrs)))
@@ -113,6 +130,15 @@ defmodule DiscordClone.Workspaces do
       name: get_attr(attrs, :name),
       owner_id: user_id,
       invite_policy: "owner_only"
+    }
+  end
+
+  defp workspace_attrs(%Workspace{} = workspace, attrs) do
+    %{
+      name: get_attr(attrs, :name),
+      owner_id: workspace.owner_id,
+      default_channel_id: workspace.default_channel_id,
+      invite_policy: workspace.invite_policy
     }
   end
 
@@ -168,6 +194,52 @@ defmodule DiscordClone.Workspaces do
 
   def create_channel(_scope, _workspace_id, _attrs), do: {:error, :unauthenticated}
 
+  def rename_channel(%Scope{} = scope, workspace_id, channel_id, attrs) when is_map(attrs) do
+    with {:ok, channel} <- fetch_channel(scope, workspace_id, channel_id) do
+      channel
+      |> Channel.changeset(channel_attrs(workspace_id, attrs))
+      |> Repo.update()
+      |> case do
+        {:ok, channel} -> {:ok, channel}
+        {:error, changeset} -> {:error, :invalid_channel, changeset}
+      end
+    end
+  end
+
+  def rename_channel(%Scope{user: %User{}}, _workspace_id, _channel_id, _attrs),
+    do: {:error, :invalid_attrs}
+
+  def rename_channel(_scope, _workspace_id, _channel_id, _attrs), do: {:error, :unauthenticated}
+
+  def delete_channel(%Scope{} = scope, workspace_id, channel_id) do
+    with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
+         {:ok, channel} <- fetch_channel(scope, workspace_id, channel_id),
+         :ok <- reject_landing_channel_delete(workspace, channel) do
+      Repo.delete(channel)
+    end
+  end
+
+  def delete_channel(_scope, _workspace_id, _channel_id), do: {:error, :unauthenticated}
+
+  def leave_workspace(%Scope{user: %User{id: user_id}}, workspace_id) do
+    with {:ok, _workspace} <- get_workspace(workspace_id),
+         {:ok, membership} <- get_workspace_membership(workspace_id, user_id),
+         :ok <- reject_owner_leave(membership) do
+      Repo.delete(membership)
+    end
+  end
+
+  def leave_workspace(_scope, _workspace_id), do: {:error, :unauthenticated}
+
+  def delete_workspace(%Scope{user: %User{id: user_id}}, workspace_id) do
+    with {:ok, workspace} <- get_workspace(workspace_id),
+         :ok <- authorize_workspace_owner(workspace, user_id) do
+      Repo.delete(workspace)
+    end
+  end
+
+  def delete_workspace(_scope, _workspace_id), do: {:error, :unauthenticated}
+
   defp get_attr(attrs, key) do
     Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
   end
@@ -183,6 +255,13 @@ defmodule DiscordClone.Workspaces do
     case Repo.get(Workspace, workspace_id) do
       %Workspace{} = workspace -> {:ok, workspace}
       nil -> {:error, :not_found}
+    end
+  end
+
+  defp get_workspace_membership(workspace_id, user_id) do
+    case Repo.get_by(WorkspaceMembership, workspace_id: workspace_id, user_id: user_id) do
+      %WorkspaceMembership{} = membership -> {:ok, membership}
+      nil -> {:error, :unauthorized}
     end
   end
 
@@ -222,6 +301,12 @@ defmodule DiscordClone.Workspaces do
   defp authorize_channel_creation(workspace, user),
     do: authorize_workspace_access(workspace, user)
 
+  defp authorize_workspace_owner(%Workspace{owner_id: owner_id}, user_id)
+       when owner_id == user_id,
+       do: :ok
+
+  defp authorize_workspace_owner(_workspace, _user_id), do: {:error, :owner_required}
+
   defp insert_channel(%Workspace{id: workspace_id}, attrs) do
     %Channel{}
     |> Channel.changeset(channel_attrs(workspace_id, attrs))
@@ -231,6 +316,18 @@ defmodule DiscordClone.Workspaces do
       {:error, changeset} -> {:error, :invalid_channel, changeset}
     end
   end
+
+  defp reject_landing_channel_delete(
+         %Workspace{default_channel_id: default_channel_id},
+         %Channel{id: channel_id}
+       )
+       when default_channel_id == channel_id,
+       do: {:error, :landing_channel_required}
+
+  defp reject_landing_channel_delete(_workspace, _channel), do: :ok
+
+  defp reject_owner_leave(%WorkspaceMembership{role: "owner"}), do: {:error, :owner_must_delete}
+  defp reject_owner_leave(_membership), do: :ok
 
   defp workspace_member?(workspace_id, user_id) do
     Repo.exists?(

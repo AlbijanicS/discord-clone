@@ -474,4 +474,295 @@ defmodule DiscordClone.WorkspacesTest do
       assert Ecto.Changeset.get_change(changeset, :name) == "main-room"
     end
   end
+
+  describe "rename_workspace/3" do
+    test "allows a workspace member to rename a workspace" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
+
+      assert {:ok, renamed_workspace} =
+               Workspaces.rename_workspace(scope, workspace.id, %{name: "Design Guild"})
+
+      assert renamed_workspace.id == workspace.id
+      assert renamed_workspace.name == "Design Guild"
+    end
+
+    test "returns an invalid workspace changeset for invalid input" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
+
+      assert {:error, :invalid_workspace, changeset} =
+               Workspaces.rename_workspace(scope, workspace.id, %{name: ""})
+
+      assert errors_on(changeset).name == ["can't be blank"]
+    end
+
+    test "rejects logged-in users who are not workspace members" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Private Server"})
+
+      assert Workspaces.rename_workspace(non_member_scope, workspace.id, %{name: "New Name"}) ==
+               {:error, :unauthorized}
+    end
+
+    test "distinguishes missing workspaces, unauthenticated scopes, and invalid attrs" do
+      scope = user_scope_fixture()
+
+      assert Workspaces.rename_workspace(scope, -1, %{name: "New Name"}) == {:error, :not_found}
+
+      assert Workspaces.rename_workspace(nil, 1, %{name: "New Name"}) ==
+               {:error, :unauthenticated}
+
+      assert Workspaces.rename_workspace(%DiscordClone.Accounts.Scope{}, 1, %{name: "New Name"}) ==
+               {:error, :unauthenticated}
+
+      assert Workspaces.rename_workspace(scope, 1, "bad attrs") == {:error, :invalid_attrs}
+    end
+  end
+
+  describe "rename_channel/4" do
+    test "allows a workspace member to rename a channel" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
+      {:ok, channel} = Workspaces.create_channel(scope, workspace.id, %{name: "planning"})
+
+      assert {:ok, renamed_channel} =
+               Workspaces.rename_channel(scope, workspace.id, channel.id, %{name: "Design Room"})
+
+      assert renamed_channel.id == channel.id
+      assert renamed_channel.workspace_id == workspace.id
+      assert renamed_channel.name == "design-room"
+    end
+
+    test "allows renaming the landing channel without changing the landing channel id" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
+      landing_channel = Repo.get!(Channel, workspace.default_channel_id)
+
+      assert {:ok, renamed_channel} =
+               Workspaces.rename_channel(scope, workspace.id, landing_channel.id, %{
+                 name: "Welcome Desk"
+               })
+
+      assert renamed_channel.id == workspace.default_channel_id
+      assert renamed_channel.name == "welcome-desk"
+      assert Repo.reload!(workspace).default_channel_id == landing_channel.id
+    end
+
+    test "returns not found when the workspace or channel is missing" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
+
+      assert Workspaces.rename_channel(scope, -1, workspace.default_channel_id, %{name: "new"}) ==
+               {:error, :not_found}
+
+      assert Workspaces.rename_channel(scope, workspace.id, -1, %{name: "new"}) ==
+               {:error, :not_found}
+    end
+
+    test "returns not found when the channel belongs to another workspace" do
+      scope = user_scope_fixture()
+      {:ok, selected_workspace} = Workspaces.create_workspace(scope, %{name: "Selected"})
+      {:ok, other_workspace} = Workspaces.create_workspace(scope, %{name: "Other"})
+      other_channel = Repo.get!(Channel, other_workspace.default_channel_id)
+
+      assert Workspaces.rename_channel(scope, selected_workspace.id, other_channel.id, %{
+               name: "new"
+             }) == {:error, :not_found}
+    end
+
+    test "rejects logged-in users who are not workspace members" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Private Server"})
+
+      assert Workspaces.rename_channel(
+               non_member_scope,
+               workspace.id,
+               workspace.default_channel_id,
+               %{name: "new"}
+             ) == {:error, :unauthorized}
+    end
+
+    test "requires an authenticated scope" do
+      assert Workspaces.rename_channel(nil, 1, 1, %{name: "new"}) == {:error, :unauthenticated}
+
+      assert Workspaces.rename_channel(%DiscordClone.Accounts.Scope{}, 1, 1, %{name: "new"}) ==
+               {:error, :unauthenticated}
+    end
+
+    test "returns an invalid channel changeset for invalid input" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
+
+      assert {:error, :invalid_channel, changeset} =
+               Workspaces.rename_channel(scope, workspace.id, workspace.default_channel_id, %{
+                 name: ""
+               })
+
+      assert errors_on(changeset).name == ["can't be blank"]
+    end
+
+    test "rejects duplicate normalized names inside the same workspace" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
+      {:ok, channel} = Workspaces.create_channel(scope, workspace.id, %{name: "Planning"})
+
+      assert {:error, :invalid_channel, changeset} =
+               Workspaces.rename_channel(scope, workspace.id, channel.id, %{name: "general"})
+
+      assert errors_on(changeset).name == ["has already been taken"]
+    end
+  end
+
+  describe "delete_channel/3" do
+    test "deletes a non-landing channel" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
+      {:ok, channel} = Workspaces.create_channel(scope, workspace.id, %{name: "planning"})
+
+      assert {:ok, deleted_channel} = Workspaces.delete_channel(scope, workspace.id, channel.id)
+
+      assert deleted_channel.id == channel.id
+      refute Repo.get(Channel, channel.id)
+    end
+
+    test "rejects deleting the landing channel" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
+
+      assert Workspaces.delete_channel(scope, workspace.id, workspace.default_channel_id) ==
+               {:error, :landing_channel_required}
+
+      assert Repo.get(Channel, workspace.default_channel_id)
+    end
+
+    test "returns not found when the workspace or channel is missing" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
+
+      assert Workspaces.delete_channel(scope, -1, workspace.default_channel_id) ==
+               {:error, :not_found}
+
+      assert Workspaces.delete_channel(scope, workspace.id, -1) == {:error, :not_found}
+    end
+
+    test "returns not found when the channel belongs to another workspace" do
+      scope = user_scope_fixture()
+      {:ok, selected_workspace} = Workspaces.create_workspace(scope, %{name: "Selected"})
+      {:ok, other_workspace} = Workspaces.create_workspace(scope, %{name: "Other"})
+
+      {:ok, other_channel} =
+        Workspaces.create_channel(scope, other_workspace.id, %{name: "other"})
+
+      assert Workspaces.delete_channel(scope, selected_workspace.id, other_channel.id) ==
+               {:error, :not_found}
+    end
+
+    test "rejects logged-in users who are not workspace members" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Private Server"})
+      {:ok, channel} = Workspaces.create_channel(owner_scope, workspace.id, %{name: "planning"})
+
+      assert Workspaces.delete_channel(non_member_scope, workspace.id, channel.id) ==
+               {:error, :unauthorized}
+
+      assert Repo.get(Channel, channel.id)
+    end
+
+    test "requires an authenticated scope" do
+      assert Workspaces.delete_channel(nil, 1, 1) == {:error, :unauthenticated}
+
+      assert Workspaces.delete_channel(%DiscordClone.Accounts.Scope{}, 1, 1) ==
+               {:error, :unauthenticated}
+    end
+  end
+
+  describe "leave_workspace/2" do
+    test "allows a non-owner workspace member to leave a workspace" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Team Space"})
+      add_workspace_member!(workspace, member_scope)
+
+      assert {:ok, %WorkspaceMembership{}} =
+               Workspaces.leave_workspace(member_scope, workspace.id)
+
+      refute Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: member_scope.user.id
+             )
+
+      assert Workspaces.list_workspaces(member_scope) == {:ok, []}
+    end
+
+    test "requires owners to delete the workspace instead of leaving" do
+      owner_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Team Space"})
+
+      assert Workspaces.leave_workspace(owner_scope, workspace.id) == {:error, :owner_must_delete}
+
+      assert Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: owner_scope.user.id
+             )
+    end
+
+    test "distinguishes missing workspaces, non-members, and unauthenticated scopes" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Team Space"})
+
+      assert Workspaces.leave_workspace(owner_scope, -1) == {:error, :not_found}
+      assert Workspaces.leave_workspace(non_member_scope, workspace.id) == {:error, :unauthorized}
+      assert Workspaces.leave_workspace(nil, workspace.id) == {:error, :unauthenticated}
+
+      assert Workspaces.leave_workspace(%DiscordClone.Accounts.Scope{}, workspace.id) ==
+               {:error, :unauthenticated}
+    end
+  end
+
+  describe "delete_workspace/2" do
+    test "allows the owner to delete a workspace" do
+      owner_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Team Space"})
+      {:ok, channel} = Workspaces.create_channel(owner_scope, workspace.id, %{name: "planning"})
+
+      assert {:ok, deleted_workspace} = Workspaces.delete_workspace(owner_scope, workspace.id)
+
+      assert deleted_workspace.id == workspace.id
+      refute Repo.get(DiscordClone.Workspaces.Workspace, workspace.id)
+      refute Repo.get(Channel, channel.id)
+      refute Repo.get_by(WorkspaceMembership, workspace_id: workspace.id)
+      assert Workspaces.list_workspaces(owner_scope) == {:ok, []}
+    end
+
+    test "rejects non-owners, missing workspaces, and unauthenticated scopes" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Team Space"})
+      add_workspace_member!(workspace, member_scope)
+
+      assert Workspaces.delete_workspace(member_scope, workspace.id) == {:error, :owner_required}
+      assert Workspaces.delete_workspace(owner_scope, -1) == {:error, :not_found}
+      assert Workspaces.delete_workspace(nil, workspace.id) == {:error, :unauthenticated}
+
+      assert Workspaces.delete_workspace(%DiscordClone.Accounts.Scope{}, workspace.id) ==
+               {:error, :unauthenticated}
+
+      assert Repo.get(DiscordClone.Workspaces.Workspace, workspace.id)
+    end
+  end
+
+  defp add_workspace_member!(workspace, scope) do
+    %WorkspaceMembership{}
+    |> WorkspaceMembership.changeset(%{
+      workspace_id: workspace.id,
+      user_id: scope.user.id,
+      role: "member"
+    })
+    |> Repo.insert!()
+  end
 end

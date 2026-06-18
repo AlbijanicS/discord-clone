@@ -25,11 +25,34 @@ import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/discord_clone"
 import topbar from "../vendor/topbar"
 
+const Hooks = {
+  ContextMenu: {
+    mounted() {
+      this.handleContextMenu = event => {
+        event.preventDefault()
+
+        this.pushEvent("open_context_menu", {
+          type: this.el.dataset.contextMenuType,
+          id: this.el.dataset.contextMenuId,
+          x: event.clientX,
+          y: event.clientY,
+        })
+      }
+
+      this.el.addEventListener("contextmenu", this.handleContextMenu)
+    },
+
+    destroyed() {
+      this.el.removeEventListener("contextmenu", this.handleContextMenu)
+    },
+  },
+}
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks},
+  hooks: {...colocatedHooks, ...Hooks},
 })
 
 // Show progress bar on live navigation and form submits
@@ -80,4 +103,3 @@ if (process.env.NODE_ENV === "development") {
     window.liveReloader = reloader
   })
 }
-

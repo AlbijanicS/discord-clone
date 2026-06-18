@@ -7,8 +7,15 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   attr :selected_channel, :any, default: nil
   attr :workspace_form, :any, default: nil
   attr :show_workspace_form?, :boolean, default: false
+  attr :workspace_action_menu_id, :integer, default: nil
+  attr :renaming_workspace_id, :integer, default: nil
+  attr :workspace_rename_form, :any, default: nil
   attr :channel_form, :any, default: nil
   attr :show_channel_form?, :boolean, default: false
+  attr :channel_action_menu_id, :integer, default: nil
+  attr :renaming_channel_id, :integer, default: nil
+  attr :channel_rename_form, :any, default: nil
+  attr :context_menu_position, :map, default: nil
   attr :current_scope, :any, default: nil
   attr :main_state, :atom, default: :no_workspace
 
@@ -51,6 +58,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
             id={workspace_dom_id(dom_id, workspace, @selected_workspace)}
             navigate={~p"/workspaces/#{workspace.id}"}
             aria-current={selected_workspace_aria(workspace, @selected_workspace)}
+            phx-hook={selected_workspace?(workspace, @selected_workspace) && "ContextMenu"}
             class={[
               "flex min-h-11 w-full shrink-0 items-center rounded px-3 text-sm font-semibold shadow-sm ring-1 transition hover:-translate-y-0.5",
               selected_workspace?(workspace, @selected_workspace) &&
@@ -59,6 +67,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                 "bg-base-100 ring-base-300 hover:bg-primary hover:text-primary-content"
             ]}
             data-stream-id={dom_id}
+            data-context-menu-type="workspace"
+            data-context-menu-id={workspace.id}
             aria-label={"Open #{workspace.name}"}
           >
             <span class="truncate">{workspace.name}</span>
@@ -92,7 +102,79 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
         <div class="min-h-0 flex-1 overflow-y-auto p-4">
           <%= if @selected_workspace do %>
             <div class="mb-4">
-              <p class="text-sm font-semibold">{@selected_workspace.name}</p>
+              <div class="relative flex items-center justify-between gap-2">
+                <%= if @renaming_workspace_id == @selected_workspace.id && @workspace_rename_form do %>
+                  <.form
+                    for={@workspace_rename_form}
+                    id={"workspace-#{@selected_workspace.id}-rename-form"}
+                    phx-submit="rename_workspace"
+                    phx-value-workspace_id={@selected_workspace.id}
+                    class="min-w-0 flex-1"
+                  >
+                    <.input
+                      field={@workspace_rename_form[:name]}
+                      type="text"
+                      label="Workspace name"
+                      autocomplete="off"
+                    />
+                  </.form>
+                <% else %>
+                  <p id="selected-workspace-name" class="min-w-0 truncate text-sm font-semibold">
+                    {@selected_workspace.name}
+                  </p>
+                <% end %>
+                <button
+                  id={"workspace-#{@selected_workspace.id}-actions"}
+                  type="button"
+                  class="btn btn-square btn-xs btn-ghost shrink-0 transition hover:scale-105"
+                  phx-click="open_workspace_actions"
+                  phx-value-workspace_id={@selected_workspace.id}
+                  aria-label={"Open #{@selected_workspace.name} workspace actions"}
+                >
+                  <.icon name="hero-ellipsis-horizontal" class="size-4" />
+                </button>
+                <div
+                  :if={@workspace_action_menu_id == @selected_workspace.id}
+                  id={"workspace-#{@selected_workspace.id}-menu"}
+                  style={context_menu_style(@context_menu_position)}
+                  class={menu_class(@context_menu_position, "absolute right-0 top-8", "w-40")}
+                  phx-click-away="close_context_menu"
+                  phx-window-keydown="close_context_menu"
+                  phx-key="escape"
+                >
+                  <button
+                    id={"workspace-#{@selected_workspace.id}-rename"}
+                    type="button"
+                    class="block w-full rounded px-3 py-2 text-left text-sm transition hover:bg-base-200"
+                    phx-click="begin_workspace_rename"
+                    phx-value-workspace_id={@selected_workspace.id}
+                  >
+                    Rename
+                  </button>
+                  <button
+                    :if={workspace_owner?(@selected_workspace, @current_scope)}
+                    id={"workspace-#{@selected_workspace.id}-delete"}
+                    type="button"
+                    class="block w-full rounded px-3 py-2 text-left text-sm text-error transition hover:bg-error/10"
+                    phx-click="delete_workspace"
+                    phx-value-workspace_id={@selected_workspace.id}
+                    phx-confirm="Delete this workspace? The workspace and all contained channels/messages will be removed."
+                  >
+                    Delete workspace
+                  </button>
+                  <button
+                    :if={!workspace_owner?(@selected_workspace, @current_scope)}
+                    id={"workspace-#{@selected_workspace.id}-leave"}
+                    type="button"
+                    class="block w-full rounded px-3 py-2 text-left text-sm text-error transition hover:bg-error/10"
+                    phx-click="leave_workspace"
+                    phx-value-workspace_id={@selected_workspace.id}
+                    phx-confirm="Leave this workspace? You will lose access and need a new invite to return."
+                  >
+                    Leave workspace
+                  </button>
+                </div>
+              </div>
               <div class="mt-1 flex items-center justify-between gap-2">
                 <p class="text-xs font-semibold uppercase tracking-wide text-base-content/50">
                   Channels
@@ -114,22 +196,86 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
               <div id="channel-empty-state" class="hidden only:block text-sm text-base-content/60">
                 No channels yet.
               </div>
-              <.link
-                :for={{dom_id, channel} <- @channel_stream}
-                id={"channel-#{channel.id}"}
-                navigate={~p"/workspaces/#{@selected_workspace.id}/channels/#{channel.id}"}
-                aria-current={selected_channel_aria(channel, @selected_channel)}
-                class={[
-                  "block rounded px-3 py-2 text-sm transition",
-                  selected_channel?(channel, @selected_channel) &&
-                    "bg-base-300 font-semibold text-base-content",
-                  !selected_channel?(channel, @selected_channel) &&
-                    "text-base-content/70 hover:bg-base-300 hover:text-base-content"
-                ]}
-                data-stream-id={dom_id}
-              >
-                # {channel.name}
-              </.link>
+              <div :for={{dom_id, channel} <- @channel_stream} id={dom_id}>
+                <div
+                  id={"channel-#{channel.id}"}
+                  aria-current={selected_channel_aria(channel, @selected_channel)}
+                  phx-hook="ContextMenu"
+                  data-context-menu-type="channel"
+                  data-context-menu-id={channel.id}
+                  class={[
+                    "group relative flex items-center gap-1 rounded text-sm transition",
+                    selected_channel?(channel, @selected_channel) &&
+                      "bg-base-300 font-semibold text-base-content",
+                    !selected_channel?(channel, @selected_channel) &&
+                      "text-base-content/70 hover:bg-base-300 hover:text-base-content"
+                  ]}
+                >
+                  <%= if @renaming_channel_id == channel.id && @channel_rename_form do %>
+                    <.form
+                      for={@channel_rename_form}
+                      id={"channel-#{channel.id}-rename-form"}
+                      phx-submit="rename_channel"
+                      phx-value-channel_id={channel.id}
+                      class="min-w-0 flex-1 px-2 py-1"
+                    >
+                      <.input
+                        field={@channel_rename_form[:name]}
+                        type="text"
+                        label="Channel name"
+                        autocomplete="off"
+                      />
+                    </.form>
+                  <% else %>
+                    <.link
+                      navigate={~p"/workspaces/#{@selected_workspace.id}/channels/#{channel.id}"}
+                      class="min-w-0 flex-1 truncate px-3 py-2"
+                    >
+                      # {channel.name}
+                    </.link>
+                  <% end %>
+                  <button
+                    id={"channel-#{channel.id}-actions"}
+                    type="button"
+                    class="btn btn-square btn-xs btn-ghost mr-1 opacity-80 transition hover:opacity-100"
+                    phx-click="open_channel_actions"
+                    phx-value-channel_id={channel.id}
+                    aria-label={"Open #{channel.name} channel actions"}
+                  >
+                    <.icon name="hero-ellipsis-horizontal" class="size-4" />
+                  </button>
+                  <div
+                    :if={@channel_action_menu_id == channel.id}
+                    id={"channel-#{channel.id}-menu"}
+                    style={context_menu_style(@context_menu_position)}
+                    class={menu_class(@context_menu_position, "absolute mt-10 ml-8", "w-36")}
+                    phx-click-away="close_context_menu"
+                    phx-window-keydown="close_context_menu"
+                    phx-key="escape"
+                  >
+                    <button
+                      id={"channel-#{channel.id}-rename"}
+                      type="button"
+                      class="block w-full rounded px-3 py-2 text-left text-sm transition hover:bg-base-200"
+                      phx-click="begin_channel_rename"
+                      phx-value-channel_id={channel.id}
+                    >
+                      Rename
+                    </button>
+                    <button
+                      :if={@selected_workspace.default_channel_id != channel.id}
+                      id={"channel-#{channel.id}-delete"}
+                      type="button"
+                      class="block w-full rounded px-3 py-2 text-left text-sm text-error transition hover:bg-error/10"
+                      phx-click="delete_channel"
+                      phx-value-channel_id={channel.id}
+                      phx-confirm="Delete this channel? The channel and future messages in it will be removed."
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <.form
@@ -193,7 +339,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
         <%= case @main_state do %>
           <% :channel -> %>
             <header class="border-b border-base-300 px-6 py-4">
-              <p class="text-sm font-semibold"># {@selected_channel.name}</p>
+              <p id="selected-channel-title" class="text-sm font-semibold">
+                # {@selected_channel.name}
+              </p>
             </header>
             <div id="channel-main" class="min-h-0 flex-1 p-6">
               <div class="flex h-full items-center justify-center text-center">
@@ -260,6 +408,24 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   defp selected_channel_aria(channel, selected_channel) do
     if selected_channel?(channel, selected_channel), do: "page"
   end
+
+  defp workspace_owner?(workspace, current_scope) do
+    current_scope && current_scope.user && workspace.owner_id == current_scope.user.id
+  end
+
+  defp context_menu_style(%{x: x, y: y}), do: "left: #{x}px; top: #{y}px;"
+  defp context_menu_style(_position), do: nil
+
+  defp menu_class(nil, anchor_class, width_class),
+    do: [
+      anchor_class,
+      "z-20",
+      width_class,
+      "rounded border border-base-300 bg-base-100 p-1 shadow-lg"
+    ]
+
+  defp menu_class(_position, _anchor_class, width_class),
+    do: ["fixed z-50", width_class, "rounded border border-base-300 bg-base-100 p-1 shadow-lg"]
 
   defp user_initial(user) do
     user.username
