@@ -18,6 +18,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   attr :context_menu_position, :map, default: nil
   attr :current_scope, :any, default: nil
   attr :main_state, :atom, default: :no_workspace
+  attr :invite_form, :any, default: nil
+  attr :invite_url, :string, default: nil
 
   def app(assigns) do
     ~H"""
@@ -123,6 +125,15 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                     {@selected_workspace.name}
                   </p>
                 <% end %>
+                <.link
+                  :if={workspace_owner?(@selected_workspace, @current_scope)}
+                  id={"workspace-#{@selected_workspace.id}-invite-new"}
+                  navigate={~p"/workspaces/#{@selected_workspace.id}/invites/new"}
+                  class="btn btn-square btn-xs btn-ghost shrink-0 transition hover:scale-105"
+                  aria-label={"Create invite for #{@selected_workspace.name}"}
+                >
+                  <.icon name="hero-user-plus" class="size-4" />
+                </.link>
                 <button
                   id={"workspace-#{@selected_workspace.id}-actions"}
                   type="button"
@@ -374,6 +385,61 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                 </p>
               </div>
             </div>
+          <% :invite -> %>
+            <section
+              id="workspace-invite-main"
+              class="mx-auto flex min-h-full w-full max-w-2xl items-center"
+            >
+              <div class="w-full rounded border border-base-300 bg-base-100 p-6 shadow-sm">
+                <p class="text-xs font-semibold uppercase tracking-wide text-primary">
+                  Invite people
+                </p>
+                <h1 class="mt-2 text-2xl font-semibold tracking-tight">
+                  Create an invite for {@selected_workspace.name}
+                </h1>
+                <p class="mt-2 text-sm text-base-content/60">
+                  Generate a fresh link that expires in 30 minutes.
+                </p>
+
+                <.form
+                  for={@invite_form}
+                  id="workspace-invite-create-form"
+                  phx-submit="create_workspace_invite"
+                  class="mt-6"
+                >
+                  <.button type="submit" class="btn btn-primary">
+                    Create invite link
+                  </.button>
+                </.form>
+
+                <div :if={@invite_url} id="workspace-invite-result" class="mt-6 space-y-2">
+                  <label
+                    for="workspace-invite-url"
+                    class="text-xs font-semibold uppercase tracking-wide text-base-content/50"
+                  >
+                    Invite link
+                  </label>
+                  <div class="flex gap-2">
+                    <input
+                      id="workspace-invite-url"
+                      type="text"
+                      value={@invite_url}
+                      readonly
+                      class="input input-bordered min-w-0 flex-1 select-text font-mono text-sm"
+                    />
+                    <button
+                      id="workspace-invite-copy"
+                      type="button"
+                      class="btn btn-square btn-outline"
+                      aria-label="Copy invite link"
+                      data-copy-target="workspace-invite-url"
+                    >
+                      <.icon name="hero-clipboard-document" class="size-4" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </section>
           <% :no_workspace -> %>
             <div class="flex h-full items-center justify-center text-center">
               <div>

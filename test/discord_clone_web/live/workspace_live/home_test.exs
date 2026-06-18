@@ -1,10 +1,11 @@
 defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
   use DiscordCloneWeb.ConnCase, async: true
 
+  import Ecto.Query
   import Phoenix.LiveViewTest
 
   alias DiscordClone.Workspaces
-  alias DiscordClone.Workspaces.{Channel, WorkspaceMembership}
+  alias DiscordClone.Workspaces.{Channel, WorkspaceInvite, WorkspaceMembership}
   alias DiscordClone.Repo
 
   describe "/workspaces authentication" do
@@ -724,6 +725,74 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#channel-create-form")
       assert has_element?(view, "#channel_name.input-error")
       assert has_element?(view, "#channel-create-form", "can't be blank")
+    end
+  end
+
+  describe "/workspaces/:workspace_id/invites/new" do
+    setup :register_and_log_in_user
+
+    test "renders the workspace shell without creating an invite", %{conn: conn, scope: scope} do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/invites/new")
+
+      assert has_element?(view, "#workspace-app-shell")
+      assert has_element?(view, "#workspace-#{workspace.id}[aria-current='page']")
+      assert has_element?(view, "#workspace-#{workspace.id}-invite-new")
+      assert has_element?(view, "#channel-#{workspace.default_channel_id}")
+      refute has_element?(view, "#channel-#{workspace.default_channel_id}[aria-current='page']")
+      assert has_element?(view, "#workspace-invite-create-form")
+      assert Repo.aggregate(WorkspaceInvite, :count) == 0
+    end
+
+    test "submitting the form creates and displays a selectable absolute invite URL", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/invites/new")
+
+      view
+      |> form("#workspace-invite-create-form", invite: %{})
+      |> render_submit()
+
+      invite = Repo.one!(WorkspaceInvite)
+      invite_url = DiscordCloneWeb.Endpoint.url() <> "/invites/#{invite.code}"
+
+      assert has_element?(view, "#workspace-invite-url[value='#{invite_url}']")
+      assert has_element?(view, "#workspace-invite-copy")
+    end
+
+    test "submitting twice replaces the displayed link with a fresh invite URL", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/invites/new")
+
+      view
+      |> form("#workspace-invite-create-form", invite: %{})
+      |> render_submit()
+
+      first_invite = Repo.one!(WorkspaceInvite)
+      first_url = DiscordCloneWeb.Endpoint.url() <> "/invites/#{first_invite.code}"
+
+      view
+      |> form("#workspace-invite-create-form", invite: %{})
+      |> render_submit()
+
+      second_invite =
+        WorkspaceInvite
+        |> order_by([invite], desc: invite.id)
+        |> limit(1)
+        |> Repo.one!()
+
+      second_url = DiscordCloneWeb.Endpoint.url() <> "/invites/#{second_invite.code}"
+
+      assert first_invite.code != second_invite.code
+      assert Repo.aggregate(WorkspaceInvite, :count) == 2
+      assert has_element?(view, "#workspace-invite-url[value='#{second_url}']")
+      refute has_element?(view, "#workspace-invite-url[value='#{first_url}']")
     end
   end
 

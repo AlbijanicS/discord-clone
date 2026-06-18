@@ -2,7 +2,7 @@ defmodule DiscordClone.WorkspacesTest do
   use DiscordClone.DataCase
 
   alias DiscordClone.Workspaces
-  alias DiscordClone.Workspaces.{Channel, WorkspaceMembership}
+  alias DiscordClone.Workspaces.{Channel, WorkspaceInvite, WorkspaceMembership}
 
   import DiscordClone.AccountsFixtures
   import DiscordClone.WorkspacesFixtures
@@ -472,6 +472,77 @@ defmodule DiscordClone.WorkspacesTest do
       assert %Ecto.Changeset{} = changeset
       assert Ecto.Changeset.get_field(changeset, :workspace_id) == 123
       assert Ecto.Changeset.get_change(changeset, :name) == "main-room"
+    end
+  end
+
+  describe "create_workspace_invite/3" do
+    test "allows the workspace owner to create a fresh 30-minute invite" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      before_create = DateTime.utc_now(:second)
+
+      assert {:ok, invite} = Workspaces.create_workspace_invite(scope, workspace.id)
+
+      assert %WorkspaceInvite{} = invite
+      assert invite.workspace_id == workspace.id
+      assert invite.created_by_user_id == scope.user.id
+      assert invite.uses_count == 0
+      assert invite.revoked_at == nil
+      assert invite.max_uses == nil
+      assert invite.code =~ ~r/^[A-Za-z0-9_-]{32}$/
+
+      expires_at_lower_bound = DateTime.add(before_create, 30, :minute)
+      expires_at_upper_bound = DateTime.add(DateTime.utc_now(:second), 30, :minute)
+
+      assert DateTime.compare(invite.expires_at, expires_at_lower_bound) in [:eq, :gt]
+      assert DateTime.compare(invite.expires_at, expires_at_upper_bound) in [:eq, :lt]
+    end
+
+    test "ignores server-owned attributes while accepting controlled expiration and max uses" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, spoofed_workspace} = Workspaces.create_workspace(scope, %{name: "Spoofed"})
+      expires_at = DateTime.add(DateTime.utc_now(:second), 2, :hour)
+
+      assert {:ok, invite} =
+               Workspaces.create_workspace_invite(scope, workspace.id, %{
+                 "workspace_id" => spoofed_workspace.id,
+                 "created_by_user_id" => other_scope.user.id,
+                 "code" => "spoofed-code",
+                 "expires_at" => expires_at,
+                 "max_uses" => 5,
+                 "uses_count" => 99,
+                 "revoked_at" => DateTime.utc_now(:second)
+               })
+
+      assert invite.workspace_id == workspace.id
+      assert invite.created_by_user_id == scope.user.id
+      assert invite.code != "spoofed-code"
+      assert invite.expires_at == expires_at
+      assert invite.max_uses == 5
+      assert invite.uses_count == 0
+      assert invite.revoked_at == nil
+    end
+  end
+
+  describe "change_workspace_invite/1" do
+    test "returns an invite changeset for form usage with controlled fields only" do
+      expires_at = DateTime.add(DateTime.utc_now(:second), 1, :hour)
+
+      changeset =
+        Workspaces.change_workspace_invite(%{
+          "workspace_id" => 456,
+          "code" => "spoofed-code",
+          "expires_at" => expires_at,
+          "max_uses" => 3
+        })
+
+      assert %Ecto.Changeset{} = changeset
+      assert Ecto.Changeset.get_field(changeset, :workspace_id) == nil
+      assert Ecto.Changeset.get_change(changeset, :code) == nil
+      assert Ecto.Changeset.get_change(changeset, :expires_at) == expires_at
+      assert Ecto.Changeset.get_change(changeset, :max_uses) == 3
     end
   end
 

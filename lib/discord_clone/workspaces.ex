@@ -12,7 +12,7 @@ defmodule DiscordClone.Workspaces do
   alias Ecto.Multi
   alias DiscordClone.Accounts.{Scope, User}
   alias DiscordClone.Repo
-  alias DiscordClone.Workspaces.{Channel, Workspace, WorkspaceMembership}
+  alias DiscordClone.Workspaces.{Channel, Workspace, WorkspaceInvite, WorkspaceMembership}
 
   def list_workspaces(%Scope{user: %User{id: user_id}}) do
     workspaces =
@@ -194,6 +194,30 @@ defmodule DiscordClone.Workspaces do
 
   def create_channel(_scope, _workspace_id, _attrs), do: {:error, :unauthenticated}
 
+  def change_workspace_invite(attrs \\ %{}) when is_map(attrs) do
+    WorkspaceInvite.changeset(%WorkspaceInvite{}, invite_form_attrs(attrs))
+  end
+
+  def create_workspace_invite(scope, workspace_id, attrs \\ %{})
+
+  def create_workspace_invite(%Scope{user: %User{} = user} = scope, workspace_id, attrs)
+      when is_map(attrs) do
+    with {:ok, %Workspace{id: workspace_id}} <- fetch_workspace(scope, workspace_id) do
+      %WorkspaceInvite{}
+      |> WorkspaceInvite.changeset(invite_creation_attrs(workspace_id, user, attrs))
+      |> Repo.insert()
+      |> case do
+        {:ok, invite} -> {:ok, invite}
+        {:error, changeset} -> {:error, :invalid_invite, changeset}
+      end
+    end
+  end
+
+  def create_workspace_invite(%Scope{user: %User{}}, _workspace_id, _attrs),
+    do: {:error, :invalid_attrs}
+
+  def create_workspace_invite(_scope, _workspace_id, _attrs), do: {:error, :unauthenticated}
+
   def rename_channel(%Scope{} = scope, workspace_id, channel_id, attrs) when is_map(attrs) do
     with {:ok, channel} <- fetch_channel(scope, workspace_id, channel_id) do
       channel
@@ -249,6 +273,32 @@ defmodule DiscordClone.Workspaces do
       name: get_attr(attrs, :name),
       workspace_id: workspace_id
     }
+  end
+
+  defp invite_form_attrs(attrs) do
+    %{
+      expires_at: get_attr(attrs, :expires_at),
+      max_uses: get_attr(attrs, :max_uses)
+    }
+  end
+
+  defp invite_creation_attrs(workspace_id, user, attrs) do
+    %{
+      workspace_id: workspace_id,
+      created_by_user_id: user.id,
+      code: invite_code(),
+      expires_at:
+        get_attr(attrs, :expires_at) || DateTime.add(DateTime.utc_now(:second), 30, :minute),
+      max_uses: get_attr(attrs, :max_uses),
+      uses_count: 0,
+      revoked_at: nil
+    }
+  end
+
+  defp invite_code do
+    24
+    |> :crypto.strong_rand_bytes()
+    |> Base.url_encode64(padding: false)
   end
 
   defp get_workspace(workspace_id) do
