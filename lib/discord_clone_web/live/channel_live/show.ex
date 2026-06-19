@@ -21,6 +21,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:show_workspace_form?, false)
         |> assign(:channel_form, channel_form(workspace.id))
         |> assign(:show_channel_form?, false)
+        |> assign(:message_form, message_form())
         |> assign(:workspace_action_menu_id, nil)
         |> assign(:renaming_workspace_id, nil)
         |> assign(:workspace_rename_form, nil)
@@ -109,6 +110,31 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               </div>
             </article>
           </div>
+          <div class="border-t border-base-300/70 bg-base-100 px-5 py-4">
+            <.form
+              for={@message_form}
+              id="message-composer-form"
+              phx-submit="send_message"
+              class="flex items-start gap-3"
+            >
+              <div class="min-w-0 flex-1">
+                <.input
+                  field={@message_form[:content]}
+                  type="text"
+                  placeholder={"Message ##{@selected_channel.name}"}
+                  autocomplete="off"
+                  class="w-full rounded border border-base-300 bg-base-200/70 px-4 py-3 text-sm text-base-content outline-none transition placeholder:text-base-content/40 focus:border-primary focus:bg-base-100 focus:ring-2 focus:ring-primary/20"
+                />
+              </div>
+              <button
+                id="message-composer-submit"
+                type="submit"
+                class="rounded bg-primary px-4 py-3 text-sm font-semibold text-primary-content transition hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary/30"
+              >
+                Send
+              </button>
+            </.form>
+          </div>
         </section>
       </Shell.app>
     </Layouts.app>
@@ -135,6 +161,30 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   def handle_event("show_channel_form", _params, socket) do
     {:noreply, assign(socket, :show_channel_form?, true)}
+  end
+
+  def handle_event("send_message", %{"message" => message_params}, socket) do
+    case Chat.send_message(
+           socket.assigns.current_scope,
+           socket.assigns.selected_channel.id,
+           message_params
+         ) do
+      {:ok, message} ->
+        {:noreply,
+         socket
+         |> assign(:message_form, message_form())
+         |> stream_insert(:messages, message)}
+
+      {:error, :invalid_message, changeset} ->
+        {:noreply,
+         assign(socket, :message_form, to_form(changeset, as: :message, action: :insert))}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Channel not found or you do not have access.")
+         |> push_navigate(to: ~p"/workspaces")}
+    end
   end
 
   def handle_event("open_workspace_actions", %{"workspace_id" => workspace_id}, socket) do
@@ -431,6 +481,12 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     scope
     |> Workspaces.change_workspace(attrs)
     |> to_form(as: :workspace)
+  end
+
+  defp message_form(attrs \\ %{}) do
+    attrs
+    |> Chat.change_message()
+    |> to_form(as: :message)
   end
 
   defp restream_workspaces(socket) do

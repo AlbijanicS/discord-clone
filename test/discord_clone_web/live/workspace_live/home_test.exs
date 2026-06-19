@@ -136,6 +136,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#channel-message-surface")
       assert has_element?(view, "#channel-messages")
       assert has_element?(view, "#channel-empty-state")
+      assert has_element?(view, "#message-composer-form")
+      assert has_element?(view, "#message_content")
       refute has_element?(view, "#message-composer-placeholder")
     end
 
@@ -160,6 +162,80 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-#{message.id}-author", scope.user.username)
       assert has_element?(view, "#message-#{message.id} time[datetime='2026-06-19T10:30:00Z']")
       assert has_element?(view, "#message-#{message.id}-content", message.content)
+    end
+
+    test "sends a message into the current channel stream and clears the composer", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      view
+      |> form("#message-composer-form",
+        message: %{
+          content: "  hello from liveview  "
+        }
+      )
+      |> render_submit()
+
+      message = Repo.one!(Message)
+
+      assert message.content == "hello from liveview"
+      assert message.channel_id == workspace.default_channel_id
+      assert message.user_id == scope.user.id
+      assert has_element?(view, "#message-#{message.id}")
+      assert has_element?(view, "#message-#{message.id}-content", "hello from liveview")
+      refute has_element?(view, "#message_content[value='  hello from liveview  ']")
+    end
+
+    test "keeps invalid message content visible with field errors", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      content = String.duplicate("a", 4_001)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      view
+      |> form("#message-composer-form", message: %{content: content})
+      |> render_submit()
+
+      assert Repo.aggregate(Message, :count) == 0
+      assert has_element?(view, "#message-composer-form")
+      assert has_element?(view, "#message_content.input-error[value='#{content}']")
+
+      assert has_element?(
+               view,
+               "#message-composer-form",
+               "should be at most 4000 character(s)"
+             )
+    end
+
+    test "shows a sent message after reopening the channel page", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      view
+      |> form("#message-composer-form", message: %{content: "reload proof"})
+      |> render_submit()
+
+      message = Repo.one!(Message)
+
+      {:ok, reloaded_view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(reloaded_view, "#message-#{message.id}")
+      assert has_element?(reloaded_view, "#message-#{message.id}-content", "reload proof")
     end
 
     test "shows and opens the workspace create action from a selected channel", %{

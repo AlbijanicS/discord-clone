@@ -15,6 +15,10 @@ defmodule DiscordClone.Chat do
 
   @recent_message_limit 50
 
+  def change_message(attrs \\ %{}) do
+    Message.changeset(%Message{}, attrs)
+  end
+
   def list_recent_messages(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
       messages =
@@ -33,6 +37,26 @@ defmodule DiscordClone.Chat do
   end
 
   def list_recent_messages(_scope, _channel_id), do: {:error, :unauthenticated}
+
+  def send_message(%Scope{user: %User{id: user_id}}, channel_id, attrs) do
+    with %Channel{} <- get_member_channel(channel_id, user_id) do
+      %Message{}
+      |> Message.changeset(%{
+        "content" => Map.get(attrs, "content") || Map.get(attrs, :content),
+        "channel_id" => channel_id,
+        "user_id" => user_id
+      })
+      |> Repo.insert()
+      |> case do
+        {:ok, message} -> {:ok, Repo.preload(message, :user)}
+        {:error, changeset} -> {:error, :invalid_message, changeset}
+      end
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def send_message(_scope, _channel_id, _attrs), do: {:error, :unauthenticated}
 
   defp get_member_channel(channel_id, user_id) do
     Repo.one(
