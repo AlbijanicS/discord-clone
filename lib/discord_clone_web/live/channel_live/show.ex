@@ -1,7 +1,7 @@
 defmodule DiscordCloneWeb.ChannelLive.Show do
   use DiscordCloneWeb, :live_view
 
-  alias DiscordClone.Workspaces
+  alias DiscordClone.{Chat, Workspaces}
   alias DiscordCloneWeb.WorkspaceLive.Shell
 
   @impl true
@@ -11,7 +11,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          {:ok, channel} <-
            Workspaces.fetch_channel(socket.assigns.current_scope, workspace_id, channel_id),
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
-         {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id) do
+         {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id),
+         {:ok, messages} <- Chat.list_recent_messages(socket.assigns.current_scope, channel.id) do
       socket =
         socket
         |> assign(:selected_workspace, workspace)
@@ -27,8 +28,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:renaming_channel_id, nil)
         |> assign(:channel_rename_form, nil)
         |> assign(:context_menu_position, nil)
+        |> stream_configure(:messages, dom_id: &"message-#{&1.id}")
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
+        |> stream(:messages, messages)
 
       {:ok, socket}
     else
@@ -62,7 +65,52 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         context_menu_position={@context_menu_position}
         current_scope={@current_scope}
         main_state={:channel}
-      />
+      >
+        <section
+          id="channel-message-surface"
+          class="flex h-full min-h-0 flex-col bg-base-100"
+          aria-label={"Messages in #{@selected_channel.name}"}
+        >
+          <div id="channel-messages" phx-update="stream" class="min-h-0 flex-1 overflow-y-auto p-6">
+            <div
+              id="channel-empty-state"
+              class="hidden only:flex h-full items-center justify-center text-center"
+            >
+              <div>
+                <p class="text-lg font-semibold">No messages yet</p>
+                <p class="mt-2 text-sm text-base-content/60">
+                  This channel is quiet for now.
+                </p>
+              </div>
+            </div>
+            <article
+              :for={{dom_id, message} <- @streams.messages}
+              id={dom_id}
+              class="group flex gap-3 rounded px-2 py-2 transition hover:bg-base-200/70"
+            >
+              <div class="flex size-9 shrink-0 items-center justify-center rounded bg-primary/10 text-sm font-semibold text-primary">
+                {user_initial(message.user)}
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-baseline gap-2">
+                  <span id={"#{dom_id}-author"} class="font-semibold">
+                    {message.user.username}
+                  </span>
+                  <time
+                    datetime={DateTime.to_iso8601(message.inserted_at)}
+                    class="text-xs text-base-content/50"
+                  >
+                    {compact_time(message.inserted_at)}
+                  </time>
+                </div>
+                <p id={"#{dom_id}-content"} class="mt-1 whitespace-pre-wrap break-words text-sm">
+                  {message.content}
+                </p>
+              </div>
+            </article>
+          </div>
+        </section>
+      </Shell.app>
     </Layouts.app>
     """
   end
@@ -397,4 +445,12 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   defp to_integer(value) when is_integer(value), do: value
   defp to_integer(value) when is_binary(value), do: String.to_integer(value)
+
+  defp compact_time(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%H:%M")
+
+  defp user_initial(%{username: username}) when is_binary(username) do
+    username
+    |> String.first()
+    |> String.upcase()
+  end
 end

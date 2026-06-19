@@ -23,6 +23,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   attr :invite_form, :any, default: nil
   attr :invite_url, :string, default: nil
 
+  slot :inner_block
+
   def app(assigns) do
     ~H"""
     <div
@@ -206,7 +208,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
             </div>
 
             <div id="channels" phx-update="stream" class="space-y-1">
-              <div id="channel-empty-state" class="hidden only:block text-sm text-base-content/60">
+              <div
+                id="channel-list-empty-state"
+                class="hidden only:block text-sm text-base-content/60"
+              >
                 No channels yet.
               </div>
               <div :for={{dom_id, channel} <- @channel_stream} id={dom_id}>
@@ -356,24 +361,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                 # {@selected_channel.name}
               </p>
             </header>
-            <div id="channel-main" class="min-h-0 flex-1 p-6">
-              <div class="flex h-full items-center justify-center text-center">
-                <div>
-                  <p class="text-lg font-semibold">Messages are coming soon</p>
-                  <p class="mt-2 text-sm text-base-content/60">
-                    This channel is ready for the future chat surface.
-                  </p>
-                </div>
-              </div>
-            </div>
-            <div class="border-t border-base-300 p-4">
-              <input
-                id="message-composer-placeholder"
-                type="text"
-                class="input input-bordered w-full"
-                placeholder={"Message ##{@selected_channel.name}"}
-                disabled
-              />
+            <div id="channel-main" class="min-h-0 flex-1">
+              {render_slot(@inner_block)}
             </div>
           <% :empty_channel -> %>
             <div

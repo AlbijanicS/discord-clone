@@ -5,6 +5,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
   import Phoenix.LiveViewTest
 
   alias DiscordClone.Workspaces
+  alias DiscordClone.Chat.Message
   alias DiscordClone.Workspaces.{Channel, WorkspaceInvite, WorkspaceMembership}
   alias DiscordClone.Repo
 
@@ -132,7 +133,33 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#channel-#{channel.id}[aria-current='page']")
       assert has_element?(view, "#channel-#{channel.id}-actions")
       assert has_element?(view, "#channel-create-toggle")
-      assert has_element?(view, "#message-composer-placeholder[disabled]")
+      assert has_element?(view, "#channel-message-surface")
+      assert has_element?(view, "#channel-messages")
+      assert has_element?(view, "#channel-empty-state")
+      refute has_element?(view, "#message-composer-placeholder")
+    end
+
+    test "renders persisted channel messages with author and timestamp", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "Hello <strong>there</strong>",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#message-#{message.id}")
+      assert has_element?(view, "#message-#{message.id}-author", scope.user.username)
+      assert has_element?(view, "#message-#{message.id} time[datetime='2026-06-19T10:30:00Z']")
+      assert has_element?(view, "#message-#{message.id}-content", message.content)
     end
 
     test "shows and opens the workspace create action from a selected channel", %{
@@ -467,7 +494,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert has_element?(view, "#workspace-#{workspace.id}", "Design Guild")
       assert has_element?(view, "#selected-workspace-name", "Design Guild")
-      assert has_element?(view, "#channel-main", "Messages are coming soon")
+      assert has_element?(view, "#channel-message-surface")
       refute has_element?(view, "#workspace-#{workspace.id}-rename-form")
       assert {:ok, renamed_workspace} = Workspaces.fetch_workspace(scope, workspace.id)
       assert renamed_workspace.name == "Design Guild"
@@ -559,7 +586,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert has_element?(view, "#channel-#{workspace.default_channel_id}", "# welcome-desk")
       assert has_element?(view, "#selected-channel-title", "# welcome-desk")
-      assert has_element?(view, "#channel-main", "Messages are coming soon")
+      assert has_element?(view, "#channel-message-surface")
       refute has_element?(view, "#channel-#{workspace.default_channel_id}-rename-form")
       assert Repo.get!(Channel, workspace.default_channel_id).name == "welcome-desk"
     end
@@ -815,6 +842,16 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       role: "member"
     })
     |> Repo.insert!()
+  end
+
+  defp insert_message!(channel_id, user_id, content, inserted_at) do
+    Repo.insert!(%Message{
+      channel_id: channel_id,
+      user_id: user_id,
+      content: content,
+      inserted_at: inserted_at,
+      updated_at: inserted_at
+    })
   end
 
   defp set_invite_policy!(workspace, invite_policy) do
