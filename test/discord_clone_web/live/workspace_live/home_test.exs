@@ -238,6 +238,31 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(reloaded_view, "#message-#{message.id}-content", "reload proof")
     end
 
+    test "does not deliver sent messages to another open channel view before refresh", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+
+      {:ok, sender_view, _html} = live(conn, channel_path)
+      {:ok, stale_view, _html} = live(conn, channel_path)
+
+      sender_view
+      |> form("#message-composer-form", message: %{content: "refresh-boundary"})
+      |> render_submit()
+
+      message = Repo.one!(Message)
+
+      assert has_element?(sender_view, "#message-#{message.id}")
+      refute has_element?(stale_view, "#message-#{message.id}")
+
+      {:ok, refreshed_view, _html} = live(conn, channel_path)
+
+      assert has_element?(refreshed_view, "#message-#{message.id}")
+      assert has_element?(refreshed_view, "#message-#{message.id}-content", "refresh-boundary")
+    end
+
     test "shows load older when the initial message page is full", %{
       conn: conn,
       scope: scope
@@ -384,6 +409,19 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
                live(conn, ~p"/workspaces/#{workspace.id}/channels/-1")
 
       assert flash["error"] =~ "Channel not found"
+    end
+
+    test "redirects non-member channel URLs to the workspace app with generic access flash", %{
+      conn: conn
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Private Foundry"})
+      {:ok, channel} = Workspaces.create_channel(owner_scope, workspace.id, %{name: "planning"})
+
+      assert {:error, {:redirect, %{to: "/workspaces", flash: flash}}} =
+               live(conn, ~p"/workspaces/#{workspace.id}/channels/#{channel.id}")
+
+      assert flash["error"] =~ "Channel not found or you do not have access"
     end
 
     test "creates a channel from the shell and navigates to it", %{conn: conn, scope: scope} do

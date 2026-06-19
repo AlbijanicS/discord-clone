@@ -1,6 +1,7 @@
 defmodule DiscordClone.WorkspacesTest do
   use DiscordClone.DataCase
 
+  alias DiscordClone.Chat.Message
   alias DiscordClone.Workspaces
   alias DiscordClone.Workspaces.{Channel, WorkspaceInvite, WorkspaceMembership}
 
@@ -971,6 +972,35 @@ defmodule DiscordClone.WorkspacesTest do
       refute Repo.get(Channel, channel.id)
     end
 
+    test "deletes messages for the deleted channel only" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
+      {:ok, channel} = Workspaces.create_channel(scope, workspace.id, %{name: "planning"})
+
+      deleted_channel_message =
+        insert_message!(
+          channel.id,
+          scope.user.id,
+          "delete this history",
+          ~U[2026-06-19 10:00:00Z]
+        )
+
+      kept_channel_message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "keep this history",
+          ~U[2026-06-19 10:01:00Z]
+        )
+
+      assert {:ok, deleted_channel} = Workspaces.delete_channel(scope, workspace.id, channel.id)
+
+      assert deleted_channel.id == channel.id
+      refute Repo.get(Channel, channel.id)
+      refute Repo.get(Message, deleted_channel_message.id)
+      assert Repo.get(Message, kept_channel_message.id)
+    end
+
     test "rejects deleting the landing channel" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
@@ -1107,6 +1137,16 @@ defmodule DiscordClone.WorkspacesTest do
       role: "member"
     })
     |> Repo.insert!()
+  end
+
+  defp insert_message!(channel_id, user_id, content, inserted_at) do
+    Repo.insert!(%Message{
+      channel_id: channel_id,
+      user_id: user_id,
+      content: content,
+      inserted_at: inserted_at,
+      updated_at: inserted_at
+    })
   end
 
   defp set_invite_policy!(workspace, invite_policy) do
