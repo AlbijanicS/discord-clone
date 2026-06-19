@@ -81,6 +81,106 @@ defmodule DiscordClone.ChatTest do
     end
   end
 
+  describe "list_older_messages/3" do
+    test "loads messages older than the cursor oldest-to-newest with authors preloaded" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      base_time = ~U[2026-06-19 10:00:00Z]
+
+      messages =
+        for index <- 1..55 do
+          insert_message!(
+            workspace.default_channel_id,
+            scope.user.id,
+            "message #{index}",
+            DateTime.add(base_time, index, :second)
+          )
+        end
+
+      {:ok, recent_messages} = Chat.list_recent_messages(scope, workspace.default_channel_id)
+      cursor = hd(recent_messages)
+
+      assert {:ok, older_messages} =
+               Chat.list_older_messages(scope, workspace.default_channel_id, cursor)
+
+      assert Enum.map(older_messages, & &1.id) == messages |> Enum.take(5) |> Enum.map(& &1.id)
+      assert Enum.map(older_messages, & &1.content) == Enum.map(1..5, &"message #{&1}")
+      refute cursor.id in Enum.map(older_messages, & &1.id)
+      assert Enum.all?(older_messages, &Ecto.assoc_loaded?(&1.user))
+      assert Enum.all?(older_messages, &(&1.user.username == scope.user.username))
+    end
+
+    test "paginates messages that share a timestamp without duplicates or skips" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      shared_time = ~U[2026-06-19 10:00:00Z]
+
+      messages =
+        for index <- 1..55 do
+          insert_message!(
+            workspace.default_channel_id,
+            scope.user.id,
+            "message #{index}",
+            shared_time
+          )
+        end
+
+      {:ok, recent_messages} = Chat.list_recent_messages(scope, workspace.default_channel_id)
+      cursor = hd(recent_messages)
+
+      assert {:ok, older_messages} =
+               Chat.list_older_messages(scope, workspace.default_channel_id, cursor)
+
+      assert Enum.map(recent_messages, & &1.id) == messages |> Enum.drop(5) |> Enum.map(& &1.id)
+      assert Enum.map(older_messages, & &1.id) == messages |> Enum.take(5) |> Enum.map(& &1.id)
+
+      assert MapSet.disjoint?(
+               MapSet.new(recent_messages, & &1.id),
+               MapSet.new(older_messages, & &1.id)
+             )
+    end
+
+    test "rejects anonymous scopes" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      cursor =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "message",
+          ~U[2026-06-19 10:00:00Z]
+        )
+
+      assert Chat.list_older_messages(nil, workspace.default_channel_id, cursor) ==
+               {:error, :unauthenticated}
+
+      assert Chat.list_older_messages(
+               %DiscordClone.Accounts.Scope{},
+               workspace.default_channel_id,
+               cursor
+             ) == {:error, :unauthenticated}
+    end
+
+    test "rejects logged-in users who are not workspace members" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      cursor =
+        insert_message!(
+          workspace.default_channel_id,
+          owner_scope.user.id,
+          "private message",
+          ~U[2026-06-19 10:00:00Z]
+        )
+
+      assert Chat.list_older_messages(non_member_scope, workspace.default_channel_id, cursor) ==
+               {:error, :not_found}
+    end
+  end
+
   describe "send_message/3" do
     test "persists trimmed content in the selected channel with the author preloaded" do
       scope = user_scope_fixture()

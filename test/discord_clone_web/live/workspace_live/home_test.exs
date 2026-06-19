@@ -238,6 +238,103 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(reloaded_view, "#message-#{message.id}-content", "reload proof")
     end
 
+    test "shows load older when the initial message page is full", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      for index <- 1..50 do
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "message #{index}",
+          DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+        )
+      end
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#load-older-messages", "Load older")
+    end
+
+    test "hides load older for empty and short channels", %{conn: conn, scope: scope} do
+      {:ok, empty_workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, empty_view, _html} =
+        live(
+          conn,
+          ~p"/workspaces/#{empty_workspace.id}/channels/#{empty_workspace.default_channel_id}"
+        )
+
+      refute has_element?(empty_view, "#load-older-messages")
+
+      {:ok, short_workspace} = Workspaces.create_workspace(scope, %{name: "Workshop"})
+
+      for index <- 1..3 do
+        insert_message!(
+          short_workspace.default_channel_id,
+          scope.user.id,
+          "short #{index}",
+          DateTime.add(~U[2026-06-19 11:00:00Z], index, :second)
+        )
+      end
+
+      {:ok, short_view, _html} =
+        live(
+          conn,
+          ~p"/workspaces/#{short_workspace.id}/channels/#{short_workspace.default_channel_id}"
+        )
+
+      refute has_element?(short_view, "#load-older-messages")
+    end
+
+    test "loads older messages above the current stream without duplicating the cursor", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      messages =
+        for index <- 1..55 do
+          insert_message!(
+            workspace.default_channel_id,
+            scope.user.id,
+            "message #{index}",
+            DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+          )
+        end
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      recent_cursor = Enum.at(messages, 5)
+
+      assert has_element?(view, "#message-#{recent_cursor.id}")
+      refute has_element?(view, "#message-#{hd(messages).id}")
+
+      view
+      |> element("#load-older-messages")
+      |> render_click()
+
+      message_ids =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> then(& &1["#channel-messages > article"])
+        |> LazyHTML.attribute("id")
+
+      assert Enum.take(message_ids, 6) ==
+               messages
+               |> Enum.take(6)
+               |> Enum.map(&"message-#{&1.id}")
+
+      assert has_element?(view, "#message-#{hd(messages).id}")
+      assert has_element?(view, "#message-#{recent_cursor.id}")
+      refute has_element?(view, "#load-older-messages")
+    end
+
     test "shows and opens the workspace create action from a selected channel", %{
       conn: conn,
       scope: scope

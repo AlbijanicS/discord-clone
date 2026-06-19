@@ -38,6 +38,34 @@ defmodule DiscordClone.Chat do
 
   def list_recent_messages(_scope, _channel_id), do: {:error, :unauthenticated}
 
+  def list_older_messages(
+        %Scope{user: %User{id: user_id}},
+        channel_id,
+        %Message{id: cursor_id, inserted_at: cursor_inserted_at}
+      ) do
+    with %Channel{} <- get_member_channel(channel_id, user_id) do
+      messages =
+        Message
+        |> where([message], message.channel_id == ^channel_id)
+        |> where(
+          [message],
+          message.inserted_at < ^cursor_inserted_at or
+            (message.inserted_at == ^cursor_inserted_at and message.id < ^cursor_id)
+        )
+        |> order_by([message], desc: message.inserted_at, desc: message.id)
+        |> limit(^@recent_message_limit)
+        |> preload(:user)
+        |> Repo.all()
+        |> Enum.reverse()
+
+      {:ok, messages}
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def list_older_messages(_scope, _channel_id, _cursor), do: {:error, :unauthenticated}
+
   def send_message(%Scope{user: %User{id: user_id}}, channel_id, attrs) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
       %Message{}

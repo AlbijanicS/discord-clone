@@ -4,6 +4,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   alias DiscordClone.{Chat, Workspaces}
   alias DiscordCloneWeb.WorkspaceLive.Shell
 
+  @message_page_size 50
+
   @impl true
   def mount(%{"workspace_id" => workspace_id, "channel_id" => channel_id}, _session, socket) do
     with {:ok, workspace} <-
@@ -22,6 +24,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:channel_form, channel_form(workspace.id))
         |> assign(:show_channel_form?, false)
         |> assign(:message_form, message_form())
+        |> assign(:oldest_message, List.first(messages))
+        |> assign(:has_older_messages?, length(messages) == @message_page_size)
         |> assign(:workspace_action_menu_id, nil)
         |> assign(:renaming_workspace_id, nil)
         |> assign(:workspace_rename_form, nil)
@@ -72,6 +76,16 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
           class="flex h-full min-h-0 flex-col bg-base-100"
           aria-label={"Messages in #{@selected_channel.name}"}
         >
+          <div :if={@has_older_messages?} class="border-b border-base-300/60 px-6 py-3 text-center">
+            <button
+              id="load-older-messages"
+              type="button"
+              phx-click="load_older_messages"
+              class="rounded border border-base-300 bg-base-100 px-4 py-2 text-sm font-semibold text-base-content/70 transition hover:-translate-y-0.5 hover:border-primary/40 hover:text-base-content focus:outline-none focus:ring-2 focus:ring-primary/20"
+            >
+              Load older
+            </button>
+          </div>
           <div id="channel-messages" phx-update="stream" class="min-h-0 flex-1 overflow-y-auto p-6">
             <div
               id="channel-empty-state"
@@ -161,6 +175,36 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   def handle_event("show_channel_form", _params, socket) do
     {:noreply, assign(socket, :show_channel_form?, true)}
+  end
+
+  def handle_event("load_older_messages", _params, %{assigns: %{oldest_message: nil}} = socket) do
+    {:noreply, assign(socket, :has_older_messages?, false)}
+  end
+
+  def handle_event("load_older_messages", _params, socket) do
+    case Chat.list_older_messages(
+           socket.assigns.current_scope,
+           socket.assigns.selected_channel.id,
+           socket.assigns.oldest_message
+         ) do
+      {:ok, older_messages} ->
+        socket =
+          older_messages
+          |> Enum.reverse()
+          |> Enum.reduce(socket, fn message, socket ->
+            stream_insert(socket, :messages, message, at: 0)
+          end)
+          |> assign(:oldest_message, List.first(older_messages) || socket.assigns.oldest_message)
+          |> assign(:has_older_messages?, length(older_messages) == @message_page_size)
+
+        {:noreply, socket}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Channel not found or you do not have access.")
+         |> push_navigate(to: ~p"/workspaces")}
+    end
   end
 
   def handle_event("send_message", %{"message" => message_params}, socket) do
