@@ -92,123 +92,17 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert path == ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
     end
 
-    test "renders an empty-channel shell when no landing channel exists", %{
+    test "redirects when no landing channel exists", %{
       conn: conn,
       scope: scope
     } do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
       Repo.delete_all(Channel)
 
-      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}")
+      assert {:error, {:redirect, %{to: "/workspaces", flash: flash}}} =
+               live(conn, ~p"/workspaces/#{workspace.id}")
 
-      assert has_element?(view, "#workspace-app-shell")
-      assert has_element?(view, "#channel-empty-state")
-      assert has_element?(view, "#channel-create-form")
-      assert has_element?(view, "#workspace-main-empty-channel")
-    end
-
-    test "shows and opens the workspace create action from an empty-channel shell", %{
-      conn: conn,
-      scope: scope
-    } do
-      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
-      Repo.delete_all(Channel)
-
-      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}")
-
-      assert has_element?(view, "#workspace-create-toggle")
-      refute has_element?(view, "#workspace-create-form")
-
-      view
-      |> element("#workspace-create-toggle")
-      |> render_click()
-
-      assert has_element?(view, "#workspace-create-form")
-    end
-
-    test "creates the first channel from an empty workspace entry", %{conn: conn, scope: scope} do
-      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
-      Repo.delete_all(Channel)
-
-      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}")
-
-      {:error, {:live_redirect, %{to: path}}} =
-        view
-        |> form("#channel-create-form", channel: %{name: "Planning"})
-        |> render_submit()
-
-      assert %{path: expected_path} = URI.parse(path)
-      assert expected_path =~ ~r|^/workspaces/#{workspace.id}/channels/\d+$|
-    end
-
-    test "renames the selected workspace from an empty-channel shell", %{
-      conn: conn,
-      scope: scope
-    } do
-      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
-      Repo.delete_all(Channel)
-
-      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}")
-
-      view
-      |> element("#workspace-#{workspace.id}-actions")
-      |> render_click()
-
-      view
-      |> element("#workspace-#{workspace.id}-rename")
-      |> render_click()
-
-      view
-      |> form("#workspace-#{workspace.id}-rename-form", workspace: %{name: "Design Guild"})
-      |> render_submit()
-
-      assert has_element?(view, "#workspace-#{workspace.id}", "Design Guild")
-      assert has_element?(view, "#selected-workspace-name", "Design Guild")
-      assert has_element?(view, "#workspace-main-empty-channel")
-    end
-
-    test "deletes the selected workspace from an empty-channel shell", %{
-      conn: conn,
-      scope: scope
-    } do
-      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
-      Repo.delete_all(Channel)
-
-      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}")
-
-      view
-      |> element("#workspace-#{workspace.id}-actions")
-      |> render_click()
-
-      assert {:error, {:live_redirect, %{to: path}}} =
-               view
-               |> element("#workspace-#{workspace.id}-delete")
-               |> render_click()
-
-      assert path == ~p"/workspaces"
-      assert Workspaces.fetch_workspace(scope, workspace.id) == {:error, :not_found}
-    end
-
-    test "opens the workspace action menu from a context menu event in an empty-channel shell", %{
-      conn: conn,
-      scope: scope
-    } do
-      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
-      Repo.delete_all(Channel)
-
-      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}")
-
-      render_hook(view, "open_context_menu", %{
-        "type" => "workspace",
-        "id" => workspace.id,
-        "x" => 96,
-        "y" => 144
-      })
-
-      assert has_element?(
-               view,
-               "#workspace-#{workspace.id}-menu[style='left: 96px; top: 144px;']"
-             )
+      assert flash["error"] =~ "Workspace not found or you do not have access"
     end
 
     test "redirects missing or unauthorized workspace entry to the workspace app", %{

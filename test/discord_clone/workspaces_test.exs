@@ -296,13 +296,11 @@ defmodule DiscordClone.WorkspacesTest do
       assert Workspaces.resolve_landing_channel(scope, workspace.id) == {:ok, default_channel}
     end
 
-    test "falls back to the oldest channel when the default channel is missing" do
+    test "returns an explicit error when the default channel is missing" do
       scope = user_scope_fixture()
 
       assert {:ok, workspace} =
                Workspaces.create_workspace(scope, %{name: "Workspace"})
-
-      oldest_channel = Repo.get!(Channel, workspace.default_channel_id)
 
       assert {:ok, _channel} =
                Workspaces.create_channel(scope, workspace.id, %{name: "oldest"})
@@ -314,10 +312,11 @@ defmodule DiscordClone.WorkspacesTest do
       |> Ecto.Changeset.change(default_channel_id: nil)
       |> Repo.update!()
 
-      assert Workspaces.resolve_landing_channel(scope, workspace.id) == {:ok, oldest_channel}
+      assert Workspaces.resolve_landing_channel(scope, workspace.id) ==
+               {:error, :landing_channel_not_found}
     end
 
-    test "returns nil when no landing channel can be resolved" do
+    test "returns an explicit error when no landing channel can be resolved" do
       scope = user_scope_fixture()
 
       assert {:ok, workspace} =
@@ -325,7 +324,8 @@ defmodule DiscordClone.WorkspacesTest do
 
       Repo.delete_all(from channel in Channel, where: channel.workspace_id == ^workspace.id)
 
-      assert Workspaces.resolve_landing_channel(scope, workspace.id) == {:ok, nil}
+      assert Workspaces.resolve_landing_channel(scope, workspace.id) ==
+               {:error, :landing_channel_not_found}
     end
 
     test "returns not found for a missing workspace" do

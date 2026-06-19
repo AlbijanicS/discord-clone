@@ -16,6 +16,10 @@ defmodule DiscordClone.Workspaces.WorkspaceInvite do
   end
 
   def changeset(invite, attrs) do
+    create_changeset(invite, attrs)
+  end
+
+  def create_changeset(invite, attrs) do
     invite
     |> cast(attrs, [
       :workspace_id,
@@ -34,6 +38,10 @@ defmodule DiscordClone.Workspaces.WorkspaceInvite do
     |> foreign_key_constraint(:workspace_id)
     |> foreign_key_constraint(:created_by_user_id)
     |> unique_constraint(:code)
+  end
+
+  def increment_usage_changeset(invite) do
+    change(invite, uses_count: invite.uses_count + 1)
   end
 
   defp normalize_code(code) when is_binary(code), do: String.trim(code)

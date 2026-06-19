@@ -7,31 +7,6 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
   @impl true
   def mount(%{"workspace_id" => workspace_id}, _session, socket) do
     case Workspaces.resolve_landing_channel(socket.assigns.current_scope, workspace_id) do
-      {:ok, nil} ->
-        with {:ok, workspace} <-
-               Workspaces.fetch_workspace(socket.assigns.current_scope, workspace_id),
-             {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
-             {:ok, channels} <-
-               Workspaces.list_channels(socket.assigns.current_scope, workspace_id) do
-          socket =
-            socket
-            |> assign(:selected_workspace, workspace)
-            |> assign(:workspace_form, workspace_form(socket.assigns.current_scope))
-            |> assign(:show_workspace_form?, false)
-            |> assign(:channel_form, channel_form(workspace.id))
-            |> assign(:show_channel_form?, channels == [])
-            |> assign(:workspace_action_menu_id, nil)
-            |> assign(:renaming_workspace_id, nil)
-            |> assign(:workspace_rename_form, nil)
-            |> assign(:context_menu_position, nil)
-            |> stream(:workspaces, workspaces)
-            |> stream(:channels, channels)
-
-          {:ok, socket}
-        else
-          {:error, _reason} -> redirect_to_workspaces(socket)
-        end
-
       {:ok, channel} ->
         {:ok, push_navigate(socket, to: ~p"/workspaces/#{workspace_id}/channels/#{channel.id}")}
 
@@ -245,7 +220,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
     |> to_form(as: :channel)
   end
 
-  defp workspace_form(scope, attrs \\ %{}) do
+  defp workspace_form(scope, attrs) do
     scope
     |> Workspaces.change_workspace(attrs)
     |> to_form(as: :workspace)

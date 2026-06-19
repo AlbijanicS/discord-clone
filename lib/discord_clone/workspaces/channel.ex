@@ -13,6 +13,10 @@ defmodule DiscordClone.Workspaces.Channel do
   end
 
   def changeset(channel, attrs) do
+    create_changeset(channel, attrs)
+  end
+
+  def create_changeset(channel, attrs) do
     channel
     |> cast(attrs, [:workspace_id, :name])
     |> update_change(:name, &normalize_name/1)
@@ -23,6 +27,19 @@ defmodule DiscordClone.Workspaces.Channel do
         "must start with a letter or number and use lowercase letters, numbers, dashes, or underscores"
     )
     |> foreign_key_constraint(:workspace_id)
+    |> unique_constraint(:name, name: :channels_workspace_id_name_index)
+  end
+
+  def rename_changeset(channel, attrs) do
+    channel
+    |> cast(attrs, [:name])
+    |> update_change(:name, &normalize_name/1)
+    |> validate_required([:name])
+    |> validate_length(:name, min: 1, max: 80)
+    |> validate_format(:name, ~r/^[a-z0-9][a-z0-9_-]*$/,
+      message:
+        "must start with a letter or number and use lowercase letters, numbers, dashes, or underscores"
+    )
     |> unique_constraint(:name, name: :channels_workspace_id_name_index)
   end
 

@@ -19,6 +19,10 @@ defmodule DiscordClone.Workspaces.Workspace do
   end
 
   def changeset(workspace, attrs) do
+    create_changeset(workspace, attrs)
+  end
+
+  def create_changeset(workspace, attrs) do
     workspace
     |> cast(attrs, [:name, :owner_id, :default_channel_id, :invite_policy])
     |> update_change(:name, &normalize_name/1)
@@ -27,6 +31,14 @@ defmodule DiscordClone.Workspaces.Workspace do
     |> validate_inclusion(:invite_policy, @invite_policies)
     |> foreign_key_constraint(:owner_id)
     |> foreign_key_constraint(:default_channel_id)
+  end
+
+  def rename_changeset(workspace, attrs) do
+    workspace
+    |> cast(attrs, [:name])
+    |> update_change(:name, &normalize_name/1)
+    |> validate_required([:name])
+    |> validate_length(:name, min: 1, max: 80)
   end
 
   def default_channel_changeset(workspace, attrs) do
