@@ -130,6 +130,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               for={@message_form}
               id="message-composer-form"
               phx-submit="send_message"
+              phx-hook="MessageComposer"
               class="flex items-start gap-3"
             >
               <div class="min-w-0 flex-1">
@@ -166,6 +167,13 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     {:noreply, assign(socket, :show_workspace_form?, true)}
   end
 
+  def handle_event("cancel_workspace_form", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_workspace_form?, false)
+     |> assign(:workspace_form, workspace_form(socket.assigns.current_scope))}
+  end
+
   def handle_event("create_workspace", %{"workspace" => workspace_params}, socket) do
     case Workspaces.create_workspace(socket.assigns.current_scope, workspace_params) do
       {:ok, workspace} ->
@@ -181,6 +189,15 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   def handle_event("show_channel_form", _params, socket) do
     {:noreply, assign(socket, :show_channel_form?, true)}
+  end
+
+  def handle_event("cancel_channel_form", _params, socket) do
+    workspace_id = socket.assigns.selected_workspace.id
+
+    {:noreply,
+     socket
+     |> assign(:show_channel_form?, false)
+     |> assign(:channel_form, channel_form(workspace_id))}
   end
 
   def handle_event("load_older_messages", _params, %{assigns: %{oldest_message: nil}} = socket) do
@@ -223,6 +240,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         {:noreply,
          socket
          |> assign(:message_form, message_form())
+         |> push_event("clear_message_composer", %{input_id: "message_content"})
          |> stream_insert(:messages, message)}
 
       {:error, :invalid_message, changeset} ->

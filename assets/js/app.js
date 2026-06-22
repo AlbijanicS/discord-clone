@@ -25,9 +25,11 @@ import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/discord_clone"
 import topbar from "../vendor/topbar"
 import ClipboardCopy from "./hooks/clipboard_copy"
+import MessageComposer from "./hooks/message_composer"
 
 const Hooks = {
   ClipboardCopy,
+  MessageComposer,
 
   ContextMenu: {
     mounted() {

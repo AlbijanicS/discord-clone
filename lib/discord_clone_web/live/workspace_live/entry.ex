@@ -43,6 +43,13 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
     {:noreply, assign(socket, :show_workspace_form?, true)}
   end
 
+  def handle_event("cancel_workspace_form", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_workspace_form?, false)
+     |> assign(:workspace_form, workspace_form(socket.assigns.current_scope))}
+  end
+
   def handle_event("create_workspace", %{"workspace" => workspace_params}, socket) do
     case Workspaces.create_workspace(socket.assigns.current_scope, workspace_params) do
       {:ok, workspace} ->
@@ -58,6 +65,15 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
 
   def handle_event("show_channel_form", _params, socket) do
     {:noreply, assign(socket, :show_channel_form?, true)}
+  end
+
+  def handle_event("cancel_channel_form", _params, socket) do
+    workspace_id = socket.assigns.selected_workspace.id
+
+    {:noreply,
+     socket
+     |> assign(:show_channel_form?, false)
+     |> assign(:channel_form, channel_form(workspace_id))}
   end
 
   def handle_event("open_workspace_actions", %{"workspace_id" => workspace_id}, socket) do
@@ -220,7 +236,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
     |> to_form(as: :channel)
   end
 
-  defp workspace_form(scope, attrs) do
+  defp workspace_form(scope, attrs \\ %{}) do
     scope
     |> Workspaces.change_workspace(attrs)
     |> to_form(as: :workspace)

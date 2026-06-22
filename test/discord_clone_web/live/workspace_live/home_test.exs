@@ -31,7 +31,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#workspace-empty-state")
     end
 
-    test "shows existing workspaces and keeps creation behind a compact action", %{
+    test "shows existing workspaces as first-letter rail items with compact create action", %{
       conn: conn,
       scope: scope
     } do
@@ -39,9 +39,15 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       {:ok, view, _html} = live(conn, ~p"/workspaces")
 
-      assert has_element?(view, "#workspaces [aria-label='Open #{workspace.name}']")
-      assert has_element?(view, "#workspace-create-toggle")
+      assert has_element?(
+               view,
+               "#workspaces [aria-label='Open #{workspace.name}'][title='#{workspace.name}']",
+               "F"
+             )
+
+      assert has_element?(view, "#workspace-create-toggle[title='Create workspace']")
       refute has_element?(view, "#workspace-create-form")
+      refute has_element?(view, "#workspace-sidebar", "Workspaces")
     end
 
     test "opens the workspace form from the compact create action", %{
@@ -56,6 +62,28 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       |> render_click()
 
       assert has_element?(view, "#workspace-create-form")
+    end
+
+    test "cancels workspace creation without navigating", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, view, _html} = live(conn, ~p"/workspaces")
+
+      view
+      |> element("#workspace-create-toggle")
+      |> render_click()
+
+      assert has_element?(view, "#workspace-create-form")
+
+      view
+      |> element("#workspace-create-cancel")
+      |> render_click()
+
+      refute has_element?(view, "#workspace-create-form")
+      assert has_element?(view, "#workspace-create-toggle")
+      assert has_element?(view, "#workspaces [aria-label='Open #{workspace.name}']")
     end
 
     test "keeps the workspace form open with field errors for invalid input", %{conn: conn} do
@@ -189,6 +217,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-#{message.id}")
       assert has_element?(view, "#message-#{message.id}-content", "hello from liveview")
       refute has_element?(view, "#message_content[value='  hello from liveview  ']")
+
+      assert_push_event(view, "clear_message_composer", %{input_id: "message_content"})
     end
 
     test "renders the sender's saved message exactly once", %{
@@ -240,6 +270,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
                "#message-composer-form",
                "should be at most 4000 character(s)"
              )
+
+      refute_push_event(view, "clear_message_composer", %{input_id: _input_id})
     end
 
     test "shows a sent message after reopening the channel page", %{
@@ -315,6 +347,87 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert List.last(message_ids) == "message-#{message.id}"
       assert "message-#{existing_message.id}" in message_ids
+    end
+
+    test "does not deliver live messages across channels in the same workspace", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      {:ok, other_channel} = Workspaces.create_channel(owner_scope, workspace.id, %{name: "ops"})
+      add_workspace_member!(workspace, member_scope)
+
+      selected_channel_path =
+        ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+
+      other_channel_path = ~p"/workspaces/#{workspace.id}/channels/#{other_channel.id}"
+      sender_conn = build_conn() |> log_in_user(owner_scope.user)
+
+      {:ok, selected_channel_view, _html} = live(conn, selected_channel_path)
+      {:ok, other_channel_view, _html} = live(conn, other_channel_path)
+      {:ok, sender_view, _html} = live(sender_conn, selected_channel_path)
+
+      sender_view
+      |> form("#message-composer-form", message: %{content: "only planning"})
+      |> render_submit()
+
+      message =
+        Message
+        |> order_by([message], desc: message.id)
+        |> limit(1)
+        |> Repo.one!()
+
+      assert has_element?(
+               selected_channel_view,
+               "#message-#{message.id}-content",
+               "only planning"
+             )
+
+      refute has_element?(other_channel_view, "#message-#{message.id}")
+
+      other_channel_message_ids =
+        other_channel_view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> then(& &1["#channel-messages > article"])
+        |> LazyHTML.attribute("id")
+
+      refute "message-#{message.id}" in other_channel_message_ids
+    end
+
+    test "recovers live-delivered messages from Postgres after receiver refresh", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+      channel_path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+      sender_conn = build_conn() |> log_in_user(owner_scope.user)
+
+      {:ok, receiver_view, _html} = live(conn, channel_path)
+      {:ok, sender_view, _html} = live(sender_conn, channel_path)
+
+      sender_view
+      |> form("#message-composer-form", message: %{content: "refresh after live"})
+      |> render_submit()
+
+      message =
+        Message
+        |> order_by([message], desc: message.id)
+        |> limit(1)
+        |> Repo.one!()
+
+      assert has_element?(receiver_view, "#message-#{message.id}-content", "refresh after live")
+
+      {:ok, refreshed_receiver_view, _html} = live(conn, channel_path)
+
+      assert has_element?(
+               refreshed_receiver_view,
+               "#message-#{message.id}-content",
+               "refresh after live"
+             )
     end
 
     test "keeps receiver composer state when a live message arrives", %{
@@ -464,7 +577,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/channels/#{channel.id}")
 
-      assert has_element?(view, "#workspace-create-toggle")
+      assert has_element?(view, "#workspace-create-toggle[title='Create workspace']")
       refute has_element?(view, "#workspace-create-form")
 
       view
@@ -472,6 +585,28 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       |> render_click()
 
       assert has_element?(view, "#workspace-create-form")
+    end
+
+    test "cancels workspace creation from a selected channel", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, channel} = Workspaces.create_channel(scope, workspace.id, %{name: "Planning"})
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/channels/#{channel.id}")
+
+      view
+      |> element("#workspace-create-toggle")
+      |> render_click()
+
+      view
+      |> element("#workspace-create-cancel")
+      |> render_click()
+
+      refute has_element?(view, "#workspace-create-form")
+      assert has_element?(view, "#channel-message-surface")
+      assert has_element?(view, "#workspace-#{workspace.id}[aria-current='page']")
     end
 
     test "marks workspace and channel targets for context menu hooks", %{
@@ -798,7 +933,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       |> form("#workspace-#{workspace.id}-rename-form", workspace: %{name: "Design Guild"})
       |> render_submit()
 
-      assert has_element?(view, "#workspace-#{workspace.id}", "Design Guild")
+      assert has_element?(view, "#workspace-#{workspace.id}[title='Design Guild']", "D")
       assert has_element?(view, "#selected-workspace-name", "Design Guild")
       assert has_element?(view, "#channel-message-surface")
       refute has_element?(view, "#workspace-#{workspace.id}-rename-form")
@@ -991,6 +1126,30 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#channel_name.input-error")
       assert has_element?(view, "#channel-create-form", "can't be blank")
     end
+
+    test "cancels channel creation without navigating", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      view
+      |> element("#channel-create-toggle")
+      |> render_click()
+
+      assert has_element?(view, "#channel-create-form")
+
+      view
+      |> element("#channel-create-cancel")
+      |> render_click()
+
+      refute has_element?(view, "#channel-create-form")
+      assert has_element?(view, "#channel-create-toggle")
+      assert has_element?(view, "#channel-#{workspace.default_channel_id}[aria-current='page']")
+    end
   end
 
   describe "/workspaces/:workspace_id/invites/new" do
@@ -1047,7 +1206,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/invites/new")
 
-      assert has_element?(view, "#workspace-create-toggle")
+      assert has_element?(view, "#workspace-create-toggle[title='Create workspace']")
       refute has_element?(view, "#workspace-create-form")
 
       view
@@ -1055,6 +1214,26 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       |> render_click()
 
       assert has_element?(view, "#workspace-create-form")
+    end
+
+    test "cancels workspace creation from the invite screen", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/invites/new")
+
+      view
+      |> element("#workspace-create-toggle")
+      |> render_click()
+
+      view
+      |> element("#workspace-create-cancel")
+      |> render_click()
+
+      refute has_element?(view, "#workspace-create-form")
+      assert has_element?(view, "#workspace-invite-create-form")
     end
 
     test "submitting the form creates and displays a selectable absolute invite URL", %{

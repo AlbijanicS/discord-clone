@@ -29,32 +29,28 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
     ~H"""
     <div
       id="workspace-app-shell"
-      class="fixed inset-0 grid min-h-screen overflow-hidden bg-base-100 lg:grid-cols-[14rem_18rem_minmax(0,1fr)]"
+      class={workspace_shell_class(@show_workspace_form?)}
     >
       <aside
         id="workspace-sidebar"
-        class="flex min-h-0 flex-col border-b border-base-300 bg-base-300 p-3 lg:border-b-0 lg:border-r"
+        class="flex min-h-0 flex-col items-center border-b border-base-300 bg-base-300 p-3 lg:border-b-0 lg:border-r"
       >
-        <div class="mb-3 flex items-center justify-between gap-2">
-          <p class="text-xs font-semibold uppercase tracking-wide text-base-content/60">
-            Workspaces
-          </p>
-          <button
-            :if={@workspace_form && !@show_workspace_form?}
-            id="workspace-create-toggle"
-            type="button"
-            class="btn btn-square btn-sm btn-ghost transition hover:scale-105"
-            phx-click="show_workspace_form"
-            aria-label="Create workspace"
-          >
-            <.icon name="hero-plus" class="size-4" />
-          </button>
-        </div>
+        <button
+          :if={@workspace_form && !@show_workspace_form?}
+          id="workspace-create-toggle"
+          type="button"
+          class="btn btn-square btn-sm btn-ghost mb-3 shrink-0 transition hover:scale-105"
+          phx-click="show_workspace_form"
+          aria-label="Create workspace"
+          title="Create workspace"
+        >
+          <.icon name="hero-plus" class="size-4" />
+        </button>
 
         <div
           id="workspaces"
           phx-update="stream"
-          class="flex min-h-0 gap-2 overflow-x-auto lg:flex-col lg:overflow-y-auto"
+          class="flex min-h-0 w-full justify-center gap-2 overflow-x-auto lg:flex-col lg:items-center lg:overflow-y-auto"
         >
           <div id="workspace-empty-state" class="hidden only:block text-sm text-base-content/60">
             Create a workspace to start.
@@ -65,8 +61,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
             navigate={~p"/workspaces/#{workspace.id}"}
             aria-current={selected_workspace_aria(workspace, @selected_workspace)}
             phx-hook={selected_workspace?(workspace, @selected_workspace) && "ContextMenu"}
+            title={workspace.name}
             class={[
-              "flex min-h-11 w-full shrink-0 items-center rounded px-3 text-sm font-semibold shadow-sm ring-1 transition hover:-translate-y-0.5",
+              "flex size-12 shrink-0 items-center justify-center rounded-lg text-base font-bold shadow-sm ring-1 transition hover:-translate-y-0.5",
               selected_workspace?(workspace, @selected_workspace) &&
                 "bg-primary text-primary-content ring-primary",
               !selected_workspace?(workspace, @selected_workspace) &&
@@ -77,7 +74,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
             data-context-menu-id={workspace.id}
             aria-label={"Open #{workspace.name}"}
           >
-            <span class="truncate">{workspace.name}</span>
+            <span aria-hidden="true">{workspace_initial(workspace)}</span>
           </.link>
         </div>
 
@@ -95,9 +92,19 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
             placeholder="Design guild"
             autocomplete="off"
           />
-          <.button type="submit" class="btn btn-primary btn-sm w-full">
-            Create
-          </.button>
+          <div class="grid grid-cols-2 gap-2">
+            <button
+              id="workspace-create-cancel"
+              type="button"
+              class="btn btn-sm btn-ghost"
+              phx-click="cancel_workspace_form"
+            >
+              Cancel
+            </button>
+            <.button type="submit" class="btn btn-primary btn-sm">
+              Create
+            </.button>
+          </div>
         </.form>
       </aside>
 
@@ -310,9 +317,19 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                 placeholder="planning"
                 autocomplete="off"
               />
-              <.button type="submit" class="btn btn-primary btn-sm w-full">
-                Create
-              </.button>
+              <div class="grid grid-cols-2 gap-2">
+                <button
+                  id="channel-create-cancel"
+                  type="button"
+                  class="btn btn-sm btn-ghost"
+                  phx-click="cancel_channel_form"
+                >
+                  Cancel
+                </button>
+                <.button type="submit" class="btn btn-primary btn-sm">
+                  Create
+                </.button>
+              </div>
             </.form>
           <% else %>
             <div class="mb-4">
@@ -474,6 +491,24 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
 
   defp can_create_workspace_invite?(workspace, current_scope) do
     Workspaces.can_create_workspace_invite?(current_scope, workspace)
+  end
+
+  defp workspace_shell_class(true),
+    do:
+      "fixed inset-0 grid min-h-screen overflow-hidden bg-base-100 lg:grid-cols-[14rem_18rem_minmax(0,1fr)]"
+
+  defp workspace_shell_class(_show_workspace_form?),
+    do:
+      "fixed inset-0 grid min-h-screen overflow-hidden bg-base-100 lg:grid-cols-[5rem_18rem_minmax(0,1fr)]"
+
+  defp workspace_initial(workspace) do
+    workspace.name
+    |> String.trim()
+    |> String.first()
+    |> case do
+      nil -> "?"
+      initial -> String.upcase(initial)
+    end
   end
 
   defp context_menu_style(%{x: x, y: y}), do: "left: #{x}px; top: #{y}px;"
