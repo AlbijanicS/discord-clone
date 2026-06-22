@@ -1,5 +1,5 @@
 defmodule DiscordClone.ChatTest do
-  use DiscordClone.DataCase, async: true
+  use DiscordClone.DataCase, async: false
 
   alias DiscordClone.Chat
   alias DiscordClone.Chat.Message
@@ -13,6 +13,100 @@ defmodule DiscordClone.ChatTest do
 
       assert %Ecto.Changeset{} = changeset
       assert Ecto.Changeset.get_field(changeset, :content) == "hello"
+    end
+  end
+
+  describe "subscribe_to_channel_messages/2" do
+    test "subscribed workspace members receive persisted message-created events" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      subscriber =
+        start_subscriber(scope, workspace.default_channel_id)
+
+      assert_receive {:subscribed, ^subscriber}
+
+      assert {:ok, sent_message} =
+               Chat.send_message(scope, workspace.default_channel_id, %{"content" => "hello live"})
+
+      assert_receive {:subscriber_received, ^subscriber, {:message_created, received_message}}
+      assert received_message.id == sent_message.id
+      assert received_message.content == "hello live"
+      assert received_message.channel_id == workspace.default_channel_id
+      assert Ecto.assoc_loaded?(received_message.user)
+      assert received_message.user.username == scope.user.username
+    end
+
+    test "rejects anonymous scopes" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert Chat.subscribe_to_channel_messages(nil, workspace.default_channel_id) ==
+               {:error, :unauthenticated}
+
+      assert Chat.subscribe_to_channel_messages(
+               %DiscordClone.Accounts.Scope{},
+               workspace.default_channel_id
+             ) == {:error, :unauthenticated}
+    end
+
+    test "rejects logged-in users who are not workspace members" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      assert Chat.subscribe_to_channel_messages(non_member_scope, workspace.default_channel_id) ==
+               {:error, :not_found}
+    end
+
+    test "rejects missing channels" do
+      scope = user_scope_fixture()
+
+      assert Chat.subscribe_to_channel_messages(scope, -1) == {:error, :not_found}
+    end
+
+    test "does not broadcast invalid message sends" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      :ok = Chat.subscribe_to_channel_messages(scope, workspace.default_channel_id)
+
+      assert {:error, :invalid_message, _changeset} =
+               Chat.send_message(scope, workspace.default_channel_id, %{"content" => "   "})
+
+      refute_receive {:message_created, _message}
+    end
+
+    test "does not broadcast unauthorized message sends" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      :ok = Chat.subscribe_to_channel_messages(owner_scope, workspace.default_channel_id)
+
+      assert Chat.send_message(non_member_scope, workspace.default_channel_id, %{
+               "content" => "private hello"
+             }) == {:error, :not_found}
+
+      refute_receive {:message_created, _message}
+    end
+
+    test "does not broadcast read or history-loading workflows" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "stored",
+          ~U[2026-06-19 10:00:00Z]
+        )
+
+      :ok = Chat.subscribe_to_channel_messages(scope, workspace.default_channel_id)
+
+      assert {:ok, [_message]} = Chat.list_recent_messages(scope, workspace.default_channel_id)
+      assert {:ok, []} = Chat.list_older_messages(scope, workspace.default_channel_id, message)
+
+      refute_receive {:message_created, _message}
     end
   end
 
@@ -311,5 +405,20 @@ defmodule DiscordClone.ChatTest do
       inserted_at: inserted_at,
       updated_at: inserted_at
     })
+  end
+
+  defp start_subscriber(scope, channel_id) do
+    parent = self()
+
+    spawn_link(fn ->
+      assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
+      send(parent, {:subscribed, self()})
+
+      receive do
+        event -> send(parent, {:subscriber_received, self(), event})
+      after
+        1_000 -> send(parent, {:subscriber_timeout, self()})
+      end
+    end)
   end
 end

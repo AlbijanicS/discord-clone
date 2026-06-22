@@ -19,6 +19,16 @@ defmodule DiscordClone.Chat do
     Message.changeset(%Message{}, attrs)
   end
 
+  def subscribe_to_channel_messages(%Scope{user: %User{id: user_id}}, channel_id) do
+    with %Channel{} <- get_member_channel(channel_id, user_id) do
+      Phoenix.PubSub.subscribe(DiscordClone.PubSub, channel_messages_topic(channel_id))
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def subscribe_to_channel_messages(_scope, _channel_id), do: {:error, :unauthenticated}
+
   def list_recent_messages(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
       messages =
@@ -76,8 +86,13 @@ defmodule DiscordClone.Chat do
       })
       |> Repo.insert()
       |> case do
-        {:ok, message} -> {:ok, Repo.preload(message, :user)}
-        {:error, changeset} -> {:error, :invalid_message, changeset}
+        {:ok, message} ->
+          message = Repo.preload(message, :user)
+          :ok = broadcast_message_created(message)
+          {:ok, message}
+
+        {:error, changeset} ->
+          {:error, :invalid_message, changeset}
       end
     else
       nil -> {:error, :not_found}
@@ -97,4 +112,15 @@ defmodule DiscordClone.Chat do
         limit: 1
     )
   end
+
+  defp broadcast_message_created(%Message{} = message) do
+    Phoenix.PubSub.broadcast_from(
+      DiscordClone.PubSub,
+      self(),
+      channel_messages_topic(message.channel_id),
+      {:message_created, message}
+    )
+  end
+
+  defp channel_messages_topic(channel_id), do: "chat:channel:#{channel_id}"
 end
