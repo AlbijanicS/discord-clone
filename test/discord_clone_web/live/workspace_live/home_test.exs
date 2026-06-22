@@ -238,29 +238,98 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(reloaded_view, "#message-#{message.id}-content", "reload proof")
     end
 
-    test "does not deliver sent messages to another open channel view before refresh", %{
+    test "delivers sent messages live to another member in the same channel", %{
       conn: conn,
-      scope: scope
+      scope: member_scope
     } do
-      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
       channel_path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
 
-      {:ok, sender_view, _html} = live(conn, channel_path)
-      {:ok, stale_view, _html} = live(conn, channel_path)
+      existing_message =
+        insert_message!(
+          workspace.default_channel_id,
+          owner_scope.user.id,
+          "already here",
+          ~U[2026-06-19 10:00:00Z]
+        )
+
+      sender_conn = build_conn() |> log_in_user(owner_scope.user)
+
+      {:ok, receiver_view, _html} = live(conn, channel_path)
+      {:ok, sender_view, _html} = live(sender_conn, channel_path)
 
       sender_view
-      |> form("#message-composer-form", message: %{content: "refresh-boundary"})
+      |> form("#message-composer-form", message: %{content: "live hello"})
       |> render_submit()
 
-      message = Repo.one!(Message)
+      message =
+        Message
+        |> order_by([message], desc: message.id)
+        |> limit(1)
+        |> Repo.one!()
 
-      assert has_element?(sender_view, "#message-#{message.id}")
-      refute has_element?(stale_view, "#message-#{message.id}")
+      assert has_element?(receiver_view, "#message-#{message.id}")
 
-      {:ok, refreshed_view, _html} = live(conn, channel_path)
+      assert has_element?(
+               receiver_view,
+               "#message-#{message.id}-author",
+               owner_scope.user.username
+             )
 
-      assert has_element?(refreshed_view, "#message-#{message.id}")
-      assert has_element?(refreshed_view, "#message-#{message.id}-content", "refresh-boundary")
+      assert has_element?(receiver_view, "#message-#{message.id}-content", "live hello")
+
+      message_ids =
+        receiver_view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> then(& &1["#channel-messages > article"])
+        |> LazyHTML.attribute("id")
+
+      assert List.last(message_ids) == "message-#{message.id}"
+      assert "message-#{existing_message.id}" in message_ids
+    end
+
+    test "keeps receiver composer state when a live message arrives", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+      channel_path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+      sender_conn = build_conn() |> log_in_user(owner_scope.user)
+      too_long_content = String.duplicate("draft", 801)
+
+      {:ok, receiver_view, _html} = live(conn, channel_path)
+      {:ok, sender_view, _html} = live(sender_conn, channel_path)
+
+      receiver_view
+      |> form("#message-composer-form", message: %{content: too_long_content})
+      |> render_submit()
+
+      assert has_element?(
+               receiver_view,
+               "#message_content.input-error[value='#{too_long_content}']"
+             )
+
+      sender_view
+      |> form("#message-composer-form", message: %{content: "while you type"})
+      |> render_submit()
+
+      message =
+        Message
+        |> order_by([message], desc: message.id)
+        |> limit(1)
+        |> Repo.one!()
+
+      assert has_element?(receiver_view, "#message-#{message.id}-content", "while you type")
+
+      assert has_element?(
+               receiver_view,
+               "#message_content.input-error[value='#{too_long_content}']"
+             )
     end
 
     test "shows load older when the initial message page is full", %{

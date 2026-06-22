@@ -14,7 +14,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
            Workspaces.fetch_channel(socket.assigns.current_scope, workspace_id, channel_id),
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
          {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id),
-         {:ok, messages} <- Chat.list_recent_messages(socket.assigns.current_scope, channel.id) do
+         {:ok, messages} <- Chat.list_recent_messages(socket.assigns.current_scope, channel.id),
+         :ok <- subscribe_to_channel_messages(socket, channel.id) do
       socket =
         socket
         |> assign(:selected_workspace, workspace)
@@ -153,6 +154,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       </Shell.app>
     </Layouts.app>
     """
+  end
+
+  @impl true
+  def handle_info({:message_created, message}, socket) do
+    {:noreply, stream_insert(socket, :messages, message)}
   end
 
   @impl true
@@ -531,6 +537,14 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     attrs
     |> Chat.change_message()
     |> to_form(as: :message)
+  end
+
+  defp subscribe_to_channel_messages(socket, channel_id) do
+    if connected?(socket) do
+      Chat.subscribe_to_channel_messages(socket.assigns.current_scope, channel_id)
+    else
+      :ok
+    end
   end
 
   defp restream_workspaces(socket) do
