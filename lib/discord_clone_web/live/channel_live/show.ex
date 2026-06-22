@@ -87,7 +87,12 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               Load older
             </button>
           </div>
-          <div id="channel-messages" phx-update="stream" class="min-h-0 flex-1 overflow-y-auto p-6">
+          <div
+            id="channel-messages"
+            phx-update="stream"
+            phx-hook="ChannelMessages"
+            class="min-h-0 flex-1 overflow-y-auto p-6"
+          >
             <div
               id="channel-empty-state"
               class="hidden only:flex h-full items-center justify-center text-center"
@@ -159,7 +164,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   @impl true
   def handle_info({:message_created, message}, socket) do
-    {:noreply, stream_insert(socket, :messages, message)}
+    {:noreply,
+     socket
+     |> stream_insert(:messages, message)
+     |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})}
   end
 
   @impl true
@@ -241,6 +249,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          socket
          |> assign(:message_form, message_form())
          |> push_event("clear_message_composer", %{input_id: "message_content"})
+         |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})
          |> stream_insert(:messages, message)}
 
       {:error, :invalid_message, changeset} ->

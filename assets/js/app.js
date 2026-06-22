@@ -24,10 +24,12 @@ import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/discord_clone"
 import topbar from "../vendor/topbar"
+import ChannelMessages from "./hooks/channel_messages"
 import ClipboardCopy from "./hooks/clipboard_copy"
 import MessageComposer from "./hooks/message_composer"
 
 const Hooks = {
+  ChannelMessages,
   ClipboardCopy,
   MessageComposer,
 

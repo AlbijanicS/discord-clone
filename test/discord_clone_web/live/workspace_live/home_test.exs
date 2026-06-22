@@ -162,7 +162,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#channel-#{channel.id}-actions")
       assert has_element?(view, "#channel-create-toggle")
       assert has_element?(view, "#channel-message-surface")
-      assert has_element?(view, "#channel-messages")
+      assert has_element?(view, "#channel-messages[phx-hook='ChannelMessages']")
       assert has_element?(view, "#channel-empty-state")
       assert has_element?(view, "#message-composer-form")
       assert has_element?(view, "#message_content")
@@ -219,6 +219,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute has_element?(view, "#message_content[value='  hello from liveview  ']")
 
       assert_push_event(view, "clear_message_composer", %{input_id: "message_content"})
+
+      assert_push_event(view, "scroll_channel_messages_to_bottom", %{
+        container_id: "channel-messages"
+      })
     end
 
     test "renders the sender's saved message exactly once", %{
@@ -337,6 +341,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
              )
 
       assert has_element?(receiver_view, "#message-#{message.id}-content", "live hello")
+
+      assert_push_event(receiver_view, "scroll_channel_messages_to_bottom", %{
+        container_id: "channel-messages"
+      })
 
       message_ids =
         receiver_view
@@ -566,6 +574,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-#{hd(messages).id}")
       assert has_element?(view, "#message-#{recent_cursor.id}")
       refute has_element?(view, "#load-older-messages")
+
+      refute_push_event(view, "scroll_channel_messages_to_bottom", %{
+        container_id: _container_id
+      })
     end
 
     test "shows and opens the workspace create action from a selected channel", %{
