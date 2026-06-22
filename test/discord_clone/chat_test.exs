@@ -76,6 +76,20 @@ defmodule DiscordClone.ChatTest do
       refute_receive {:message_created, _message}
     end
 
+    test "does not broadcast successful sends back to the sender process" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      :ok = Chat.subscribe_to_channel_messages(scope, workspace.default_channel_id)
+
+      assert {:ok, message} =
+               Chat.send_message(scope, workspace.default_channel_id, %{
+                 "content" => "sender copy"
+               })
+
+      assert message.content == "sender copy"
+      refute_receive {:message_created, _message}
+    end
+
     test "does not broadcast unauthorized message sends" do
       owner_scope = user_scope_fixture()
       non_member_scope = user_scope_fixture()

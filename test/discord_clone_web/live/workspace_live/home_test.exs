@@ -191,6 +191,32 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute has_element?(view, "#message_content[value='  hello from liveview  ']")
     end
 
+    test "renders the sender's saved message exactly once", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      view
+      |> form("#message-composer-form", message: %{content: "one local copy"})
+      |> render_submit()
+
+      message = Repo.one!(Message)
+
+      message_ids =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> then(& &1["#channel-messages > article"])
+        |> LazyHTML.attribute("id")
+
+      assert message_ids == ["message-#{message.id}"]
+      assert has_element?(view, "#message-#{message.id}-content", "one local copy")
+    end
+
     test "keeps invalid message content visible with field errors", %{
       conn: conn,
       scope: scope
