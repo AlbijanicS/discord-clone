@@ -20,21 +20,21 @@ broadcast joined or left events yet.
 
 ## Acceptance criteria
 
-- [ ] Joining presence for a user and PID records that user as online.
-- [ ] Joining presence for the same user and same PID is idempotent.
-- [ ] Joining presence for the same user from multiple PIDs keeps one online
+- [x] Joining presence for a user and PID records that user as online.
+- [x] Joining presence for the same user and same PID is idempotent.
+- [x] Joining presence for the same user from multiple PIDs keeps one online
       user ID with multiple tracked connections.
-- [ ] Joining presence for different users tracks each user independently.
-- [ ] The runtime monitors each tracked LiveView PID.
-- [ ] When one of several PIDs for a user exits, the user remains online.
-- [ ] When the last PID for a user exits, the user is removed from online
+- [x] Joining presence for different users tracks each user independently.
+- [x] The runtime monitors each tracked LiveView PID.
+- [x] When one of several PIDs for a user exits, the user remains online.
+- [x] When the last PID for a user exits, the user is removed from online
       state.
-- [ ] Listing online user IDs reads runtime state without changing it.
-- [ ] The runtime does not store full user structs.
-- [ ] The slice does not add PubSub broadcasts or LiveView integration.
-- [ ] Focused runtime tests cover first join, duplicate join, multiple PIDs,
+- [x] Listing online user IDs reads runtime state without changing it.
+- [x] The runtime does not store full user structs.
+- [x] The slice does not add PubSub broadcasts or LiveView integration.
+- [x] Focused runtime tests cover first join, duplicate join, multiple PIDs,
       non-last disconnect, and last disconnect.
-- [ ] Tests avoid `Process.sleep/1`; use monitors, `assert_receive`, and
+- [x] Tests avoid `Process.sleep/1`; use monitors, `assert_receive`, and
       `_ = :sys.get_state/1` style synchronization where needed.
 
 ## Blocked by
