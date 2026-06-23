@@ -19,20 +19,20 @@ Phoenix Presence.
 
 ## Acceptance criteria
 
-- [ ] A user with two connected Workspace surfaces appears online once in the
+- [x] A user with two connected Workspace surfaces appears online once in the
       member sidebar.
-- [ ] Closing one of two connected surfaces does not make that user appear
+- [x] Closing one of two connected surfaces does not make that user appear
       offline.
-- [ ] Closing the final connected surface makes that user appear offline.
-- [ ] Switching channels inside the same Workspace does not produce an
+- [x] Closing the final connected surface makes that user appear offline.
+- [x] Switching channels inside the same Workspace does not produce an
       incorrect offline flicker in subscribed member sidebars.
-- [ ] Runtime tests prove duplicate joins and non-last disconnects do not emit
+- [x] Runtime tests prove duplicate joins and non-last disconnects do not emit
       extra user-level events.
-- [ ] LiveView tests prove the highest-value user-visible multi-tab behavior
+- [x] LiveView tests prove the highest-value user-visible multi-tab behavior
       that the existing test helpers can cover reliably.
-- [ ] Tests avoid sleeps; use monitored processes, LiveView exits, and mailbox
+- [x] Tests avoid sleeps; use monitored processes, LiveView exits, and mailbox
       synchronization patterns where practical.
-- [ ] No channel-scoped presence or ChannelServer behavior is introduced.
+- [x] No channel-scoped presence or ChannelServer behavior is introduced.
 
 ## Blocked by
 

@@ -5,6 +5,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
   import Phoenix.LiveViewTest
 
   alias DiscordClone.Workspaces
+  alias DiscordClone.Chat
   alias DiscordClone.Chat.Message
   alias DiscordClone.Chat.WorkspaceServer
   alias DiscordClone.Workspaces.{Channel, WorkspaceInvite, WorkspaceMembership}
@@ -296,7 +297,14 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       sender_conn = build_conn() |> log_in_user(sender_scope.user)
 
       {:ok, receiver_view, _html} = live(conn, channel_path)
+      :ok = Chat.subscribe_to_workspace_presence(receiver_scope, workspace.id)
       {:ok, sender_view, _html} = live(sender_conn, channel_path)
+
+      assert_receive {:workspace_user_joined,
+                      %{workspace_id: workspace_id, user_id: sender_user_id}}
+
+      assert workspace_id == workspace.id
+      assert sender_user_id == sender_scope.user.id
 
       assert has_element?(
                receiver_view,
@@ -313,6 +321,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}
       _ = :sys.get_state(workspace_server)
 
+      assert_receive {:workspace_user_left,
+                      %{workspace_id: ^workspace_id, user_id: ^sender_user_id}}
+
       assert has_element?(
                receiver_view,
                "#workspace-member-#{sender_scope.user.id}[data-presence-state='offline']",
@@ -323,6 +334,143 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
                receiver_view,
                "#workspace-member-#{sender_scope.user.id} [data-member-status='offline']",
                "Offline"
+             )
+    end
+
+    test "keeps another member online until their final connected surface closes", %{
+      conn: conn,
+      scope: receiver_scope
+    } do
+      sender_scope =
+        %{username: "multi_surface_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(receiver_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, sender_scope)
+      channel_path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+      first_sender_conn = build_conn() |> log_in_user(sender_scope.user)
+      second_sender_conn = build_conn() |> log_in_user(sender_scope.user)
+
+      {:ok, receiver_view, _html} = live(conn, channel_path)
+      :ok = Chat.subscribe_to_workspace_presence(receiver_scope, workspace.id)
+      {:ok, first_sender_view, _html} = live(first_sender_conn, channel_path)
+
+      assert_receive {:workspace_user_joined,
+                      %{workspace_id: workspace_id, user_id: sender_user_id}}
+
+      assert workspace_id == workspace.id
+      assert sender_user_id == sender_scope.user.id
+
+      {:ok, second_sender_view, _html} = live(second_sender_conn, channel_path)
+
+      assert has_element?(
+               receiver_view,
+               "#workspace-member-#{sender_scope.user.id}[data-presence-state='online']",
+               "multi_surface_member"
+             )
+
+      assert workspace_member_row_ids(receiver_view, sender_scope.user.id) == [
+               "workspace-member-#{sender_scope.user.id}"
+             ]
+
+      workspace_server = WorkspaceServer.whereis(workspace.id)
+      _ = :sys.get_state(workspace_server)
+
+      Process.flag(:trap_exit, true)
+      first_ref = Process.monitor(first_sender_view.pid)
+      Process.exit(first_sender_view.pid, :shutdown)
+      assert_receive {:DOWN, ^first_ref, :process, _pid, :shutdown}
+      _ = :sys.get_state(workspace_server)
+
+      assert has_element?(
+               receiver_view,
+               "#workspace-member-#{sender_scope.user.id}[data-presence-state='online']",
+               "multi_surface_member"
+             )
+
+      assert workspace_member_row_ids(receiver_view, sender_scope.user.id) == [
+               "workspace-member-#{sender_scope.user.id}"
+             ]
+
+      second_ref = Process.monitor(second_sender_view.pid)
+      Process.exit(second_sender_view.pid, :shutdown)
+      assert_receive {:DOWN, ^second_ref, :process, _pid, :shutdown}
+      _ = :sys.get_state(workspace_server)
+
+      assert_receive {:workspace_user_left,
+                      %{workspace_id: ^workspace_id, user_id: ^sender_user_id}}
+
+      assert has_element?(
+               receiver_view,
+               "#workspace-member-#{sender_scope.user.id}[data-presence-state='offline']",
+               "multi_surface_member"
+             )
+
+      assert has_element?(
+               receiver_view,
+               "#workspace-member-#{sender_scope.user.id} [data-member-status='offline']",
+               "Offline"
+             )
+    end
+
+    test "keeps another member online while they switch channels in the same workspace", %{
+      conn: conn,
+      scope: receiver_scope
+    } do
+      sender_scope =
+        %{username: "channel_switch_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(receiver_scope, %{name: "Foundry"})
+
+      {:ok, other_channel} =
+        Workspaces.create_channel(receiver_scope, workspace.id, %{name: "Ops"})
+
+      add_workspace_member!(workspace, sender_scope)
+
+      first_channel_path =
+        ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+
+      other_channel_path = ~p"/workspaces/#{workspace.id}/channels/#{other_channel.id}"
+      sender_conn = build_conn() |> log_in_user(sender_scope.user)
+
+      {:ok, receiver_view, _html} = live(conn, first_channel_path)
+      :ok = Chat.subscribe_to_workspace_presence(receiver_scope, workspace.id)
+      {:ok, sender_view, _html} = live(sender_conn, first_channel_path)
+
+      assert_receive {:workspace_user_joined, %{workspace_id: workspace_id, user_id: user_id}}
+
+      assert workspace_id == workspace.id
+      assert user_id == sender_scope.user.id
+
+      assert has_element?(
+               receiver_view,
+               "#workspace-member-#{sender_scope.user.id}[data-presence-state='online']",
+               "channel_switch_member"
+             )
+
+      workspace_id = workspace.id
+      sender_user_id = sender_scope.user.id
+
+      {:ok, _sender_view, _html} =
+        sender_view
+        |> element("#channel-#{other_channel.id} a")
+        |> render_click()
+        |> follow_redirect(sender_conn, other_channel_path)
+
+      workspace_server = WorkspaceServer.whereis(workspace.id)
+      _ = :sys.get_state(workspace_server)
+
+      refute_receive {:workspace_user_left,
+                      %{workspace_id: ^workspace_id, user_id: ^sender_user_id}},
+                     50
+
+      assert has_element?(
+               receiver_view,
+               "#workspace-member-#{sender_scope.user.id}[data-presence-state='online']",
+               "channel_switch_member"
              )
     end
 

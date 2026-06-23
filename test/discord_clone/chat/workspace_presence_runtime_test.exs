@@ -105,7 +105,9 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
       live_view_pid = start_live_view_process()
 
       assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
+      assert :ok = WorkspacePresence.subscribe(workspace_id)
       assert :ok = WorkspaceServer.join(workspace_pid, user_id, live_view_pid)
+      assert_receive {:workspace_user_joined, %{workspace_id: ^workspace_id, user_id: ^user_id}}
       assert WorkspaceServer.online_user_ids(workspace_pid) == [user_id]
 
       ref = Process.monitor(live_view_pid)
@@ -113,6 +115,7 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
 
       assert_receive {:DOWN, ^ref, :process, ^live_view_pid, :normal}
       _ = :sys.get_state(workspace_pid)
+      assert_receive {:workspace_user_left, %{workspace_id: ^workspace_id, user_id: ^user_id}}
 
       assert WorkspaceServer.online_user_ids(workspace_pid) == []
     end
