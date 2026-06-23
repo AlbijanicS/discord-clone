@@ -2,6 +2,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
   use DiscordCloneWeb, :live_view
 
   alias DiscordClone.Workspaces
+  alias DiscordCloneWeb.WorkspaceLive.Presence
   alias DiscordCloneWeb.WorkspaceLive.Shell
 
   @impl true
@@ -29,6 +30,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
         |> stream(:workspace_members, members)
+        |> Presence.join_workspace(workspace.id)
 
       {:ok, socket}
     else
@@ -67,10 +69,15 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
         invite_form={@invite_form}
         invite_url={@invite_url}
         main_state={:invite}
+        online_user_ids={@online_user_ids}
       />
     </Layouts.app>
     """
   end
+
+  @impl true
+  def handle_info({:workspace_user_joined, _payload}, socket), do: {:noreply, socket}
+  def handle_info({:workspace_user_left, _payload}, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("show_workspace_form", _params, socket) do

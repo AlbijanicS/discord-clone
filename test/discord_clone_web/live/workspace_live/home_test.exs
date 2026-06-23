@@ -169,7 +169,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute has_element?(view, "#message-composer-placeholder")
     end
 
-    test "renders durable workspace members offline in the channel shell", %{
+    test "renders durable workspace members in the channel shell", %{
       conn: conn,
       scope: member_scope
     } do
@@ -195,7 +195,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert has_element?(
                view,
-               "#workspace-member-#{member_scope.user.id}[data-presence-state='offline']",
+               "#workspace-member-#{member_scope.user.id}",
                member_scope.user.username
              )
 
@@ -205,14 +205,42 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
                "Offline"
              )
 
-      assert has_element?(
-               view,
-               "#workspace-member-#{member_scope.user.id} [data-member-status='offline']",
-               "Offline"
-             )
-
       assert has_element?(view, "#channel-message-surface")
       assert has_element?(view, "#message-composer-form")
+    end
+
+    test "marks the current member online after entering a channel surface", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope =
+        %{username: "presence_owner"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(
+               view,
+               "#workspace-member-#{member_scope.user.id}[data-presence-state='online']",
+               member_scope.user.username
+             )
+
+      assert has_element?(
+               view,
+               "#workspace-member-#{member_scope.user.id} [data-member-status='online']",
+               "Online"
+             )
+
+      assert has_element?(
+               view,
+               "#workspace-member-#{owner_scope.user.id}[data-presence-state='offline']",
+               "presence_owner"
+             )
     end
 
     test "renders persisted channel messages with author and timestamp", %{
@@ -1256,7 +1284,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert Repo.aggregate(WorkspaceInvite, :count) == 0
     end
 
-    test "renders durable workspace members offline in the invite shell", %{
+    test "renders durable workspace members in the invite shell", %{
       conn: conn,
       scope: member_scope
     } do
@@ -1281,11 +1309,45 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert has_element?(
                view,
-               "#workspace-member-#{member_scope.user.id}[data-presence-state='offline']",
+               "#workspace-member-#{member_scope.user.id}",
                member_scope.user.username
              )
 
       assert has_element?(view, "#workspace-invite-create-form")
+    end
+
+    test "marks the current member online after entering an invite surface", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope =
+        %{username: "invite_presence_owner"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      workspace = set_invite_policy!(workspace, "members_can_invite")
+      add_workspace_member!(workspace, member_scope)
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/invites/new")
+
+      assert has_element?(
+               view,
+               "#workspace-member-#{member_scope.user.id}[data-presence-state='online']",
+               member_scope.user.username
+             )
+
+      assert has_element?(
+               view,
+               "#workspace-member-#{member_scope.user.id} [data-member-status='online']",
+               "Online"
+             )
+
+      assert has_element?(
+               view,
+               "#workspace-member-#{owner_scope.user.id}[data-presence-state='offline']",
+               "invite_presence_owner"
+             )
     end
 
     test "shows and opens the workspace create action from the invite screen", %{

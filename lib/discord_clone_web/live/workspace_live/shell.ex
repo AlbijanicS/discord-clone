@@ -23,6 +23,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   attr :main_state, :atom, default: :no_workspace
   attr :invite_form, :any, default: nil
   attr :invite_url, :string, default: nil
+  attr :online_user_ids, :any, default: MapSet.new()
 
   slot :inner_block
 
@@ -482,20 +483,40 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
           <div
             :for={{dom_id, member} <- @member_stream}
             id={dom_id}
-            data-presence-state="offline"
-            class="flex items-center gap-3 rounded px-2 py-2 text-sm text-base-content/70 transition hover:bg-base-300/80"
+            data-presence-state={member_presence_state(@online_user_ids, member)}
+            class={[
+              "flex items-center gap-3 rounded px-2 py-2 text-sm transition hover:bg-base-300/80",
+              member_online?(@online_user_ids, member) && "text-base-content",
+              !member_online?(@online_user_ids, member) && "text-base-content/70"
+            ]}
           >
-            <div class="flex size-8 shrink-0 items-center justify-center rounded bg-base-300 text-xs font-semibold text-base-content/70">
+            <div class={[
+              "flex size-8 shrink-0 items-center justify-center rounded text-xs font-semibold",
+              member_online?(@online_user_ids, member) && "bg-primary/15 text-primary",
+              !member_online?(@online_user_ids, member) && "bg-base-300 text-base-content/70"
+            ]}>
               {user_initial(member.user)}
             </div>
             <div class="min-w-0 flex-1">
               <p class="truncate font-medium">{member.user.username}</p>
               <p
-                data-member-status="offline"
-                class="flex items-center gap-1.5 text-xs text-base-content/45"
+                data-member-status={member_presence_state(@online_user_ids, member)}
+                class={[
+                  "flex items-center gap-1.5 text-xs",
+                  member_online?(@online_user_ids, member) && "text-primary",
+                  !member_online?(@online_user_ids, member) && "text-base-content/45"
+                ]}
               >
-                <span class="size-2 rounded-full bg-base-content/30" aria-hidden="true"></span>
-                Offline
+                <span
+                  class={[
+                    "size-2 rounded-full",
+                    member_online?(@online_user_ids, member) && "bg-primary",
+                    !member_online?(@online_user_ids, member) && "bg-base-content/30"
+                  ]}
+                  aria-hidden="true"
+                >
+                </span>
+                {member_presence_label(@online_user_ids, member)}
               </p>
             </div>
           </div>
@@ -569,6 +590,18 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
     user.username
     |> String.first()
     |> String.upcase()
+  end
+
+  defp member_presence_state(online_user_ids, member) do
+    if member_online?(online_user_ids, member), do: "online", else: "offline"
+  end
+
+  defp member_presence_label(online_user_ids, member) do
+    if member_online?(online_user_ids, member), do: "Online", else: "Offline"
+  end
+
+  defp member_online?(online_user_ids, member) do
+    MapSet.member?(online_user_ids, member.user.id)
   end
 
   defp main_class(:channel), do: "flex min-h-0 flex-col bg-base-100"

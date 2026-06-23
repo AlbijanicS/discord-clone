@@ -2,6 +2,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   use DiscordCloneWeb, :live_view
 
   alias DiscordClone.{Chat, Workspaces}
+  alias DiscordCloneWeb.WorkspaceLive.Presence
   alias DiscordCloneWeb.WorkspaceLive.Shell
 
   @message_page_size 50
@@ -41,6 +42,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> stream(:channels, channels)
         |> stream(:workspace_members, members)
         |> stream(:messages, messages)
+        |> Presence.join_workspace(workspace.id)
 
       {:ok, socket}
     else
@@ -75,6 +77,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         context_menu_position={@context_menu_position}
         current_scope={@current_scope}
         main_state={:channel}
+        online_user_ids={@online_user_ids}
       >
         <section
           id="channel-message-surface"
@@ -173,6 +176,9 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
      |> stream_insert(:messages, message)
      |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})}
   end
+
+  def handle_info({:workspace_user_joined, _payload}, socket), do: {:noreply, socket}
+  def handle_info({:workspace_user_left, _payload}, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("show_workspace_form", _params, socket) do
