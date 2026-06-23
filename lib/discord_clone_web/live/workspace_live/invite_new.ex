@@ -10,7 +10,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
            Workspaces.fetch_workspace(socket.assigns.current_scope, workspace_id),
          :ok <- authorize_invite_screen(socket.assigns.current_scope, workspace),
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
-         {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id) do
+         {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id),
+         {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id) do
       socket =
         socket
         |> assign(:selected_workspace, workspace)
@@ -24,8 +25,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
         |> assign(:context_menu_position, nil)
         |> assign(:invite_form, invite_form())
         |> assign(:invite_url, nil)
+        |> stream_configure(:workspace_members, dom_id: &"workspace-member-#{&1.user.id}")
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
+        |> stream(:workspace_members, members)
 
       {:ok, socket}
     else
@@ -58,6 +61,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
         workspace_rename_form={@workspace_rename_form}
         channel_form={@channel_form}
         show_channel_form?={@show_channel_form?}
+        member_stream={@streams.workspace_members}
         context_menu_position={@context_menu_position}
         current_scope={@current_scope}
         invite_form={@invite_form}

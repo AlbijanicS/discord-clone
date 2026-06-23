@@ -7,6 +7,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   attr :channel_stream, :any, default: nil
   attr :selected_workspace, :any, default: nil
   attr :selected_channel, :any, default: nil
+  attr :member_stream, :any, default: []
   attr :workspace_form, :any, default: nil
   attr :show_workspace_form?, :boolean, default: false
   attr :workspace_action_menu_id, :integer, default: nil
@@ -461,6 +462,45 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
             </div>
         <% end %>
       </main>
+
+      <aside
+        :if={@selected_workspace}
+        id="workspace-members-sidebar"
+        aria-label="Workspace members"
+        class="hidden min-h-0 border-l border-base-300 bg-base-200/80 xl:flex xl:flex-col"
+      >
+        <div class="border-b border-base-300 px-4 py-4">
+          <p class="text-xs font-semibold uppercase tracking-wide text-base-content/50">
+            Members
+          </p>
+        </div>
+        <div
+          id="workspace-members"
+          phx-update="stream"
+          class="min-h-0 flex-1 space-y-1 overflow-y-auto p-3"
+        >
+          <div
+            :for={{dom_id, member} <- @member_stream}
+            id={dom_id}
+            data-presence-state="offline"
+            class="flex items-center gap-3 rounded px-2 py-2 text-sm text-base-content/70 transition hover:bg-base-300/80"
+          >
+            <div class="flex size-8 shrink-0 items-center justify-center rounded bg-base-300 text-xs font-semibold text-base-content/70">
+              {user_initial(member.user)}
+            </div>
+            <div class="min-w-0 flex-1">
+              <p class="truncate font-medium">{member.user.username}</p>
+              <p
+                data-member-status="offline"
+                class="flex items-center gap-1.5 text-xs text-base-content/45"
+              >
+                <span class="size-2 rounded-full bg-base-content/30" aria-hidden="true"></span>
+                Offline
+              </p>
+            </div>
+          </div>
+        </div>
+      </aside>
     </div>
     """
   end
@@ -495,11 +535,11 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
 
   defp workspace_shell_class(true),
     do:
-      "fixed inset-0 grid min-h-screen overflow-hidden bg-base-100 lg:grid-cols-[14rem_18rem_minmax(0,1fr)]"
+      "fixed inset-0 grid min-h-screen overflow-hidden bg-base-100 lg:grid-cols-[14rem_18rem_minmax(0,1fr)] xl:grid-cols-[14rem_18rem_minmax(0,1fr)_16rem]"
 
   defp workspace_shell_class(_show_workspace_form?),
     do:
-      "fixed inset-0 grid min-h-screen overflow-hidden bg-base-100 lg:grid-cols-[5rem_18rem_minmax(0,1fr)]"
+      "fixed inset-0 grid min-h-screen overflow-hidden bg-base-100 lg:grid-cols-[5rem_18rem_minmax(0,1fr)] xl:grid-cols-[5rem_18rem_minmax(0,1fr)_16rem]"
 
   defp workspace_initial(workspace) do
     workspace.name

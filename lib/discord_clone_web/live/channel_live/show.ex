@@ -14,6 +14,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
            Workspaces.fetch_channel(socket.assigns.current_scope, workspace_id, channel_id),
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
          {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id),
+         {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id),
          {:ok, messages} <- Chat.list_recent_messages(socket.assigns.current_scope, channel.id),
          :ok <- subscribe_to_channel_messages(socket, channel.id) do
       socket =
@@ -35,8 +36,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:channel_rename_form, nil)
         |> assign(:context_menu_position, nil)
         |> stream_configure(:messages, dom_id: &"message-#{&1.id}")
+        |> stream_configure(:workspace_members, dom_id: &"workspace-member-#{&1.user.id}")
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
+        |> stream(:workspace_members, members)
         |> stream(:messages, messages)
 
       {:ok, socket}
@@ -58,6 +61,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         channel_stream={@streams.channels}
         selected_workspace={@selected_workspace}
         selected_channel={@selected_channel}
+        member_stream={@streams.workspace_members}
         workspace_form={@workspace_form}
         show_workspace_form?={@show_workspace_form?}
         channel_form={@channel_form}

@@ -12,6 +12,8 @@ defmodule DiscordClone.Application do
       DiscordClone.Repo,
       {DNSCluster, query: Application.get_env(:discord_clone, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: DiscordClone.PubSub},
+      {Registry, keys: :unique, name: DiscordClone.Chat.WorkspaceRegistry},
+      {DynamicSupervisor, strategy: :one_for_one, name: DiscordClone.Chat.WorkspaceSupervisor},
       # Start a worker by calling: DiscordClone.Worker.start_link(arg)
       # {DiscordClone.Worker, arg},
       # Start to serve requests, typically the last entry

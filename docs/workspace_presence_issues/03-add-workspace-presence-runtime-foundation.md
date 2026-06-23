@@ -20,21 +20,21 @@ pieces easier to review and learn.
 
 ## Acceptance criteria
 
-- [ ] The application supervision tree starts a Workspace presence Registry.
-- [ ] The application supervision tree starts a Workspace presence
+- [x] The application supervision tree starts a Workspace presence Registry.
+- [x] The application supervision tree starts a Workspace presence
       DynamicSupervisor.
-- [ ] Workspace presence processes are addressed by durable Workspace ID.
-- [ ] Starting a runtime for the same Workspace twice does not create duplicate
+- [x] Workspace presence processes are addressed by durable Workspace ID.
+- [x] Starting a runtime for the same Workspace twice does not create duplicate
       active processes.
-- [ ] The private Workspace runtime initializes with minimal inspectable state
+- [x] The private Workspace runtime initializes with minimal inspectable state
       for the Workspace ID.
-- [ ] The runtime modules remain hidden behind the Chat namespace or Chat
+- [x] The runtime modules remain hidden behind the Chat namespace or Chat
       runtime area.
-- [ ] Web modules do not call the Registry, DynamicSupervisor, or private
+- [x] Web modules do not call the Registry, DynamicSupervisor, or private
       runtime module.
-- [ ] The slice does not add presence users, monitors, PubSub events, or UI
+- [x] The slice does not add presence users, monitors, PubSub events, or UI
       behavior.
-- [ ] Focused runtime tests use `start_supervised!/1` where appropriate and
+- [x] Focused runtime tests use `start_supervised!/1` where appropriate and
       prove start/find behavior without sleeps.
 
 ## Blocked by

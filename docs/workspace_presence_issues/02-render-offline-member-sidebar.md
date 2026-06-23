@@ -20,22 +20,22 @@ complete, user-visible offline member list backed by durable membership data.
 
 ## Acceptance criteria
 
-- [ ] The relevant workspace LiveViews load durable Workspace Members through
+- [x] The relevant workspace LiveViews load durable Workspace Members through
       the public Workspaces workflow.
-- [ ] The shared workspace shell accepts and renders a member list without
+- [x] The shared workspace shell accepts and renders a member list without
       reaching into the database.
-- [ ] The right sidebar has a stable DOM ID suitable for LiveView tests.
-- [ ] Each rendered member has a stable DOM ID derived from durable member or
+- [x] The right sidebar has a stable DOM ID suitable for LiveView tests.
+- [x] Each rendered member has a stable DOM ID derived from durable member or
       user identity.
-- [ ] Every member renders as offline in this slice.
-- [ ] Offline styling is visually distinct and accessible enough to scan.
-- [ ] The selected channel message surface still works with the new sidebar.
-- [ ] Workspace invite and workspace entry shell surfaces can render the member
+- [x] Every member renders as offline in this slice.
+- [x] Offline styling is visually distinct and accessible enough to scan.
+- [x] The selected channel message surface still works with the new sidebar.
+- [x] Workspace invite and workspace entry shell surfaces can render the member
       sidebar when a selected Workspace is available.
-- [ ] The route placement remains in the existing authenticated browser
+- [x] The route placement remains in the existing authenticated browser
       pipeline and existing `live_session :require_authenticated_user` because
       the member list is private workspace data and needs `current_scope`.
-- [ ] Focused LiveView tests use stable selectors to prove all durable members
+- [x] Focused LiveView tests use stable selectors to prove all durable members
       render and appear offline.
 
 ## Blocked by
