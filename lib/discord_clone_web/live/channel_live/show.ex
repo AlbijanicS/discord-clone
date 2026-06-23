@@ -36,6 +36,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:renaming_channel_id, nil)
         |> assign(:channel_rename_form, nil)
         |> assign(:context_menu_position, nil)
+        |> assign(:workspace_members, members)
         |> stream_configure(:messages, dom_id: &"message-#{&1.id}")
         |> stream_configure(:workspace_members, dom_id: &"workspace-member-#{&1.user.id}")
         |> stream(:workspaces, workspaces)
@@ -177,8 +178,13 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
      |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})}
   end
 
-  def handle_info({:workspace_user_joined, _payload}, socket), do: {:noreply, socket}
-  def handle_info({:workspace_user_left, _payload}, socket), do: {:noreply, socket}
+  def handle_info({:workspace_user_joined, payload}, socket) do
+    {:noreply, Presence.user_joined(socket, payload)}
+  end
+
+  def handle_info({:workspace_user_left, payload}, socket) do
+    {:noreply, Presence.user_left(socket, payload)}
+  end
 
   @impl true
   def handle_event("show_workspace_form", _params, socket) do

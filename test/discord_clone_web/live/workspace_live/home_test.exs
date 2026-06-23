@@ -6,6 +6,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
   alias DiscordClone.Workspaces
   alias DiscordClone.Chat.Message
+  alias DiscordClone.Chat.WorkspaceServer
   alias DiscordClone.Workspaces.{Channel, WorkspaceInvite, WorkspaceMembership}
   alias DiscordClone.Repo
 
@@ -241,6 +242,136 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
                "#workspace-member-#{owner_scope.user.id}[data-presence-state='offline']",
                "presence_owner"
              )
+    end
+
+    test "marks another member online when they enter the same workspace without refresh", %{
+      conn: conn,
+      scope: receiver_scope
+    } do
+      sender_scope =
+        %{username: "live_presence_sender"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(receiver_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, sender_scope)
+      channel_path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+      sender_conn = build_conn() |> log_in_user(sender_scope.user)
+
+      {:ok, receiver_view, _html} = live(conn, channel_path)
+
+      assert has_element?(
+               receiver_view,
+               "#workspace-member-#{sender_scope.user.id}[data-presence-state='offline']",
+               "live_presence_sender"
+             )
+
+      {:ok, _sender_view, _html} = live(sender_conn, channel_path)
+
+      assert has_element?(
+               receiver_view,
+               "#workspace-member-#{sender_scope.user.id}[data-presence-state='online']",
+               "live_presence_sender"
+             )
+
+      assert has_element?(
+               receiver_view,
+               "#workspace-member-#{sender_scope.user.id} [data-member-status='online']",
+               "Online"
+             )
+    end
+
+    test "marks another member offline when their last channel surface closes without refresh", %{
+      conn: conn,
+      scope: receiver_scope
+    } do
+      sender_scope =
+        %{username: "live_presence_leaver"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(receiver_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, sender_scope)
+      channel_path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+      sender_conn = build_conn() |> log_in_user(sender_scope.user)
+
+      {:ok, receiver_view, _html} = live(conn, channel_path)
+      {:ok, sender_view, _html} = live(sender_conn, channel_path)
+
+      assert has_element?(
+               receiver_view,
+               "#workspace-member-#{sender_scope.user.id}[data-presence-state='online']",
+               "live_presence_leaver"
+             )
+
+      workspace_server = WorkspaceServer.whereis(workspace.id)
+      _ = :sys.get_state(workspace_server)
+
+      ref = Process.monitor(sender_view.pid)
+      Process.flag(:trap_exit, true)
+      Process.exit(sender_view.pid, :shutdown)
+      assert_receive {:DOWN, ^ref, :process, _pid, :shutdown}
+      _ = :sys.get_state(workspace_server)
+
+      assert has_element?(
+               receiver_view,
+               "#workspace-member-#{sender_scope.user.id}[data-presence-state='offline']",
+               "live_presence_leaver"
+             )
+
+      assert has_element?(
+               receiver_view,
+               "#workspace-member-#{sender_scope.user.id} [data-member-status='offline']",
+               "Offline"
+             )
+    end
+
+    test "keeps member rows stable when duplicate presence events arrive", %{
+      conn: conn,
+      scope: receiver_scope
+    } do
+      other_scope =
+        %{username: "stable_presence_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(receiver_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, other_scope)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      joined_event =
+        {:workspace_user_joined, %{workspace_id: workspace.id, user_id: other_scope.user.id}}
+
+      send(view.pid, joined_event)
+      send(view.pid, joined_event)
+
+      assert has_element?(
+               view,
+               "#workspace-member-#{other_scope.user.id}[data-presence-state='online']",
+               "stable_presence_member"
+             )
+
+      assert workspace_member_row_ids(view, other_scope.user.id) == [
+               "workspace-member-#{other_scope.user.id}"
+             ]
+
+      left_event =
+        {:workspace_user_left, %{workspace_id: workspace.id, user_id: other_scope.user.id}}
+
+      send(view.pid, left_event)
+      send(view.pid, left_event)
+
+      assert has_element?(
+               view,
+               "#workspace-member-#{other_scope.user.id}[data-presence-state='offline']",
+               "stable_presence_member"
+             )
+
+      assert workspace_member_row_ids(view, other_scope.user.id) == [
+               "workspace-member-#{other_scope.user.id}"
+             ]
     end
 
     test "renders persisted channel messages with author and timestamp", %{
@@ -1350,6 +1481,41 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
              )
     end
 
+    test "marks another member online on the invite surface without refresh", %{
+      conn: conn,
+      scope: receiver_scope
+    } do
+      sender_scope =
+        %{username: "invite_presence_sender"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(receiver_scope, %{name: "Foundry"})
+      workspace = set_invite_policy!(workspace, "members_can_invite")
+      add_workspace_member!(workspace, sender_scope)
+      sender_conn = build_conn() |> log_in_user(sender_scope.user)
+
+      {:ok, receiver_view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/invites/new")
+
+      assert has_element?(
+               receiver_view,
+               "#workspace-member-#{sender_scope.user.id}[data-presence-state='offline']",
+               "invite_presence_sender"
+             )
+
+      {:ok, _sender_view, _html} =
+        live(
+          sender_conn,
+          ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+        )
+
+      assert has_element?(
+               receiver_view,
+               "#workspace-member-#{sender_scope.user.id}[data-presence-state='online']",
+               "invite_presence_sender"
+             )
+    end
+
     test "shows and opens the workspace create action from the invite screen", %{
       conn: conn,
       scope: scope
@@ -1495,5 +1661,13 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
     workspace
     |> Ecto.Changeset.change(invite_policy: invite_policy)
     |> Repo.update!()
+  end
+
+  defp workspace_member_row_ids(view, user_id) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> then(& &1["#workspace-members > #workspace-member-#{user_id}"])
+    |> LazyHTML.attribute("id")
   end
 end

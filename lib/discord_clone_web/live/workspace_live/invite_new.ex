@@ -26,6 +26,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
         |> assign(:context_menu_position, nil)
         |> assign(:invite_form, invite_form())
         |> assign(:invite_url, nil)
+        |> assign(:workspace_members, members)
         |> stream_configure(:workspace_members, dom_id: &"workspace-member-#{&1.user.id}")
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
@@ -76,8 +77,13 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
   end
 
   @impl true
-  def handle_info({:workspace_user_joined, _payload}, socket), do: {:noreply, socket}
-  def handle_info({:workspace_user_left, _payload}, socket), do: {:noreply, socket}
+  def handle_info({:workspace_user_joined, payload}, socket) do
+    {:noreply, Presence.user_joined(socket, payload)}
+  end
+
+  def handle_info({:workspace_user_left, payload}, socket) do
+    {:noreply, Presence.user_left(socket, payload)}
+  end
 
   @impl true
   def handle_event("show_workspace_form", _params, socket) do
