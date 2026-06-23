@@ -59,6 +59,22 @@ defmodule DiscordClone.Workspaces do
 
   def list_channels(_scope, _workspace_id), do: {:error, :unauthenticated}
 
+  def list_members(%Scope{} = scope, workspace_id) do
+    with {:ok, %Workspace{id: workspace_id}} <- fetch_workspace(scope, workspace_id) do
+      members =
+        Repo.all(
+          from membership in WorkspaceMembership,
+            where: membership.workspace_id == ^workspace_id,
+            order_by: [asc: membership.inserted_at, asc: membership.id],
+            preload: [:user]
+        )
+
+      {:ok, members}
+    end
+  end
+
+  def list_members(_scope, _workspace_id), do: {:error, :unauthenticated}
+
   def fetch_channel(%Scope{} = scope, workspace_id, channel_id) do
     with {:ok, %Workspace{id: workspace_id}} <- fetch_workspace(scope, workspace_id),
          %Channel{} = channel <- Repo.get_by(Channel, id: channel_id, workspace_id: workspace_id) do

@@ -232,6 +232,60 @@ defmodule DiscordClone.WorkspacesTest do
     end
   end
 
+  describe "list_members/2" do
+    test "returns workspace members with user display data for a workspace member" do
+      owner_scope = user_fixture(%{username: "owner_user"}) |> user_scope_fixture()
+      member_scope = user_fixture(%{username: "member_user"}) |> user_scope_fixture()
+
+      assert {:ok, workspace} =
+               Workspaces.create_workspace(owner_scope, %{name: "Presence Workspace"})
+
+      add_workspace_member!(workspace, member_scope)
+
+      assert {:ok, members} = Workspaces.list_members(owner_scope, workspace.id)
+
+      assert Enum.map(members, & &1.role) == ["owner", "member"]
+      assert Enum.map(members, & &1.user.username) == ["owner_user", "member_user"]
+      assert Enum.all?(members, &(&1.workspace_id == workspace.id))
+    end
+
+    test "requires an authenticated scope" do
+      assert Workspaces.list_members(nil, 1) == {:error, :unauthenticated}
+
+      assert Workspaces.list_members(%DiscordClone.Accounts.Scope{}, 1) ==
+               {:error, :unauthenticated}
+    end
+
+    test "rejects logged-in users who are not workspace members" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+
+      assert {:ok, workspace} =
+               Workspaces.create_workspace(owner_scope, %{name: "Private Workspace"})
+
+      assert Workspaces.list_members(non_member_scope, workspace.id) == {:error, :unauthorized}
+    end
+
+    test "returns not found for a missing workspace" do
+      scope = user_scope_fixture()
+
+      assert Workspaces.list_members(scope, -1) == {:error, :not_found}
+    end
+
+    test "allows non-owner workspace members to list members" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+
+      assert {:ok, workspace} =
+               Workspaces.create_workspace(owner_scope, %{name: "Member Visible Workspace"})
+
+      add_workspace_member!(workspace, member_scope)
+
+      assert {:ok, members} = Workspaces.list_members(member_scope, workspace.id)
+      assert Enum.map(members, & &1.user_id) == [owner_scope.user.id, member_scope.user.id]
+    end
+  end
+
   describe "fetch_channel/3" do
     test "returns a channel in the selected workspace for a workspace member" do
       scope = user_scope_fixture()
