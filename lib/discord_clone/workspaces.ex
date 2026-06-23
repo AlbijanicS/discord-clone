@@ -14,6 +14,7 @@ defmodule DiscordClone.Workspaces do
 
   alias Ecto.Multi
   alias DiscordClone.Accounts.{Scope, User}
+  alias DiscordClone.Chat
   alias DiscordClone.Repo
   alias DiscordClone.Workspaces.{Channel, Workspace, WorkspaceInvite, WorkspaceMembership}
 
@@ -343,8 +344,10 @@ defmodule DiscordClone.Workspaces do
 
   def delete_workspace(%Scope{user: %User{id: user_id}}, workspace_id) do
     with {:ok, workspace} <- get_workspace(workspace_id),
-         :ok <- authorize_delete_workspace(workspace, user_id) do
-      Repo.delete(workspace)
+         :ok <- authorize_delete_workspace(workspace, user_id),
+         {:ok, deleted_workspace} <- Repo.delete(workspace) do
+      :ok = Chat.stop_workspace_presence(deleted_workspace.id)
+      {:ok, deleted_workspace}
     end
   end
 

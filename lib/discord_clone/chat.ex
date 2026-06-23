@@ -61,6 +61,13 @@ defmodule DiscordClone.Chat do
   def join_workspace_presence(_scope, _workspace_id, _live_view_pid),
     do: {:error, :unauthenticated}
 
+  def stop_workspace_presence(workspace_id) do
+    case WorkspaceServer.whereis(workspace_id) do
+      nil -> :ok
+      pid -> DynamicSupervisor.terminate_child(WorkspaceSupervisor, pid)
+    end
+  end
+
   def list_recent_messages(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
       messages =

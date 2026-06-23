@@ -241,6 +241,40 @@ defmodule DiscordClone.ChatTest do
       assert Chat.join_workspace_presence(non_member_scope, workspace.id) == {:error, :not_found}
       assert WorkspaceServer.whereis(workspace.id) == nil
     end
+
+    test "runtime crash does not interrupt persisted chat workflows or rejoining presence" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      live_view_pid = start_live_view_process()
+
+      assert :ok = Chat.join_workspace_presence(scope, workspace.id, live_view_pid)
+      workspace_pid = WorkspaceServer.whereis(workspace.id)
+      assert is_pid(workspace_pid)
+
+      ref = Process.monitor(workspace_pid)
+      Process.exit(workspace_pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^workspace_pid, :killed}
+      _ = :sys.get_state(DiscordClone.Chat.WorkspaceSupervisor)
+
+      subscriber = start_subscriber(scope, workspace.default_channel_id)
+      assert_receive {:subscribed, ^subscriber}
+
+      assert {:ok, sent_message} =
+               Chat.send_message(scope, workspace.default_channel_id, %{"content" => "still here"})
+
+      assert_receive {:subscriber_received, ^subscriber, {:message_created, received_message}}
+      assert received_message.id == sent_message.id
+
+      assert {:ok, [loaded_message]} =
+               Chat.list_recent_messages(scope, workspace.default_channel_id)
+
+      assert loaded_message.id == sent_message.id
+
+      recovered_live_view_pid = start_live_view_process()
+      assert :ok = Chat.join_workspace_presence(scope, workspace.id, recovered_live_view_pid)
+      assert {:ok, [user_id]} = Chat.list_online_workspace_user_ids(scope, workspace.id)
+      assert user_id == scope.user.id
+    end
   end
 
   describe "list_recent_messages/2" do

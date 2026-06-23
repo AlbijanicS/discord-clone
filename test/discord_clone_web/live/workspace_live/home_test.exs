@@ -211,6 +211,46 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-composer-form")
     end
 
+    test "renders durable members offline after workspace presence runtime loss", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      other_scope =
+        %{username: "runtime_loss_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(member_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, other_scope)
+
+      other_live_view_pid = start_live_view_process()
+      assert :ok = Chat.join_workspace_presence(other_scope, workspace.id, other_live_view_pid)
+      workspace_pid = WorkspaceServer.whereis(workspace.id)
+      assert is_pid(workspace_pid)
+
+      ref = Process.monitor(workspace_pid)
+      Process.exit(workspace_pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^workspace_pid, :killed}
+      _ = :sys.get_state(DiscordClone.Chat.WorkspaceSupervisor)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#workspace-members-sidebar[aria-label='Workspace members']")
+
+      assert has_element?(
+               view,
+               "#workspace-member-#{other_scope.user.id}[data-presence-state='offline']",
+               "runtime_loss_member"
+             )
+
+      assert has_element?(
+               view,
+               "#workspace-member-#{other_scope.user.id} [data-member-status='offline']",
+               "Offline"
+             )
+    end
+
     test "marks the current member online after entering a channel surface", %{
       conn: conn,
       scope: member_scope
@@ -1802,6 +1842,21 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       content: content,
       inserted_at: inserted_at,
       updated_at: inserted_at
+    })
+  end
+
+  defp start_live_view_process do
+    start_supervised!(%{
+      id: System.unique_integer([:positive]),
+      start:
+        {Task, :start_link,
+         [
+           fn ->
+             receive do
+               :stop -> :ok
+             end
+           end
+         ]}
     })
   end
 

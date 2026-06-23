@@ -1,7 +1,7 @@
 defmodule DiscordClone.WorkspacesTest do
   use DiscordClone.DataCase
 
-  alias DiscordClone.Chat.Message
+  alias DiscordClone.Chat.{Message, WorkspaceServer}
   alias DiscordClone.Workspaces
   alias DiscordClone.Workspaces.{Channel, WorkspaceInvite, WorkspaceMembership}
 
@@ -1164,6 +1164,23 @@ defmodule DiscordClone.WorkspacesTest do
       refute Repo.get(Channel, channel.id)
       refute Repo.get_by(WorkspaceMembership, workspace_id: workspace.id)
       assert Workspaces.list_workspaces(owner_scope) == {:ok, []}
+    end
+
+    test "stops the workspace presence runtime for a deleted workspace" do
+      owner_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Team Space"})
+
+      assert :ok = DiscordClone.Chat.join_workspace_presence(owner_scope, workspace.id)
+      presence_pid = WorkspaceServer.whereis(workspace.id)
+      assert is_pid(presence_pid)
+
+      ref = Process.monitor(presence_pid)
+
+      assert {:ok, deleted_workspace} = Workspaces.delete_workspace(owner_scope, workspace.id)
+
+      assert deleted_workspace.id == workspace.id
+      assert_receive {:DOWN, ^ref, :process, ^presence_pid, :shutdown}
+      assert WorkspaceServer.whereis(workspace.id) == nil
     end
 
     test "rejects non-owners, missing workspaces, and unauthenticated scopes" do
