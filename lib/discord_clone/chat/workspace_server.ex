@@ -3,7 +3,7 @@ defmodule DiscordClone.Chat.WorkspaceServer do
 
   use GenServer
 
-  alias DiscordClone.Chat.WorkspaceRegistry
+  alias DiscordClone.Chat.{WorkspacePresence, WorkspaceRegistry}
 
   def start_link(workspace_id) do
     GenServer.start_link(__MODULE__, workspace_id, name: via_tuple(workspace_id))
@@ -31,6 +31,8 @@ defmodule DiscordClone.Chat.WorkspaceServer do
 
   @impl true
   def handle_call({:join, user_id, live_view_pid}, _from, state) do
+    user_was_online? = Map.has_key?(state.users, user_id)
+
     state =
       if tracked_pid?(state, user_id, live_view_pid) do
         state
@@ -50,6 +52,10 @@ defmodule DiscordClone.Chat.WorkspaceServer do
         %{state | users: users, monitors: monitors}
       end
 
+    if !user_was_online? and Map.has_key?(state.users, user_id) do
+      :ok = WorkspacePresence.broadcast_user_joined(state.workspace_id, user_id)
+    end
+
     {:reply, :ok, state}
   end
 
@@ -63,8 +69,13 @@ defmodule DiscordClone.Chat.WorkspaceServer do
     case Map.pop(state.monitors, monitor_ref) do
       {{user_id, live_view_pid}, monitors} ->
         users = remove_user_pid(state.users, user_id, live_view_pid)
+        state = %{state | users: users, monitors: monitors}
 
-        {:noreply, %{state | users: users, monitors: monitors}}
+        if !Map.has_key?(state.users, user_id) do
+          :ok = WorkspacePresence.broadcast_user_left(state.workspace_id, user_id)
+        end
+
+        {:noreply, state}
 
       {nil, _monitors} ->
         {:noreply, state}

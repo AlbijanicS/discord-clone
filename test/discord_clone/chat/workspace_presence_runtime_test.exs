@@ -1,7 +1,7 @@
 defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
   use DiscordClone.DataCase, async: false
 
-  alias DiscordClone.Chat.{WorkspaceServer, WorkspaceSupervisor}
+  alias DiscordClone.Chat.{WorkspacePresence, WorkspaceServer, WorkspaceSupervisor}
 
   describe "workspace presence runtime supervision" do
     test "application starts the workspace presence registry and supervisor" do
@@ -147,6 +147,100 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
 
       assert WorkspaceServer.online_user_ids(workspace_pid) == [user_id]
       assert WorkspaceServer.online_user_ids(workspace_pid) == [user_id]
+    end
+  end
+
+  describe "workspace presence broadcasts" do
+    test "first connection for a user broadcasts that workspace user joined" do
+      workspace_id = System.unique_integer([:positive])
+      user_id = System.unique_integer([:positive])
+      live_view_pid = self()
+
+      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
+      assert :ok = WorkspacePresence.subscribe(workspace_id)
+
+      assert :ok = WorkspaceServer.join(workspace_pid, user_id, live_view_pid)
+
+      assert_receive {:workspace_user_joined,
+                      %{workspace_id: ^workspace_id, user_id: ^user_id} = payload}
+
+      refute Map.has_key?(payload, :user)
+      refute Map.has_key?(payload, :members)
+    end
+
+    test "duplicate connection for an already-online user does not broadcast another joined event" do
+      workspace_id = System.unique_integer([:positive])
+      user_id = System.unique_integer([:positive])
+      live_view_pid = self()
+
+      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
+      assert :ok = WorkspacePresence.subscribe(workspace_id)
+      assert :ok = WorkspaceServer.join(workspace_pid, user_id, live_view_pid)
+      assert_receive {:workspace_user_joined, %{workspace_id: ^workspace_id, user_id: ^user_id}}
+
+      assert :ok = WorkspaceServer.join(workspace_pid, user_id, live_view_pid)
+
+      refute_receive {:workspace_user_joined, _payload}, 50
+    end
+
+    test "additional connection for an already-online user does not broadcast another joined event" do
+      workspace_id = System.unique_integer([:positive])
+      user_id = System.unique_integer([:positive])
+      first_live_view_pid = self()
+      second_live_view_pid = start_live_view_process()
+
+      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
+      assert :ok = WorkspacePresence.subscribe(workspace_id)
+      assert :ok = WorkspaceServer.join(workspace_pid, user_id, first_live_view_pid)
+      assert_receive {:workspace_user_joined, %{workspace_id: ^workspace_id, user_id: ^user_id}}
+
+      assert :ok = WorkspaceServer.join(workspace_pid, user_id, second_live_view_pid)
+
+      refute_receive {:workspace_user_joined, _payload}, 50
+    end
+
+    test "last disconnect for a user broadcasts that workspace user left" do
+      workspace_id = System.unique_integer([:positive])
+      user_id = System.unique_integer([:positive])
+      live_view_pid = start_live_view_process()
+
+      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
+      assert :ok = WorkspacePresence.subscribe(workspace_id)
+      assert :ok = WorkspaceServer.join(workspace_pid, user_id, live_view_pid)
+      assert_receive {:workspace_user_joined, %{workspace_id: ^workspace_id, user_id: ^user_id}}
+
+      ref = Process.monitor(live_view_pid)
+      send(live_view_pid, :stop)
+
+      assert_receive {:DOWN, ^ref, :process, ^live_view_pid, :normal}
+      _ = :sys.get_state(workspace_pid)
+
+      assert_receive {:workspace_user_left,
+                      %{workspace_id: ^workspace_id, user_id: ^user_id} = payload}
+
+      refute Map.has_key?(payload, :user)
+      refute Map.has_key?(payload, :members)
+    end
+
+    test "non-last disconnect for a user does not broadcast that workspace user left" do
+      workspace_id = System.unique_integer([:positive])
+      user_id = System.unique_integer([:positive])
+      first_live_view_pid = start_live_view_process()
+      second_live_view_pid = start_live_view_process()
+
+      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
+      assert :ok = WorkspacePresence.subscribe(workspace_id)
+      assert :ok = WorkspaceServer.join(workspace_pid, user_id, first_live_view_pid)
+      assert_receive {:workspace_user_joined, %{workspace_id: ^workspace_id, user_id: ^user_id}}
+      assert :ok = WorkspaceServer.join(workspace_pid, user_id, second_live_view_pid)
+
+      ref = Process.monitor(first_live_view_pid)
+      send(first_live_view_pid, :stop)
+
+      assert_receive {:DOWN, ^ref, :process, ^first_live_view_pid, :normal}
+      _ = :sys.get_state(workspace_pid)
+
+      refute_receive {:workspace_user_left, _payload}, 50
     end
   end
 
