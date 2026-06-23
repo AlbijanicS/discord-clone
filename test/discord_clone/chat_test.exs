@@ -2,7 +2,7 @@ defmodule DiscordClone.ChatTest do
   use DiscordClone.DataCase, async: false
 
   alias DiscordClone.Chat
-  alias DiscordClone.Chat.Message
+  alias DiscordClone.Chat.{Message, WorkspaceServer}
   alias DiscordClone.Workspaces
 
   import DiscordClone.AccountsFixtures
@@ -121,6 +121,125 @@ defmodule DiscordClone.ChatTest do
       assert {:ok, []} = Chat.list_older_messages(scope, workspace.default_channel_id, message)
 
       refute_receive {:message_created, _message}
+    end
+  end
+
+  describe "subscribe_to_workspace_presence/2" do
+    test "subscribes workspace members without starting the workspace runtime" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert :ok = Chat.subscribe_to_workspace_presence(scope, workspace.id)
+      assert WorkspaceServer.whereis(workspace.id) == nil
+    end
+
+    test "rejects anonymous scopes" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert Chat.subscribe_to_workspace_presence(nil, workspace.id) ==
+               {:error, :unauthenticated}
+
+      assert Chat.subscribe_to_workspace_presence(%DiscordClone.Accounts.Scope{}, workspace.id) ==
+               {:error, :unauthenticated}
+    end
+
+    test "rejects logged-in users who are not workspace members" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      assert Chat.subscribe_to_workspace_presence(non_member_scope, workspace.id) ==
+               {:error, :not_found}
+    end
+  end
+
+  describe "list_online_workspace_user_ids/2" do
+    test "returns an empty list for workspace members without starting an absent runtime" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert {:ok, []} = Chat.list_online_workspace_user_ids(scope, workspace.id)
+      assert WorkspaceServer.whereis(workspace.id) == nil
+    end
+
+    test "rejects anonymous scopes" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert Chat.list_online_workspace_user_ids(nil, workspace.id) ==
+               {:error, :unauthenticated}
+
+      assert Chat.list_online_workspace_user_ids(%DiscordClone.Accounts.Scope{}, workspace.id) ==
+               {:error, :unauthenticated}
+    end
+
+    test "rejects logged-in users who are not workspace members" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      assert Chat.list_online_workspace_user_ids(non_member_scope, workspace.id) ==
+               {:error, :not_found}
+    end
+  end
+
+  describe "join_workspace_presence/3" do
+    test "starts the workspace runtime and tracks the supplied live view pid" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      live_view_pid = start_live_view_process()
+
+      assert :ok = Chat.join_workspace_presence(scope, workspace.id, live_view_pid)
+
+      assert is_pid(WorkspaceServer.whereis(workspace.id))
+      assert {:ok, [user_id]} = Chat.list_online_workspace_user_ids(scope, workspace.id)
+      assert user_id == scope.user.id
+    end
+
+    test "defaults to tracking the caller process" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert :ok = Chat.join_workspace_presence(scope, workspace.id)
+      assert {:ok, [user_id]} = Chat.list_online_workspace_user_ids(scope, workspace.id)
+      assert user_id == scope.user.id
+    end
+
+    test "broadcasts user-level presence events to public subscribers" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      live_view_pid = start_live_view_process()
+
+      assert :ok = Chat.subscribe_to_workspace_presence(scope, workspace.id)
+      assert :ok = Chat.join_workspace_presence(scope, workspace.id, live_view_pid)
+
+      assert_receive {:workspace_user_joined,
+                      %{workspace_id: workspace_id, user_id: user_id} = payload}
+
+      assert workspace_id == workspace.id
+      assert user_id == scope.user.id
+      refute Map.has_key?(payload, :user)
+      refute Map.has_key?(payload, :members)
+    end
+
+    test "rejects anonymous scopes" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert Chat.join_workspace_presence(nil, workspace.id) == {:error, :unauthenticated}
+
+      assert Chat.join_workspace_presence(%DiscordClone.Accounts.Scope{}, workspace.id) ==
+               {:error, :unauthenticated}
+    end
+
+    test "rejects logged-in users who are not workspace members without starting a runtime" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      assert Chat.join_workspace_presence(non_member_scope, workspace.id) == {:error, :not_found}
+      assert WorkspaceServer.whereis(workspace.id) == nil
     end
   end
 
@@ -434,5 +553,20 @@ defmodule DiscordClone.ChatTest do
         1_000 -> send(parent, {:subscriber_timeout, self()})
       end
     end)
+  end
+
+  defp start_live_view_process do
+    start_supervised!(%{
+      id: System.unique_integer([:positive]),
+      start:
+        {Task, :start_link,
+         [
+           fn ->
+             receive do
+               :stop -> :ok
+             end
+           end
+         ]}
+    })
   end
 end

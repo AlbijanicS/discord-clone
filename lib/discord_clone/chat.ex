@@ -9,7 +9,7 @@ defmodule DiscordClone.Chat do
   import Ecto.Query
 
   alias DiscordClone.Accounts.{Scope, User}
-  alias DiscordClone.Chat.Message
+  alias DiscordClone.Chat.{Message, WorkspacePresence, WorkspaceServer, WorkspaceSupervisor}
   alias DiscordClone.Repo
   alias DiscordClone.Workspaces.{Channel, WorkspaceMembership}
 
@@ -28,6 +28,38 @@ defmodule DiscordClone.Chat do
   end
 
   def subscribe_to_channel_messages(_scope, _channel_id), do: {:error, :unauthenticated}
+
+  def subscribe_to_workspace_presence(%Scope{user: %User{id: user_id}}, workspace_id) do
+    with :ok <- authorize_workspace_member(workspace_id, user_id) do
+      WorkspacePresence.subscribe(workspace_id)
+    end
+  end
+
+  def subscribe_to_workspace_presence(_scope, _workspace_id), do: {:error, :unauthenticated}
+
+  def list_online_workspace_user_ids(%Scope{user: %User{id: user_id}}, workspace_id) do
+    with :ok <- authorize_workspace_member(workspace_id, user_id) do
+      case WorkspaceServer.whereis(workspace_id) do
+        nil -> {:ok, []}
+        pid -> {:ok, WorkspaceServer.online_user_ids(pid)}
+      end
+    end
+  end
+
+  def list_online_workspace_user_ids(_scope, _workspace_id), do: {:error, :unauthenticated}
+
+  def join_workspace_presence(scope, workspace_id, live_view_pid \\ self())
+
+  def join_workspace_presence(%Scope{user: %User{id: user_id}}, workspace_id, live_view_pid)
+      when is_pid(live_view_pid) do
+    with :ok <- authorize_workspace_member(workspace_id, user_id),
+         {:ok, workspace_pid} <- WorkspaceSupervisor.start_workspace(workspace_id) do
+      WorkspaceServer.join(workspace_pid, user_id, live_view_pid)
+    end
+  end
+
+  def join_workspace_presence(_scope, _workspace_id, _live_view_pid),
+    do: {:error, :unauthenticated}
 
   def list_recent_messages(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
@@ -111,6 +143,17 @@ defmodule DiscordClone.Chat do
         where: channel.id == ^channel_id,
         limit: 1
     )
+  end
+
+  defp authorize_workspace_member(workspace_id, user_id) do
+    if Repo.exists?(
+         from membership in WorkspaceMembership,
+           where: membership.workspace_id == ^workspace_id and membership.user_id == ^user_id
+       ) do
+      :ok
+    else
+      {:error, :not_found}
+    end
   end
 
   defp broadcast_message_created(%Message{} = message) do
