@@ -14,6 +14,8 @@ defmodule DiscordClone.Application do
       {Phoenix.PubSub, name: DiscordClone.PubSub},
       {Registry, keys: :unique, name: DiscordClone.Chat.WorkspaceRegistry},
       {DynamicSupervisor, strategy: :one_for_one, name: DiscordClone.Chat.WorkspaceSupervisor},
+      {Registry, keys: :unique, name: DiscordClone.Chat.ChannelRegistry},
+      {DynamicSupervisor, strategy: :one_for_one, name: DiscordClone.Chat.ChannelSupervisor},
       # Start a worker by calling: DiscordClone.Worker.start_link(arg)
       # {DiscordClone.Worker, arg},
       # Start to serve requests, typically the last entry

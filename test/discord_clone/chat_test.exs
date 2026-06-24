@@ -277,6 +277,55 @@ defmodule DiscordClone.ChatTest do
     end
   end
 
+  describe "ensure_channel_runtime/2" do
+    test "starts a channel runtime for a workspace member" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert {:ok, pid} = Chat.ensure_channel_runtime(scope, workspace.default_channel_id)
+      assert is_pid(pid)
+      assert Process.alive?(pid)
+    end
+
+    test "reuses the active channel runtime when ensured twice" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert {:ok, first_pid} = Chat.ensure_channel_runtime(scope, workspace.default_channel_id)
+      assert {:ok, second_pid} = Chat.ensure_channel_runtime(scope, workspace.default_channel_id)
+
+      assert second_pid == first_pid
+    end
+
+    test "rejects anonymous scopes" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert Chat.ensure_channel_runtime(nil, workspace.default_channel_id) ==
+               {:error, :unauthenticated}
+
+      assert Chat.ensure_channel_runtime(
+               %DiscordClone.Accounts.Scope{},
+               workspace.default_channel_id
+             ) == {:error, :unauthenticated}
+    end
+
+    test "rejects logged-in users who are not workspace members" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      assert Chat.ensure_channel_runtime(non_member_scope, workspace.default_channel_id) ==
+               {:error, :not_found}
+    end
+
+    test "rejects missing channels" do
+      scope = user_scope_fixture()
+
+      assert Chat.ensure_channel_runtime(scope, -1) == {:error, :not_found}
+    end
+  end
+
   describe "list_recent_messages/2" do
     test "loads the latest channel messages oldest-to-newest with authors preloaded" do
       scope = user_scope_fixture()

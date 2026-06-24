@@ -13,7 +13,7 @@ defmodule DiscordClone.Chat.WorkspaceServer do
 
   def whereis(workspace_id) do
     case Registry.lookup(WorkspaceRegistry, workspace_id) do
-      [{pid, _value}] -> pid
+      [{pid, _value}] -> if Process.alive?(pid), do: pid
       [] -> nil
     end
   end

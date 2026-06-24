@@ -7,7 +7,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
   alias DiscordClone.Workspaces
   alias DiscordClone.Chat
   alias DiscordClone.Chat.Message
-  alias DiscordClone.Chat.WorkspaceServer
+  alias DiscordClone.Chat.{ChannelServer, WorkspaceServer}
   alias DiscordClone.Workspaces.{Channel, WorkspaceInvite, WorkspaceMembership}
   alias DiscordClone.Repo
 
@@ -169,6 +169,32 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-composer-form")
       assert has_element?(view, "#message_content")
       refute has_element?(view, "#message-composer-placeholder")
+    end
+
+    test "starts a channel runtime after connected channel entry", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert ChannelServer.whereis(workspace.default_channel_id) == nil
+
+      {:ok, _view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert is_pid(ChannelServer.whereis(workspace.default_channel_id))
+    end
+
+    test "does not start a channel runtime during disconnected static render", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      conn = get(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert html_response(conn, 200)
+      assert ChannelServer.whereis(workspace.default_channel_id) == nil
     end
 
     test "renders durable workspace members in the channel shell", %{

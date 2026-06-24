@@ -9,7 +9,14 @@ defmodule DiscordClone.Chat do
   import Ecto.Query
 
   alias DiscordClone.Accounts.{Scope, User}
-  alias DiscordClone.Chat.{Message, WorkspacePresence, WorkspacePresenceRuntime}
+
+  alias DiscordClone.Chat.{
+    ChannelSupervisor,
+    Message,
+    WorkspacePresence,
+    WorkspacePresenceRuntime
+  }
+
   alias DiscordClone.Repo
   alias DiscordClone.Workspaces.{Channel, WorkspaceMembership}
 
@@ -60,6 +67,16 @@ defmodule DiscordClone.Chat do
   def stop_workspace_presence(workspace_id) do
     WorkspacePresenceRuntime.stop_workspace(workspace_id)
   end
+
+  def ensure_channel_runtime(%Scope{user: %User{id: user_id}}, channel_id) do
+    with %Channel{} <- get_member_channel(channel_id, user_id) do
+      ChannelSupervisor.start_channel(channel_id)
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def ensure_channel_runtime(_scope, _channel_id), do: {:error, :unauthenticated}
 
   def list_recent_messages(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
