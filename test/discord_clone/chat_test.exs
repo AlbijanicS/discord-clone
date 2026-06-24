@@ -360,6 +360,38 @@ defmodule DiscordClone.ChatTest do
       assert Enum.all?(recent_messages, &(&1.user.username == scope.user.username))
     end
 
+    test "reads from the active channel runtime cache" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      cached_message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "cached",
+          ~U[2026-06-19 10:00:00Z]
+        )
+
+      assert {:ok, [loaded_message]} =
+               Chat.list_recent_messages(scope, workspace.default_channel_id)
+
+      assert loaded_message.id == cached_message.id
+
+      uncached_message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "not in runtime cache yet",
+          ~U[2026-06-19 10:01:00Z]
+        )
+
+      assert {:ok, cached_messages} =
+               Chat.list_recent_messages(scope, workspace.default_channel_id)
+
+      assert Enum.map(cached_messages, & &1.id) == [cached_message.id]
+      refute uncached_message.id in Enum.map(cached_messages, & &1.id)
+    end
+
     test "rejects anonymous scopes" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})

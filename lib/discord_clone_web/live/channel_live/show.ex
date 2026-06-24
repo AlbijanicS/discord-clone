@@ -17,7 +17,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
          {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id),
          {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id),
-         {:ok, messages} <- Chat.list_recent_messages(socket.assigns.current_scope, channel.id),
+         {:ok, messages} <- load_recent_messages(socket, channel.id),
          :ok <- ensure_channel_runtime(socket, channel.id),
          :ok <- subscribe_to_channel_messages(socket, channel.id) do
       socket =
@@ -597,6 +597,14 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       end
     else
       :ok
+    end
+  end
+
+  defp load_recent_messages(socket, channel_id) do
+    if connected?(socket) do
+      Chat.list_recent_messages(socket.assigns.current_scope, channel_id)
+    else
+      {:ok, []}
     end
   end
 

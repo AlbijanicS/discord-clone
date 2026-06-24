@@ -12,6 +12,7 @@ defmodule DiscordClone.Chat do
 
   alias DiscordClone.Chat.{
     ChannelSupervisor,
+    ChannelServer,
     Message,
     WorkspacePresence,
     WorkspacePresenceRuntime
@@ -79,17 +80,9 @@ defmodule DiscordClone.Chat do
   def ensure_channel_runtime(_scope, _channel_id), do: {:error, :unauthenticated}
 
   def list_recent_messages(%Scope{user: %User{id: user_id}}, channel_id) do
-    with %Channel{} <- get_member_channel(channel_id, user_id) do
-      messages =
-        Message
-        |> where([message], message.channel_id == ^channel_id)
-        |> order_by([message], desc: message.inserted_at, desc: message.id)
-        |> limit(^@recent_message_limit)
-        |> preload(:user)
-        |> Repo.all()
-        |> Enum.reverse()
-
-      {:ok, messages}
+    with %Channel{} <- get_member_channel(channel_id, user_id),
+         {:ok, pid} <- ChannelSupervisor.start_channel(channel_id) do
+      ChannelServer.list_recent_messages(pid)
     else
       nil -> {:error, :not_found}
     end
@@ -137,6 +130,8 @@ defmodule DiscordClone.Chat do
       |> case do
         {:ok, message} ->
           message = Repo.preload(message, :user)
+          {:ok, pid} = ChannelSupervisor.start_channel(channel_id)
+          :ok = ChannelServer.put_recent_message(pid, message)
           :ok = broadcast_message_created(message)
           {:ok, message}
 
