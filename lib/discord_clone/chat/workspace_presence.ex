@@ -5,12 +5,30 @@ defmodule DiscordClone.Chat.WorkspacePresence do
     Phoenix.PubSub.subscribe(DiscordClone.PubSub, topic(workspace_id))
   end
 
+  def user_joined_event(workspace_id, user_id) do
+    {:workspace_user_joined, payload(workspace_id, user_id)}
+  end
+
+  def user_left_event(workspace_id, user_id) do
+    {:workspace_user_left, payload(workspace_id, user_id)}
+  end
+
+  def to_presence_event({:workspace_user_joined, payload}) do
+    {:ok, :user_joined, payload}
+  end
+
+  def to_presence_event({:workspace_user_left, payload}) do
+    {:ok, :user_left, payload}
+  end
+
+  def to_presence_event(_event), do: :error
+
   def broadcast_user_joined(workspace_id, user_id) do
-    broadcast(workspace_id, {:workspace_user_joined, payload(workspace_id, user_id)})
+    broadcast(workspace_id, user_joined_event(workspace_id, user_id))
   end
 
   def broadcast_user_left(workspace_id, user_id) do
-    broadcast(workspace_id, {:workspace_user_left, payload(workspace_id, user_id)})
+    broadcast(workspace_id, user_left_event(workspace_id, user_id))
   end
 
   defp broadcast(workspace_id, event) do

@@ -2,9 +2,17 @@ defmodule DiscordCloneWeb.WorkspaceLive.Presence do
   @moduledoc false
 
   import Phoenix.Component, only: [assign: 3]
-  import Phoenix.LiveView, only: [connected?: 1, stream: 4]
+  import Phoenix.LiveView, only: [connected?: 1, stream: 3, stream: 4, stream_configure: 3]
 
   alias DiscordClone.Chat
+
+  def prepare_workspace(socket, workspace_id, members) do
+    socket
+    |> assign(:workspace_members, members)
+    |> stream_configure(:workspace_members, dom_id: &"workspace-member-#{&1.user.id}")
+    |> stream(:workspace_members, members)
+    |> join_workspace(workspace_id)
+  end
 
   def join_workspace(socket, workspace_id) do
     if connected?(socket) do

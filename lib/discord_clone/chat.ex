@@ -9,7 +9,7 @@ defmodule DiscordClone.Chat do
   import Ecto.Query
 
   alias DiscordClone.Accounts.{Scope, User}
-  alias DiscordClone.Chat.{Message, WorkspacePresence, WorkspaceServer, WorkspaceSupervisor}
+  alias DiscordClone.Chat.{Message, WorkspacePresence, WorkspacePresenceRuntime}
   alias DiscordClone.Repo
   alias DiscordClone.Workspaces.{Channel, WorkspaceMembership}
 
@@ -39,10 +39,7 @@ defmodule DiscordClone.Chat do
 
   def list_online_workspace_user_ids(%Scope{user: %User{id: user_id}}, workspace_id) do
     with :ok <- authorize_workspace_member(workspace_id, user_id) do
-      case WorkspaceServer.whereis(workspace_id) do
-        nil -> {:ok, []}
-        pid -> {:ok, WorkspaceServer.online_user_ids(pid)}
-      end
+      {:ok, WorkspacePresenceRuntime.online_user_ids(workspace_id)}
     end
   end
 
@@ -52,9 +49,8 @@ defmodule DiscordClone.Chat do
 
   def join_workspace_presence(%Scope{user: %User{id: user_id}}, workspace_id, live_view_pid)
       when is_pid(live_view_pid) do
-    with :ok <- authorize_workspace_member(workspace_id, user_id),
-         {:ok, workspace_pid} <- WorkspaceSupervisor.start_workspace(workspace_id) do
-      WorkspaceServer.join(workspace_pid, user_id, live_view_pid)
+    with :ok <- authorize_workspace_member(workspace_id, user_id) do
+      WorkspacePresenceRuntime.join(workspace_id, user_id, live_view_pid)
     end
   end
 
@@ -62,10 +58,7 @@ defmodule DiscordClone.Chat do
     do: {:error, :unauthenticated}
 
   def stop_workspace_presence(workspace_id) do
-    case WorkspaceServer.whereis(workspace_id) do
-      nil -> :ok
-      pid -> DynamicSupervisor.terminate_child(WorkspaceSupervisor, pid)
-    end
+    WorkspacePresenceRuntime.stop_workspace(workspace_id)
   end
 
   def list_recent_messages(%Scope{user: %User{id: user_id}}, channel_id) do

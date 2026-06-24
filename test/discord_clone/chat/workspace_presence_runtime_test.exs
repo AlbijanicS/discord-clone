@@ -1,7 +1,12 @@
 defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
   use DiscordClone.DataCase, async: false
 
-  alias DiscordClone.Chat.{WorkspacePresence, WorkspaceServer, WorkspaceSupervisor}
+  alias DiscordClone.Chat.{
+    WorkspacePresence,
+    WorkspacePresenceRuntime,
+    WorkspaceServer,
+    WorkspaceSupervisor
+  }
 
   describe "workspace presence runtime supervision" do
     test "application starts the workspace presence registry and supervisor" do
@@ -25,6 +30,13 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
 
       assert second_pid == first_pid
       assert WorkspaceServer.whereis(workspace_id) == first_pid
+    end
+
+    test "runtime online user listing does not start an absent workspace runtime" do
+      workspace_id = System.unique_integer([:positive])
+
+      assert WorkspacePresenceRuntime.online_user_ids(workspace_id) == []
+      assert WorkspaceServer.whereis(workspace_id) == nil
     end
 
     test "supervision restarts a workspace runtime under the same workspace ID" do
@@ -154,6 +166,25 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
   end
 
   describe "workspace presence broadcasts" do
+    test "presence event builders expose the public event contract" do
+      workspace_id = System.unique_integer([:positive])
+      user_id = System.unique_integer([:positive])
+
+      assert WorkspacePresence.user_joined_event(workspace_id, user_id) ==
+               {:workspace_user_joined, %{workspace_id: workspace_id, user_id: user_id}}
+
+      assert WorkspacePresence.user_left_event(workspace_id, user_id) ==
+               {:workspace_user_left, %{workspace_id: workspace_id, user_id: user_id}}
+
+      assert WorkspacePresence.to_presence_event(
+               WorkspacePresence.user_joined_event(workspace_id, user_id)
+             ) == {:ok, :user_joined, %{workspace_id: workspace_id, user_id: user_id}}
+
+      assert WorkspacePresence.to_presence_event(
+               WorkspacePresence.user_left_event(workspace_id, user_id)
+             ) == {:ok, :user_left, %{workspace_id: workspace_id, user_id: user_id}}
+    end
+
     test "first connection for a user broadcasts that workspace user joined" do
       workspace_id = System.unique_integer([:positive])
       user_id = System.unique_integer([:positive])

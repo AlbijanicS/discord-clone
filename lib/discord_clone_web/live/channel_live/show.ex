@@ -2,6 +2,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   use DiscordCloneWeb, :live_view
 
   alias DiscordClone.{Chat, Workspaces}
+  alias DiscordClone.Chat.WorkspacePresence, as: PresenceEvents
   alias DiscordCloneWeb.WorkspaceLive.Presence
   alias DiscordCloneWeb.WorkspaceLive.Shell
 
@@ -36,14 +37,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:renaming_channel_id, nil)
         |> assign(:channel_rename_form, nil)
         |> assign(:context_menu_position, nil)
-        |> assign(:workspace_members, members)
         |> stream_configure(:messages, dom_id: &"message-#{&1.id}")
-        |> stream_configure(:workspace_members, dom_id: &"workspace-member-#{&1.user.id}")
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
-        |> stream(:workspace_members, members)
         |> stream(:messages, messages)
-        |> Presence.join_workspace(workspace.id)
+        |> Presence.prepare_workspace(workspace.id, members)
 
       {:ok, socket}
     else
@@ -178,12 +176,12 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
      |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})}
   end
 
-  def handle_info({:workspace_user_joined, payload}, socket) do
-    {:noreply, Presence.user_joined(socket, payload)}
-  end
-
-  def handle_info({:workspace_user_left, payload}, socket) do
-    {:noreply, Presence.user_left(socket, payload)}
+  def handle_info(event, socket) do
+    case PresenceEvents.to_presence_event(event) do
+      {:ok, :user_joined, payload} -> {:noreply, Presence.user_joined(socket, payload)}
+      {:ok, :user_left, payload} -> {:noreply, Presence.user_left(socket, payload)}
+      :error -> {:noreply, socket}
+    end
   end
 
   @impl true

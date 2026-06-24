@@ -1,6 +1,7 @@
 defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
   use DiscordCloneWeb, :live_view
 
+  alias DiscordClone.Chat.WorkspacePresence, as: PresenceEvents
   alias DiscordClone.Workspaces
   alias DiscordCloneWeb.WorkspaceLive.Presence
   alias DiscordCloneWeb.WorkspaceLive.Shell
@@ -26,12 +27,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
         |> assign(:context_menu_position, nil)
         |> assign(:invite_form, invite_form())
         |> assign(:invite_url, nil)
-        |> assign(:workspace_members, members)
-        |> stream_configure(:workspace_members, dom_id: &"workspace-member-#{&1.user.id}")
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
-        |> stream(:workspace_members, members)
-        |> Presence.join_workspace(workspace.id)
+        |> Presence.prepare_workspace(workspace.id, members)
 
       {:ok, socket}
     else
@@ -77,12 +75,12 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
   end
 
   @impl true
-  def handle_info({:workspace_user_joined, payload}, socket) do
-    {:noreply, Presence.user_joined(socket, payload)}
-  end
-
-  def handle_info({:workspace_user_left, payload}, socket) do
-    {:noreply, Presence.user_left(socket, payload)}
+  def handle_info(event, socket) do
+    case PresenceEvents.to_presence_event(event) do
+      {:ok, :user_joined, payload} -> {:noreply, Presence.user_joined(socket, payload)}
+      {:ok, :user_left, payload} -> {:noreply, Presence.user_left(socket, payload)}
+      :error -> {:noreply, socket}
+    end
   end
 
   @impl true
