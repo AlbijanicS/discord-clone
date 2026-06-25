@@ -1002,6 +1002,92 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
              )
     end
 
+    test "does not show typing indicators across channels in the same workspace", %{
+      conn: conn,
+      scope: receiver_scope
+    } do
+      sender_scope =
+        %{username: "typing_sender"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(receiver_scope, %{name: "Foundry"})
+
+      {:ok, other_channel} =
+        Workspaces.create_channel(receiver_scope, workspace.id, %{name: "ops"})
+
+      add_workspace_member!(workspace, sender_scope)
+
+      default_channel_path =
+        ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+
+      other_channel_path = ~p"/workspaces/#{workspace.id}/channels/#{other_channel.id}"
+      sender_conn = build_conn() |> log_in_user(sender_scope.user)
+
+      {:ok, receiver_view, _html} = live(conn, default_channel_path)
+      {:ok, other_channel_view, _html} = live(conn, other_channel_path)
+      {:ok, sender_view, _html} = live(sender_conn, default_channel_path)
+
+      sender_view
+      |> form("#message-composer-form", message: %{content: "typing in general"})
+      |> render_change()
+
+      assert has_element?(
+               receiver_view,
+               "#channel-typing-indicator [data-typing-user-id='#{sender_scope.user.id}']",
+               "typing_sender"
+             )
+
+      refute has_element?(
+               other_channel_view,
+               "#channel-typing-indicator [data-typing-user-id='#{sender_scope.user.id}']"
+             )
+    end
+
+    test "removes another member typing indicator after runtime expiry", %{
+      conn: conn,
+      scope: receiver_scope
+    } do
+      sender_scope =
+        %{username: "typing_sender"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(receiver_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, sender_scope)
+      channel_id = workspace.default_channel_id
+      channel_path = ~p"/workspaces/#{workspace.id}/channels/#{channel_id}"
+      sender_conn = build_conn() |> log_in_user(sender_scope.user)
+      sender_id = sender_scope.user.id
+
+      assert :ok = Chat.subscribe_to_channel_typing(receiver_scope, channel_id)
+
+      {:ok, receiver_view, _html} = live(conn, channel_path)
+      {:ok, sender_view, _html} = live(sender_conn, channel_path)
+
+      sender_view
+      |> form("#message-composer-form", message: %{content: "typing now"})
+      |> render_change()
+
+      assert has_element?(
+               receiver_view,
+               "#channel-typing-indicator [data-typing-user-id='#{sender_id}']",
+               "typing_sender"
+             )
+
+      assert pid = ChannelServer.whereis(channel_id)
+      assert %{typing_users: %{^sender_id => deadline}} = :sys.get_state(pid)
+
+      send(pid, {:typing_expired, sender_id, deadline})
+
+      assert_receive {:typing_stopped, %{channel_id: ^channel_id, user_id: ^sender_id}}
+
+      refute has_element?(
+               receiver_view,
+               "#channel-typing-indicator [data-typing-user-id='#{sender_id}']"
+             )
+    end
+
     test "shows load older when the initial message page is full", %{
       conn: conn,
       scope: scope

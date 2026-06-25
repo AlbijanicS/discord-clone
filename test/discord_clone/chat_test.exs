@@ -191,11 +191,30 @@ defmodule DiscordClone.ChatTest do
       assert user_id == scope.user.id
 
       assert :ok = Chat.user_stopped_typing(scope, channel_id)
-      assert_receive {:typing_stopped, %{channel_id: ^channel_id, user_id: ^user_id}}
+      assert_receive {:typing_stopped, %{channel_id: ^channel_id, user_id: ^user_id} = payload}
+      assert Map.keys(payload) |> Enum.sort() == [:channel_id, :user_id]
       assert {:ok, []} = Chat.list_typing_user_ids(scope, channel_id)
 
       assert :ok = Chat.user_stopped_typing(scope, channel_id)
       refute_receive {:typing_stopped, %{channel_id: ^channel_id, user_id: ^user_id}}, 50
+    end
+
+    test "typing expires automatically and subscribers receive a stopped event" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      put_channel_typing_timeout(0)
+
+      assert :ok = Chat.subscribe_to_channel_typing(scope, channel_id)
+
+      assert :ok = Chat.user_started_typing(scope, channel_id)
+      assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: user_id}}
+      assert user_id == scope.user.id
+
+      assert_receive {:typing_stopped, %{channel_id: ^channel_id, user_id: ^user_id} = payload}
+      assert Map.keys(payload) |> Enum.sort() == [:channel_id, :user_id]
+      assert {:ok, []} = Chat.list_typing_user_ids(scope, channel_id)
     end
   end
 
@@ -916,6 +935,19 @@ defmodule DiscordClone.ChatTest do
         event -> send(parent, {:subscriber_received, self(), event})
       after
         1_000 -> send(parent, {:subscriber_timeout, self()})
+      end
+    end)
+  end
+
+  defp put_channel_typing_timeout(timeout_ms) do
+    previous = Application.get_env(:discord_clone, :channel_runtime_typing_timeout_ms)
+    Application.put_env(:discord_clone, :channel_runtime_typing_timeout_ms, timeout_ms)
+
+    on_exit(fn ->
+      if is_nil(previous) do
+        Application.delete_env(:discord_clone, :channel_runtime_typing_timeout_ms)
+      else
+        Application.put_env(:discord_clone, :channel_runtime_typing_timeout_ms, previous)
       end
     end)
   end

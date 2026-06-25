@@ -106,7 +106,29 @@ defmodule DiscordClone.Chat.ChannelRuntimeTest do
       assert %{^user_id => deadline} = state.typing_users
       assert is_integer(deadline)
       refute match?(%{^user_id => %{id: _id}}, state.typing_users)
+      refute Map.has_key?(state, :online_user_ids)
+      refute Map.has_key?(state, :online_users)
       assert state.last_activity_at >= initial_activity_at
+    end
+
+    test "repeated typing starts refresh the typing deadline" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+      user_id = scope.user.id
+
+      put_channel_typing_timeout(1_000)
+
+      assert {:ok, pid} = DiscordClone.Chat.ensure_channel_runtime(scope, channel_id)
+      assert :ok = DiscordClone.Chat.user_started_typing(scope, channel_id)
+      %{typing_users: %{^user_id => first_deadline}} = :sys.get_state(pid)
+
+      Application.put_env(:discord_clone, :channel_runtime_typing_timeout_ms, 2_000)
+
+      assert :ok = DiscordClone.Chat.user_started_typing(scope, channel_id)
+      %{typing_users: %{^user_id => refreshed_deadline}} = :sys.get_state(pid)
+
+      assert refreshed_deadline > first_deadline
     end
   end
 
@@ -129,6 +151,19 @@ defmodule DiscordClone.Chat.ChannelRuntimeTest do
         Application.delete_env(:discord_clone, :channel_runtime_inactivity_timeout_ms)
       else
         Application.put_env(:discord_clone, :channel_runtime_inactivity_timeout_ms, previous)
+      end
+    end)
+  end
+
+  defp put_channel_typing_timeout(timeout_ms) do
+    previous = Application.get_env(:discord_clone, :channel_runtime_typing_timeout_ms)
+    Application.put_env(:discord_clone, :channel_runtime_typing_timeout_ms, timeout_ms)
+
+    on_exit(fn ->
+      if is_nil(previous) do
+        Application.delete_env(:discord_clone, :channel_runtime_typing_timeout_ms)
+      else
+        Application.put_env(:discord_clone, :channel_runtime_typing_timeout_ms, previous)
       end
     end)
   end

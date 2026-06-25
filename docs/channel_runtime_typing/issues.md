@@ -337,15 +337,15 @@ broadcasts stopped events when expiry fires.
 
 ## Acceptance criteria
 
-- [ ] Typing expiry is 5 seconds.
-- [ ] Repeated typing-start events refresh the expiry deadline.
-- [ ] Expiry removes the user from ChannelServer typing state.
-- [ ] Expiry broadcasts a typing stopped event.
-- [ ] Other viewers remove the typing indicator after expiry.
-- [ ] Disconnect cleanup for typing relies on expiry rather than LiveView PID monitoring.
-- [ ] Expiry tests do not wait for real-time 5-second sleeps.
-- [ ] Expired typing state is not persisted in Postgres.
-- [ ] Expiry behavior does not affect workspace-scoped online presence.
+- [x] Typing expiry is 5 seconds.
+- [x] Repeated typing-start events refresh the expiry deadline.
+- [x] Expiry removes the user from ChannelServer typing state.
+- [x] Expiry broadcasts a typing stopped event.
+- [x] Other viewers remove the typing indicator after expiry.
+- [x] Disconnect cleanup for typing relies on expiry rather than LiveView PID monitoring.
+- [x] Expiry tests do not wait for real-time 5-second sleeps.
+- [x] Expired typing state is not persisted in Postgres.
+- [x] Expiry behavior does not affect workspace-scoped online presence.
 
 ## Blocked by
 
@@ -371,19 +371,19 @@ This slice is mostly acceptance hardening across the already-built typing paths.
 
 ## Acceptance criteria
 
-- [ ] A user's own typing state is never displayed to that user.
-- [ ] Raw typing-user listing may include the current user.
-- [ ] The LiveView filters out the current user before display.
-- [ ] Typing in one Channel does not display in another Channel.
-- [ ] Logged-in non-members cannot start typing in private Workspace Channels.
-- [ ] Logged-in non-members cannot subscribe to private Channel typing events.
-- [ ] Anonymous users cannot interact with typing APIs.
-- [ ] Typing events do not include user structs or display names.
-- [ ] ChannelServer does not store channel-scoped online users.
-- [ ] Workspace presence behavior still drives online/offline display.
-- [ ] Message-created broadcasting remains owned by Chat.
-- [ ] Temporary typing stopped events can originate from ChannelServer expiry.
-- [ ] Direct PubSub limitations for persisted events remain documented as future outbox work.
+- [x] A user's own typing state is never displayed to that user.
+- [x] Raw typing-user listing may include the current user.
+- [x] The LiveView filters out the current user before display.
+- [x] Typing in one Channel does not display in another Channel.
+- [x] Logged-in non-members cannot start typing in private Workspace Channels.
+- [x] Logged-in non-members cannot subscribe to private Channel typing events.
+- [x] Anonymous users cannot interact with typing APIs.
+- [x] Typing events do not include user structs or display names.
+- [x] ChannelServer does not store channel-scoped online users.
+- [x] Workspace presence behavior still drives online/offline display.
+- [x] Message-created broadcasting remains owned by Chat.
+- [x] Temporary typing stopped events can originate from ChannelServer expiry.
+- [x] Direct PubSub limitations for persisted events remain documented as future outbox work.
 
 ## Blocked by
 
@@ -408,21 +408,21 @@ introducing channel-scoped online presence.
 
 ## Acceptance criteria
 
-- [ ] Entering a Channel starts or finds exactly one Channel runtime.
-- [ ] Runtime identity uses durable Channel ID.
-- [ ] Recent message cache is initialized from Postgres.
-- [ ] Recent message cache rebuilds from Postgres after runtime loss.
-- [ ] Sending a message persists first, updates runtime cache, clears typing, and broadcasts the persisted message.
-- [ ] Existing live message delivery still works for another connected member.
-- [ ] Idle Channel runtime shuts down and later restarts cleanly.
-- [ ] Typing start, stop, submit-clear, expiry, subscribe, and list behavior are tested.
-- [ ] Typing UI shows other users and never shows self.
-- [ ] Typing UI is scoped to the selected Channel.
-- [ ] Channel-scoped online presence was not introduced.
-- [ ] Existing workspace presence behavior still works.
-- [ ] Existing persisted chat and older-history behavior still works.
-- [ ] Focused tests pass.
-- [ ] The project precommit alias passes after implementation changes.
+- [x] Entering a Channel starts or finds exactly one Channel runtime.
+- [x] Runtime identity uses durable Channel ID.
+- [x] Recent message cache is initialized from Postgres.
+- [x] Recent message cache rebuilds from Postgres after runtime loss.
+- [x] Sending a message persists first, updates runtime cache, clears typing, and broadcasts the persisted message.
+- [x] Existing live message delivery still works for another connected member.
+- [x] Idle Channel runtime shuts down and later restarts cleanly.
+- [x] Typing start, stop, submit-clear, expiry, subscribe, and list behavior are tested.
+- [x] Typing UI shows other users and never shows self.
+- [x] Typing UI is scoped to the selected Channel.
+- [x] Channel-scoped online presence was not introduced.
+- [x] Existing workspace presence behavior still works.
+- [x] Existing persisted chat and older-history behavior still works.
+- [x] Focused tests pass.
+- [x] The project precommit alias passes after implementation changes.
 
 ## Blocked by
 

@@ -96,11 +96,14 @@ defmodule DiscordClone.Chat.ChannelServer do
 
   def handle_call({:user_started_typing, user_id}, _from, state) do
     already_typing? = Map.has_key?(state.typing_users, user_id)
+    typing_deadline = typing_deadline_ms(state, user_id)
 
     state =
       state
-      |> put_in([:typing_users, user_id], typing_deadline_ms())
+      |> put_in([:typing_users, user_id], typing_deadline)
       |> refresh_activity()
+
+    schedule_typing_expiry(user_id, typing_deadline)
 
     unless already_typing? do
       Phoenix.PubSub.broadcast(
@@ -141,6 +144,27 @@ defmodule DiscordClone.Chat.ChannelServer do
     {:noreply, state}
   end
 
+  def handle_info({:typing_expired, user_id, deadline}, state) do
+    case Map.fetch(state.typing_users, user_id) do
+      {:ok, ^deadline} ->
+        state =
+          state
+          |> update_in([:typing_users], &Map.delete(&1, user_id))
+          |> refresh_activity()
+
+        Phoenix.PubSub.broadcast(
+          DiscordClone.PubSub,
+          channel_topic(state.channel_id),
+          {:typing_stopped, %{channel_id: state.channel_id, user_id: user_id}}
+        )
+
+        {:noreply, state}
+
+      _stale_or_missing ->
+        {:noreply, state}
+    end
+  end
+
   defp via_tuple(channel_id) do
     {:via, Registry, {ChannelRegistry, channel_id}}
   end
@@ -174,7 +198,31 @@ defmodule DiscordClone.Chat.ChannelServer do
     )
   end
 
-  defp typing_deadline_ms, do: now_ms() + @typing_timeout_ms
+  defp schedule_typing_expiry(user_id, deadline) do
+    Process.send_after(
+      self(),
+      {:typing_expired, user_id, deadline},
+      max(deadline - now_ms(), 0)
+    )
+  end
+
+  defp typing_deadline_ms(state, user_id) do
+    now = now_ms()
+    deadline = now + typing_timeout_ms()
+
+    state.typing_users
+    |> Map.get(user_id, deadline)
+    |> Kernel.+(1)
+    |> max(deadline)
+  end
+
+  defp typing_timeout_ms do
+    Application.get_env(
+      :discord_clone,
+      :channel_runtime_typing_timeout_ms,
+      @typing_timeout_ms
+    )
+  end
 
   defp channel_topic(channel_id), do: "chat:channel:#{channel_id}"
 
