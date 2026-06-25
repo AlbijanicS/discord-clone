@@ -937,6 +937,71 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
              )
     end
 
+    test "shows another member typing in the same channel and hides self typing", %{
+      conn: conn,
+      scope: receiver_scope
+    } do
+      sender_scope =
+        %{username: "typing_sender"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(receiver_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, sender_scope)
+      channel_path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+      sender_conn = build_conn() |> log_in_user(sender_scope.user)
+
+      {:ok, receiver_view, _html} = live(conn, channel_path)
+      {:ok, sender_view, _html} = live(sender_conn, channel_path)
+
+      sender_view
+      |> form("#message-composer-form", message: %{content: "typing now"})
+      |> render_change()
+
+      assert has_element?(
+               receiver_view,
+               "#channel-typing-indicator [data-typing-user-id='#{sender_scope.user.id}']",
+               "typing_sender"
+             )
+
+      sender_view
+      |> form("#message-composer-form", message: %{content: "still typing"})
+      |> render_change()
+
+      refute has_element?(
+               sender_view,
+               "#channel-typing-indicator [data-typing-user-id='#{sender_scope.user.id}']"
+             )
+
+      sender_view
+      |> form("#message-composer-form", message: %{content: ""})
+      |> render_change()
+
+      refute has_element?(
+               receiver_view,
+               "#channel-typing-indicator [data-typing-user-id='#{sender_scope.user.id}']"
+             )
+
+      sender_view
+      |> form("#message-composer-form", message: %{content: "typing before submit"})
+      |> render_change()
+
+      assert has_element?(
+               receiver_view,
+               "#channel-typing-indicator [data-typing-user-id='#{sender_scope.user.id}']",
+               "typing_sender"
+             )
+
+      sender_view
+      |> form("#message-composer-form", message: %{content: "sent after typing"})
+      |> render_submit()
+
+      refute has_element?(
+               receiver_view,
+               "#channel-typing-indicator [data-typing-user-id='#{sender_scope.user.id}']"
+             )
+    end
+
     test "shows load older when the initial message page is full", %{
       conn: conn,
       scope: scope

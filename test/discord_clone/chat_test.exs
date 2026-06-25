@@ -124,6 +124,81 @@ defmodule DiscordClone.ChatTest do
     end
   end
 
+  describe "channel typing workflows" do
+    test "workspace members can subscribe, start typing, and list raw typing user IDs" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      subscriber = start_typing_subscriber(scope, channel_id)
+      assert_receive {:subscribed, ^subscriber}
+
+      assert :ok = Chat.user_started_typing(scope, channel_id)
+
+      assert_receive {:subscriber_received, ^subscriber,
+                      {:typing_started, %{channel_id: ^channel_id, user_id: user_id} = payload}}
+
+      assert user_id == scope.user.id
+      assert Map.keys(payload) |> Enum.sort() == [:channel_id, :user_id]
+      assert {:ok, [user_id]} = Chat.list_typing_user_ids(scope, channel_id)
+      assert user_id == scope.user.id
+    end
+
+    test "rejects anonymous scopes and logged-in users who are not workspace members" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      assert Chat.subscribe_to_channel_typing(nil, channel_id) == {:error, :unauthenticated}
+      assert Chat.user_started_typing(nil, channel_id) == {:error, :unauthenticated}
+      assert Chat.user_stopped_typing(nil, channel_id) == {:error, :unauthenticated}
+      assert Chat.list_typing_user_ids(nil, channel_id) == {:error, :unauthenticated}
+
+      assert Chat.subscribe_to_channel_typing(non_member_scope, channel_id) ==
+               {:error, :not_found}
+
+      assert Chat.user_started_typing(non_member_scope, channel_id) == {:error, :not_found}
+      assert Chat.user_stopped_typing(non_member_scope, channel_id) == {:error, :not_found}
+      assert Chat.list_typing_user_ids(non_member_scope, channel_id) == {:error, :not_found}
+    end
+
+    test "broadcasts typing started only when the member was not already typing" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      assert :ok = Chat.subscribe_to_channel_typing(scope, channel_id)
+
+      assert :ok = Chat.user_started_typing(scope, channel_id)
+      assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: user_id}}
+      assert user_id == scope.user.id
+
+      assert :ok = Chat.user_started_typing(scope, channel_id)
+      refute_receive {:typing_started, %{channel_id: ^channel_id, user_id: ^user_id}}, 50
+      assert {:ok, [^user_id]} = Chat.list_typing_user_ids(scope, channel_id)
+    end
+
+    test "workspace members can stop typing and subscribers receive one stopped event" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      assert :ok = Chat.subscribe_to_channel_typing(scope, channel_id)
+
+      assert :ok = Chat.user_started_typing(scope, channel_id)
+      assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: user_id}}
+      assert user_id == scope.user.id
+
+      assert :ok = Chat.user_stopped_typing(scope, channel_id)
+      assert_receive {:typing_stopped, %{channel_id: ^channel_id, user_id: ^user_id}}
+      assert {:ok, []} = Chat.list_typing_user_ids(scope, channel_id)
+
+      assert :ok = Chat.user_stopped_typing(scope, channel_id)
+      refute_receive {:typing_stopped, %{channel_id: ^channel_id, user_id: ^user_id}}, 50
+    end
+  end
+
   describe "subscribe_to_workspace_presence/2" do
     test "subscribes workspace members without starting the workspace runtime" do
       scope = user_scope_fixture()
@@ -636,6 +711,23 @@ defmodule DiscordClone.ChatTest do
       assert Ecto.assoc_loaded?(hd(recent_messages).user)
     end
 
+    test "clears the sender's typing state when a message is sent" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      assert :ok = Chat.subscribe_to_channel_typing(scope, channel_id)
+      assert :ok = Chat.user_started_typing(scope, channel_id)
+      assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: user_id}}
+
+      assert {:ok, message} =
+               Chat.send_message(scope, channel_id, %{"content" => "typing resolved"})
+
+      assert message.content == "typing resolved"
+      assert_receive {:typing_stopped, %{channel_id: ^channel_id, user_id: ^user_id}}
+      assert {:ok, []} = Chat.list_typing_user_ids(scope, channel_id)
+    end
+
     test "restarts the runtime and caches the persisted message when sending after runtime loss" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
@@ -807,6 +899,21 @@ defmodule DiscordClone.ChatTest do
         {:message_created, message} ->
           assert {:ok, recent_messages} = Chat.list_recent_messages(scope, channel_id)
           send(parent, {:subscriber_recent_messages, self(), message, recent_messages})
+      after
+        1_000 -> send(parent, {:subscriber_timeout, self()})
+      end
+    end)
+  end
+
+  defp start_typing_subscriber(scope, channel_id) do
+    parent = self()
+
+    spawn_link(fn ->
+      assert :ok = Chat.subscribe_to_channel_typing(scope, channel_id)
+      send(parent, {:subscribed, self()})
+
+      receive do
+        event -> send(parent, {:subscriber_received, self(), event})
       after
         1_000 -> send(parent, {:subscriber_timeout, self()})
       end

@@ -37,6 +37,16 @@ defmodule DiscordClone.Chat do
 
   def subscribe_to_channel_messages(_scope, _channel_id), do: {:error, :unauthenticated}
 
+  def subscribe_to_channel_typing(%Scope{user: %User{id: user_id}}, channel_id) do
+    with %Channel{} <- get_member_channel(channel_id, user_id) do
+      Phoenix.PubSub.subscribe(DiscordClone.PubSub, channel_messages_topic(channel_id))
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def subscribe_to_channel_typing(_scope, _channel_id), do: {:error, :unauthenticated}
+
   def subscribe_to_workspace_presence(%Scope{user: %User{id: user_id}}, workspace_id) do
     with :ok <- authorize_workspace_member(workspace_id, user_id) do
       WorkspacePresence.subscribe(workspace_id)
@@ -90,6 +100,39 @@ defmodule DiscordClone.Chat do
 
   def list_recent_messages(_scope, _channel_id), do: {:error, :unauthenticated}
 
+  def list_typing_user_ids(%Scope{user: %User{id: user_id}}, channel_id) do
+    with %Channel{} <- get_member_channel(channel_id, user_id),
+         {:ok, pid} <- ChannelSupervisor.start_channel(channel_id) do
+      ChannelServer.list_typing_user_ids(pid)
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def list_typing_user_ids(_scope, _channel_id), do: {:error, :unauthenticated}
+
+  def user_started_typing(%Scope{user: %User{id: user_id}}, channel_id) do
+    with %Channel{} <- get_member_channel(channel_id, user_id),
+         {:ok, pid} <- ChannelSupervisor.start_channel(channel_id) do
+      ChannelServer.user_started_typing(pid, user_id)
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def user_started_typing(_scope, _channel_id), do: {:error, :unauthenticated}
+
+  def user_stopped_typing(%Scope{user: %User{id: user_id}}, channel_id) do
+    with %Channel{} <- get_member_channel(channel_id, user_id),
+         {:ok, pid} <- ChannelSupervisor.start_channel(channel_id) do
+      ChannelServer.user_stopped_typing(pid, user_id)
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def user_stopped_typing(_scope, _channel_id), do: {:error, :unauthenticated}
+
   def list_older_messages(
         %Scope{user: %User{id: user_id}},
         channel_id,
@@ -132,6 +175,7 @@ defmodule DiscordClone.Chat do
           message = Repo.preload(message, :user)
           {:ok, pid} = ChannelSupervisor.start_channel(channel_id)
           :ok = ChannelServer.put_recent_message(pid, message)
+          :ok = ChannelServer.user_stopped_typing(pid, user_id)
           :ok = broadcast_message_created(message)
           {:ok, message}
 

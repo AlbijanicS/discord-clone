@@ -90,6 +90,24 @@ defmodule DiscordClone.Chat.ChannelRuntimeTest do
       assert second_pid != first_pid
       assert %{channel_id: ^channel_id} = :sys.get_state(second_pid)
     end
+
+    test "stores typing state as user IDs mapped to deadlines and refreshes activity" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+      user_id = scope.user.id
+
+      assert {:ok, pid} = DiscordClone.Chat.ensure_channel_runtime(scope, channel_id)
+      %{last_activity_at: initial_activity_at} = :sys.get_state(pid)
+
+      assert :ok = DiscordClone.Chat.user_started_typing(scope, channel_id)
+
+      state = :sys.get_state(pid)
+      assert %{^user_id => deadline} = state.typing_users
+      assert is_integer(deadline)
+      refute match?(%{^user_id => %{id: _id}}, state.typing_users)
+      assert state.last_activity_at >= initial_activity_at
+    end
   end
 
   defp insert_message!(channel_id, user_id, content, inserted_at) do

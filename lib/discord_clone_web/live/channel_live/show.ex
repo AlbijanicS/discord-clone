@@ -19,7 +19,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id),
          {:ok, messages} <- load_recent_messages(socket, channel.id),
          :ok <- ensure_channel_runtime(socket, channel.id),
-         :ok <- subscribe_to_channel_messages(socket, channel.id) do
+         :ok <- subscribe_to_channel_messages(socket, channel.id),
+         :ok <- subscribe_to_channel_typing(socket, channel.id) do
       socket =
         socket
         |> assign(:selected_workspace, workspace)
@@ -38,6 +39,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:renaming_channel_id, nil)
         |> assign(:channel_rename_form, nil)
         |> assign(:context_menu_position, nil)
+        |> assign(:typing_user_ids, MapSet.new())
         |> stream_configure(:messages, dom_id: &"message-#{&1.id}")
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
@@ -137,10 +139,25 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               </div>
             </article>
           </div>
+          <div
+            id="channel-typing-indicator"
+            class="min-h-6 border-t border-base-300/50 px-6 py-2 text-xs font-medium text-base-content/60"
+            aria-live="polite"
+          >
+            <span
+              :for={
+                member <- typing_members(@workspace_members, @typing_user_ids, @current_scope.user.id)
+              }
+              data-typing-user-id={member.user.id}
+            >
+              {member.user.username} is typing...
+            </span>
+          </div>
           <div class="border-t border-base-300/70 bg-base-100 px-5 py-4">
             <.form
               for={@message_form}
               id="message-composer-form"
+              phx-change="message_typing"
               phx-submit="send_message"
               phx-hook="MessageComposer"
               class="flex items-start gap-3"
@@ -151,6 +168,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                   type="text"
                   placeholder={"Message ##{@selected_channel.name}"}
                   autocomplete="off"
+                  phx-throttle="3000"
                   class="w-full rounded border border-base-300 bg-base-200/70 px-4 py-3 text-sm text-base-content outline-none transition placeholder:text-base-content/40 focus:border-primary focus:bg-base-100 focus:ring-2 focus:ring-primary/20"
                 />
               </div>
@@ -175,6 +193,26 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
      socket
      |> stream_insert(:messages, message)
      |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})}
+  end
+
+  def handle_info({:typing_started, %{channel_id: channel_id, user_id: user_id}}, socket) do
+    if socket.assigns.selected_channel.id == channel_id do
+      typing_user_ids = MapSet.put(socket.assigns.typing_user_ids, user_id)
+
+      {:noreply, assign(socket, :typing_user_ids, typing_user_ids)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info({:typing_stopped, %{channel_id: channel_id, user_id: user_id}}, socket) do
+    if socket.assigns.selected_channel.id == channel_id do
+      typing_user_ids = MapSet.delete(socket.assigns.typing_user_ids, user_id)
+
+      {:noreply, assign(socket, :typing_user_ids, typing_user_ids)}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_info(event, socket) do
@@ -277,6 +315,19 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          |> put_flash(:error, "Channel not found or you do not have access.")
          |> push_navigate(to: ~p"/workspaces")}
     end
+  end
+
+  def handle_event("message_typing", %{"message" => %{"content" => content}}, socket)
+      when is_binary(content) do
+    if String.trim(content) == "" do
+      stop_typing(socket)
+    else
+      start_typing(socket)
+    end
+  end
+
+  def handle_event("message_typing", _params, socket) do
+    start_typing(socket)
   end
 
   def handle_event("open_workspace_actions", %{"workspace_id" => workspace_id}, socket) do
@@ -589,6 +640,14 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
+  defp subscribe_to_channel_typing(socket, channel_id) do
+    if connected?(socket) do
+      Chat.subscribe_to_channel_typing(socket.assigns.current_scope, channel_id)
+    else
+      :ok
+    end
+  end
+
   defp ensure_channel_runtime(socket, channel_id) do
     if connected?(socket) do
       case Chat.ensure_channel_runtime(socket.assigns.current_scope, channel_id) do
@@ -605,6 +664,38 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       Chat.list_recent_messages(socket.assigns.current_scope, channel_id)
     else
       {:ok, []}
+    end
+  end
+
+  defp start_typing(socket) do
+    case Chat.user_started_typing(
+           socket.assigns.current_scope,
+           socket.assigns.selected_channel.id
+         ) do
+      :ok ->
+        {:noreply, socket}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Channel not found or you do not have access.")
+         |> push_navigate(to: ~p"/workspaces")}
+    end
+  end
+
+  defp stop_typing(socket) do
+    case Chat.user_stopped_typing(
+           socket.assigns.current_scope,
+           socket.assigns.selected_channel.id
+         ) do
+      :ok ->
+        {:noreply, socket}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Channel not found or you do not have access.")
+         |> push_navigate(to: ~p"/workspaces")}
     end
   end
 
@@ -627,5 +718,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     username
     |> String.first()
     |> String.upcase()
+  end
+
+  defp typing_members(members, typing_user_ids, current_user_id) do
+    members
+    |> Enum.filter(&MapSet.member?(typing_user_ids, &1.user.id))
+    |> Enum.reject(&(&1.user.id == current_user_id))
   end
 end

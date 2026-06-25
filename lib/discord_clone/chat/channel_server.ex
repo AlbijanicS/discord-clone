@@ -6,6 +6,7 @@ defmodule DiscordClone.Chat.ChannelServer do
   alias DiscordClone.Chat.ChannelRegistry
 
   @inactivity_timeout_ms :timer.minutes(15)
+  @typing_timeout_ms :timer.seconds(5)
 
   def touch(pid) when is_pid(pid) do
     GenServer.call(pid, :touch)
@@ -17,6 +18,18 @@ defmodule DiscordClone.Chat.ChannelServer do
 
   def put_recent_message(pid, message) when is_pid(pid) do
     GenServer.call(pid, {:put_recent_message, message})
+  end
+
+  def list_typing_user_ids(pid) when is_pid(pid) do
+    GenServer.call(pid, :list_typing_user_ids)
+  end
+
+  def user_started_typing(pid, user_id) when is_pid(pid) do
+    GenServer.call(pid, {:user_started_typing, user_id})
+  end
+
+  def user_stopped_typing(pid, user_id) when is_pid(pid) do
+    GenServer.call(pid, {:user_stopped_typing, user_id})
   end
 
   def child_spec(arg) do
@@ -45,6 +58,7 @@ defmodule DiscordClone.Chat.ChannelServer do
      %{
        channel_id: channel_id,
        recent_messages: recent_messages,
+       typing_users: %{},
        last_activity_at: now_ms()
      }
      |> schedule_idle_timeout()}
@@ -70,6 +84,50 @@ defmodule DiscordClone.Chat.ChannelServer do
       state
       |> Map.put(:recent_messages, recent_messages)
       |> refresh_activity()
+
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:list_typing_user_ids, _from, state) do
+    typing_user_ids = state.typing_users |> Map.keys() |> Enum.sort()
+
+    {:reply, {:ok, typing_user_ids}, refresh_activity(state)}
+  end
+
+  def handle_call({:user_started_typing, user_id}, _from, state) do
+    already_typing? = Map.has_key?(state.typing_users, user_id)
+
+    state =
+      state
+      |> put_in([:typing_users, user_id], typing_deadline_ms())
+      |> refresh_activity()
+
+    unless already_typing? do
+      Phoenix.PubSub.broadcast(
+        DiscordClone.PubSub,
+        channel_topic(state.channel_id),
+        {:typing_started, %{channel_id: state.channel_id, user_id: user_id}}
+      )
+    end
+
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:user_stopped_typing, user_id}, _from, state) do
+    was_typing? = Map.has_key?(state.typing_users, user_id)
+
+    state =
+      state
+      |> update_in([:typing_users], &Map.delete(&1, user_id))
+      |> refresh_activity()
+
+    if was_typing? do
+      Phoenix.PubSub.broadcast(
+        DiscordClone.PubSub,
+        channel_topic(state.channel_id),
+        {:typing_stopped, %{channel_id: state.channel_id, user_id: user_id}}
+      )
+    end
 
     {:reply, :ok, state}
   end
@@ -115,6 +173,10 @@ defmodule DiscordClone.Chat.ChannelServer do
       @inactivity_timeout_ms
     )
   end
+
+  defp typing_deadline_ms, do: now_ms() + @typing_timeout_ms
+
+  defp channel_topic(channel_id), do: "chat:channel:#{channel_id}"
 
   defp now_ms, do: System.monotonic_time(:millisecond)
 end
