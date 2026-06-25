@@ -5,6 +5,12 @@ defmodule DiscordClone.Chat.ChannelServer do
 
   alias DiscordClone.Chat.ChannelRegistry
 
+  @inactivity_timeout_ms :timer.minutes(15)
+
+  def touch(pid) when is_pid(pid) do
+    GenServer.call(pid, :touch)
+  end
+
   def list_recent_messages(pid) when is_pid(pid) do
     GenServer.call(pid, :list_recent_messages)
   end
@@ -35,12 +41,22 @@ defmodule DiscordClone.Chat.ChannelServer do
 
   @impl true
   def init({channel_id, recent_messages}) do
-    {:ok, %{channel_id: channel_id, recent_messages: recent_messages}}
+    {:ok,
+     %{
+       channel_id: channel_id,
+       recent_messages: recent_messages,
+       last_activity_at: now_ms()
+     }
+     |> schedule_idle_timeout()}
   end
 
   @impl true
+  def handle_call(:touch, _from, state) do
+    {:reply, :ok, refresh_activity(state)}
+  end
+
   def handle_call(:list_recent_messages, _from, state) do
-    {:reply, {:ok, state.recent_messages}, state}
+    {:reply, {:ok, state.recent_messages}, refresh_activity(state)}
   end
 
   def handle_call({:put_recent_message, message}, _from, state) do
@@ -50,10 +66,55 @@ defmodule DiscordClone.Chat.ChannelServer do
       |> Kernel.++([message])
       |> Enum.take(-50)
 
-    {:reply, :ok, %{state | recent_messages: recent_messages}}
+    state =
+      state
+      |> Map.put(:recent_messages, recent_messages)
+      |> refresh_activity()
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_info({:idle_timeout, idle_timer_ref}, %{idle_timer_ref: idle_timer_ref} = state) do
+    {:stop, :normal, state}
+  end
+
+  def handle_info({:idle_timeout, _stale_timer_ref}, state) do
+    {:noreply, state}
   end
 
   defp via_tuple(channel_id) do
     {:via, Registry, {ChannelRegistry, channel_id}}
   end
+
+  defp refresh_activity(state) do
+    state
+    |> Map.put(:last_activity_at, now_ms())
+    |> schedule_idle_timeout()
+  end
+
+  defp schedule_idle_timeout(state) do
+    if timer_ref = Map.get(state, :idle_timer) do
+      Process.cancel_timer(timer_ref)
+    end
+
+    idle_timer_ref = make_ref()
+
+    idle_timer =
+      Process.send_after(self(), {:idle_timeout, idle_timer_ref}, inactivity_timeout_ms())
+
+    state
+    |> Map.put(:idle_timer_ref, idle_timer_ref)
+    |> Map.put(:idle_timer, idle_timer)
+  end
+
+  defp inactivity_timeout_ms do
+    Application.get_env(
+      :discord_clone,
+      :channel_runtime_inactivity_timeout_ms,
+      @inactivity_timeout_ms
+    )
+  end
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
 end

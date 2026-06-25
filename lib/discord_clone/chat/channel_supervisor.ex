@@ -11,6 +11,7 @@ defmodule DiscordClone.Chat.ChannelSupervisor do
   def start_channel(channel_id) do
     case ChannelServer.whereis(channel_id) do
       pid when is_pid(pid) ->
+        :ok = ChannelServer.touch(pid)
         {:ok, pid}
 
       nil ->
