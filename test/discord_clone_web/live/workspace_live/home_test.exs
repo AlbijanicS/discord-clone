@@ -611,6 +611,45 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-#{message.id}-content", message.content)
     end
 
+    test "renders persisted messages after channel runtime loss", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      first_message =
+        insert_message!(
+          channel_id,
+          scope.user.id,
+          "before runtime loss",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      assert {:ok, first_pid} = Chat.ensure_channel_runtime(scope, channel_id)
+      ref = Process.monitor(first_pid)
+      Process.exit(first_pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
+      _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
+
+      second_message =
+        insert_message!(
+          channel_id,
+          scope.user.id,
+          "after runtime loss",
+          ~U[2026-06-19 10:31:00Z]
+        )
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/channels/#{channel_id}")
+
+      assert has_element?(view, "#message-#{first_message.id}-content", "before runtime loss")
+      assert has_element?(view, "#message-#{second_message.id}-content", "after runtime loss")
+
+      replacement_pid = ChannelServer.whereis(channel_id)
+      assert is_pid(replacement_pid)
+      assert replacement_pid != first_pid
+    end
+
     test "sends a message into the current channel stream and clears the composer", %{
       conn: conn,
       scope: scope

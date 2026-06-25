@@ -392,6 +392,44 @@ defmodule DiscordClone.ChatTest do
       refute uncached_message.id in Enum.map(cached_messages, & &1.id)
     end
 
+    test "recovers persisted recent messages after channel runtime loss" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      first_message =
+        insert_message!(
+          channel_id,
+          scope.user.id,
+          "before runtime loss",
+          ~U[2026-06-19 10:00:00Z]
+        )
+
+      assert {:ok, [loaded_message]} = Chat.list_recent_messages(scope, channel_id)
+      assert loaded_message.id == first_message.id
+
+      assert {:ok, first_pid} = Chat.ensure_channel_runtime(scope, channel_id)
+      ref = Process.monitor(first_pid)
+      Process.exit(first_pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
+      _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
+
+      second_message =
+        insert_message!(
+          channel_id,
+          scope.user.id,
+          "after runtime loss",
+          ~U[2026-06-19 10:01:00Z]
+        )
+
+      assert {:ok, recovered_messages} = Chat.list_recent_messages(scope, channel_id)
+      assert Enum.map(recovered_messages, & &1.id) == [first_message.id, second_message.id]
+
+      assert {:ok, second_pid} = Chat.ensure_channel_runtime(scope, channel_id)
+      assert second_pid != first_pid
+      assert %{channel_id: ^channel_id} = :sys.get_state(second_pid)
+    end
+
     test "rejects anonymous scopes" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
@@ -578,6 +616,53 @@ defmodule DiscordClone.ChatTest do
       assert Repo.get!(Message, message.id).content == "hello channel"
     end
 
+    test "updates the runtime cache before broadcasting the persisted message" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      subscriber = start_cache_reading_subscriber(scope, workspace.default_channel_id)
+
+      assert_receive {:subscribed, ^subscriber}
+
+      assert {:ok, sent_message} =
+               Chat.send_message(scope, workspace.default_channel_id, %{
+                 "content" => "cache before broadcast"
+               })
+
+      assert_receive {:subscriber_recent_messages, ^subscriber, received_message, recent_messages}
+
+      assert received_message.id == sent_message.id
+      assert Enum.map(recent_messages, & &1.id) == [sent_message.id]
+      assert Ecto.assoc_loaded?(received_message.user)
+      assert Ecto.assoc_loaded?(hd(recent_messages).user)
+    end
+
+    test "restarts the runtime and caches the persisted message when sending after runtime loss" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      stored_message =
+        insert_message!(channel_id, scope.user.id, "stored", ~U[2026-06-19 10:00:00Z])
+
+      assert {:ok, [cached_message]} = Chat.list_recent_messages(scope, channel_id)
+      assert cached_message.id == stored_message.id
+
+      assert {:ok, first_pid} = Chat.ensure_channel_runtime(scope, channel_id)
+      ref = Process.monitor(first_pid)
+      Process.exit(first_pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
+      _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
+
+      assert {:ok, sent_message} =
+               Chat.send_message(scope, channel_id, %{"content" => "after runtime loss"})
+
+      assert {:ok, recent_messages} = Chat.list_recent_messages(scope, channel_id)
+      assert Enum.map(recent_messages, & &1.id) == [stored_message.id, sent_message.id]
+
+      assert {:ok, second_pid} = Chat.ensure_channel_runtime(scope, channel_id)
+      assert second_pid != first_pid
+    end
+
     test "rejects whitespace-only content with an invalid message changeset" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
@@ -590,6 +675,26 @@ defmodule DiscordClone.ChatTest do
       refute changeset.valid?
       assert %{content: ["can't be blank"]} = errors_on(changeset)
       assert Repo.aggregate(Message, :count) == 0
+    end
+
+    test "does not update the runtime cache or broadcast invalid message sends" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      stored_message =
+        insert_message!(channel_id, scope.user.id, "stored", ~U[2026-06-19 10:00:00Z])
+
+      assert {:ok, [cached_message]} = Chat.list_recent_messages(scope, channel_id)
+      assert cached_message.id == stored_message.id
+      assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
+
+      assert {:error, :invalid_message, _changeset} =
+               Chat.send_message(scope, channel_id, %{"content" => "   "})
+
+      assert {:ok, cached_messages} = Chat.list_recent_messages(scope, channel_id)
+      assert Enum.map(cached_messages, & &1.id) == [stored_message.id]
+      refute_receive {:message_created, _message}
     end
 
     test "accepts atom-keyed content attributes" do
@@ -643,6 +748,27 @@ defmodule DiscordClone.ChatTest do
 
       assert Repo.aggregate(Message, :count) == 0
     end
+
+    test "does not update the runtime cache or broadcast unauthorized message sends" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      stored_message =
+        insert_message!(channel_id, owner_scope.user.id, "stored", ~U[2026-06-19 10:00:00Z])
+
+      assert {:ok, [cached_message]} = Chat.list_recent_messages(owner_scope, channel_id)
+      assert cached_message.id == stored_message.id
+      assert :ok = Chat.subscribe_to_channel_messages(owner_scope, channel_id)
+
+      assert Chat.send_message(non_member_scope, channel_id, %{"content" => "private hello"}) ==
+               {:error, :not_found}
+
+      assert {:ok, cached_messages} = Chat.list_recent_messages(owner_scope, channel_id)
+      assert Enum.map(cached_messages, & &1.id) == [stored_message.id]
+      refute_receive {:message_created, _message}
+    end
   end
 
   defp insert_message!(channel_id, user_id, content, inserted_at) do
@@ -664,6 +790,23 @@ defmodule DiscordClone.ChatTest do
 
       receive do
         event -> send(parent, {:subscriber_received, self(), event})
+      after
+        1_000 -> send(parent, {:subscriber_timeout, self()})
+      end
+    end)
+  end
+
+  defp start_cache_reading_subscriber(scope, channel_id) do
+    parent = self()
+
+    spawn_link(fn ->
+      assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
+      send(parent, {:subscribed, self()})
+
+      receive do
+        {:message_created, message} ->
+          assert {:ok, recent_messages} = Chat.list_recent_messages(scope, channel_id)
+          send(parent, {:subscriber_recent_messages, self(), message, recent_messages})
       after
         1_000 -> send(parent, {:subscriber_timeout, self()})
       end

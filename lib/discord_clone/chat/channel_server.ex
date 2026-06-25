@@ -13,6 +13,14 @@ defmodule DiscordClone.Chat.ChannelServer do
     GenServer.call(pid, {:put_recent_message, message})
   end
 
+  def child_spec(arg) do
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, [arg]},
+      restart: :temporary
+    }
+  end
+
   @spec start_link({any(), any()}) :: :ignore | {:error, any()} | {:ok, pid()}
   def start_link({channel_id, recent_messages}) do
     GenServer.start_link(__MODULE__, {channel_id, recent_messages}, name: via_tuple(channel_id))
