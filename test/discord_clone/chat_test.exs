@@ -373,6 +373,187 @@ defmodule DiscordClone.ChatTest do
     end
   end
 
+  describe "mark_channel_read/2" do
+    test "clears unread counts for a workspace member in that channel" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, release_channel} = Workspaces.create_channel(scope, workspace.id, %{name: "release"})
+
+      add_workspace_member!(workspace, other_scope)
+
+      older_message =
+        insert_message!(
+          release_channel.id,
+          other_scope.user.id,
+          "already read",
+          ~U[2026-06-19 10:00:00Z]
+        )
+
+      Repo.insert!(%ChannelRead{
+        channel_id: release_channel.id,
+        user_id: scope.user.id,
+        last_read_message_id: older_message.id
+      })
+
+      insert_message!(
+        release_channel.id,
+        other_scope.user.id,
+        "new release update",
+        ~U[2026-06-19 10:01:00Z]
+      )
+
+      assert Chat.list_unread_counts(scope, workspace.id) == {:ok, %{release_channel.id => 1}}
+
+      assert :ok = Chat.mark_channel_read(scope, release_channel.id)
+
+      assert Chat.list_unread_counts(scope, workspace.id) == {:ok, %{}}
+    end
+
+    test "does not move an existing read cursor backward" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, release_channel} = Workspaces.create_channel(scope, workspace.id, %{name: "release"})
+
+      add_workspace_member!(workspace, other_scope)
+
+      release_message =
+        insert_message!(
+          release_channel.id,
+          other_scope.user.id,
+          "release update",
+          ~U[2026-06-19 10:00:00Z]
+        )
+
+      later_general_message =
+        insert_message!(
+          workspace.default_channel_id,
+          other_scope.user.id,
+          "later general update",
+          ~U[2026-06-19 10:01:00Z]
+        )
+
+      assert later_general_message.id > release_message.id
+
+      Repo.insert!(%ChannelRead{
+        channel_id: release_channel.id,
+        user_id: scope.user.id,
+        last_read_message_id: later_general_message.id
+      })
+
+      assert :ok = Chat.mark_channel_read(scope, release_channel.id)
+
+      assert %ChannelRead{last_read_message_id: last_read_message_id} =
+               Repo.get_by(ChannelRead, channel_id: release_channel.id, user_id: scope.user.id)
+
+      assert last_read_message_id == later_general_message.id
+    end
+
+    test "creates a nil read cursor for an empty channel" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, empty_channel} = Workspaces.create_channel(scope, workspace.id, %{name: "empty"})
+
+      assert :ok = Chat.mark_channel_read(scope, empty_channel.id)
+
+      assert %ChannelRead{last_read_message_id: nil} =
+               Repo.get_by(ChannelRead, channel_id: empty_channel.id, user_id: scope.user.id)
+    end
+
+    test "repairs a missing read row for a workspace member" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, other_scope)
+
+      latest_message =
+        insert_message!(
+          workspace.default_channel_id,
+          other_scope.user.id,
+          "latest update",
+          ~U[2026-06-19 10:00:00Z]
+        )
+
+      assert Repo.get_by(ChannelRead,
+               channel_id: workspace.default_channel_id,
+               user_id: scope.user.id
+             ) == nil
+
+      assert :ok = Chat.mark_channel_read(scope, workspace.default_channel_id)
+
+      assert %ChannelRead{last_read_message_id: last_read_message_id} =
+               Repo.get_by(ChannelRead,
+                 channel_id: workspace.default_channel_id,
+                 user_id: scope.user.id
+               )
+
+      assert last_read_message_id == latest_message.id
+    end
+
+    test "rejects anonymous scopes and logged-in users who are not workspace members" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      assert Chat.mark_channel_read(nil, workspace.default_channel_id) ==
+               {:error, :unauthenticated}
+
+      assert Chat.mark_channel_read(%DiscordClone.Accounts.Scope{}, workspace.default_channel_id) ==
+               {:error, :unauthenticated}
+
+      assert Chat.mark_channel_read(non_member_scope, workspace.default_channel_id) ==
+               {:error, :not_found}
+    end
+
+    test "does not broadcast read-position changes" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, other_scope)
+
+      insert_message!(
+        workspace.default_channel_id,
+        other_scope.user.id,
+        "quietly read",
+        ~U[2026-06-19 10:00:00Z]
+      )
+
+      assert :ok = Chat.subscribe_to_channel_messages(scope, workspace.default_channel_id)
+      assert :ok = Chat.mark_channel_read(scope, workspace.default_channel_id)
+
+      refute_receive {:message_created, _message}
+    end
+
+    test "keeps read state after channel runtime loss" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+      add_workspace_member!(workspace, other_scope)
+
+      insert_message!(
+        channel_id,
+        other_scope.user.id,
+        "durable read state",
+        DateTime.add(DateTime.utc_now(:second), 10, :second)
+      )
+
+      assert {:ok, %{^channel_id => 1}} = Chat.list_unread_counts(scope, workspace.id)
+      assert :ok = Chat.mark_channel_read(scope, channel_id)
+
+      assert {:ok, first_pid} = Chat.ensure_channel_runtime(scope, channel_id)
+      ref = Process.monitor(first_pid)
+      Process.exit(first_pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
+      _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
+
+      assert Chat.list_unread_counts(scope, workspace.id) == {:ok, %{}}
+      assert {:ok, second_pid} = Chat.ensure_channel_runtime(scope, channel_id)
+      assert second_pid != first_pid
+    end
+  end
+
   describe "subscribe_to_channel_messages/2" do
     test "subscribed workspace members receive persisted message-created events" do
       scope = user_scope_fixture()
@@ -1095,6 +1276,50 @@ defmodule DiscordClone.ChatTest do
       assert Repo.get!(Message, message.id).content == "hello channel"
     end
 
+    test "advances the sender read cursor to the sent message" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      assert {:ok, sent_message} =
+               Chat.send_message(scope, channel_id, %{"content" => "bookmark this"})
+
+      assert %ChannelRead{last_read_message_id: last_read_message_id} =
+               Repo.get_by(ChannelRead, channel_id: channel_id, user_id: scope.user.id)
+
+      assert last_read_message_id == sent_message.id
+    end
+
+    test "advances the sender read cursor before broadcasting the sent message" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      subscriber = start_read_cursor_subscriber(scope, channel_id)
+      assert_receive {:subscribed, ^subscriber}
+
+      assert {:ok, sent_message} =
+               Chat.send_message(scope, channel_id, %{"content" => "visible after cursor"})
+
+      assert_receive {:subscriber_read_cursor, ^subscriber, received_message,
+                      last_read_message_id}
+
+      assert received_message.id == sent_message.id
+      assert last_read_message_id == sent_message.id
+    end
+
+    test "does not create self-unread counts when the sender refreshes counts" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert {:ok, _sent_message} =
+               Chat.send_message(scope, workspace.default_channel_id, %{
+                 "content" => "not unread for me"
+               })
+
+      assert Chat.list_unread_counts(scope, workspace.id) == {:ok, %{}}
+    end
+
     test "updates the runtime cache before broadcasting the persisted message" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
@@ -1319,6 +1544,27 @@ defmodule DiscordClone.ChatTest do
         {:message_created, message} ->
           assert {:ok, recent_messages} = Chat.list_recent_messages(scope, channel_id)
           send(parent, {:subscriber_recent_messages, self(), message, recent_messages})
+      after
+        1_000 -> send(parent, {:subscriber_timeout, self()})
+      end
+    end)
+  end
+
+  defp start_read_cursor_subscriber(scope, channel_id) do
+    parent = self()
+
+    spawn_link(fn ->
+      assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
+      send(parent, {:subscribed, self()})
+
+      receive do
+        {:message_created, message} ->
+          channel_read = Repo.get_by(ChannelRead, channel_id: channel_id, user_id: scope.user.id)
+
+          send(
+            parent,
+            {:subscriber_read_cursor, self(), message, channel_read.last_read_message_id}
+          )
       after
         1_000 -> send(parent, {:subscriber_timeout, self()})
       end

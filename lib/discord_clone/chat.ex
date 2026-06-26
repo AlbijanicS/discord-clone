@@ -89,6 +89,20 @@ defmodule DiscordClone.Chat do
 
   def list_unread_counts(_scope, _workspace_id), do: {:error, :unauthenticated}
 
+  def mark_channel_read(%Scope{user: %User{id: user_id}}, channel_id) do
+    with %Channel{} <- get_member_channel(channel_id, user_id) do
+      latest_message_id = latest_message_id_for_channel(channel_id)
+
+      upsert_channel_read(user_id, channel_id, latest_message_id)
+
+      :ok
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def mark_channel_read(_scope, _channel_id), do: {:error, :unauthenticated}
+
   def subscribe_to_channel_messages(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
       Phoenix.PubSub.subscribe(DiscordClone.PubSub, channel_messages_topic(channel_id))
@@ -234,6 +248,7 @@ defmodule DiscordClone.Chat do
       |> Repo.insert()
       |> case do
         {:ok, message} ->
+          {:ok, _channel_read} = upsert_channel_read(user_id, channel_id, message.id)
           message = Repo.preload(message, :user)
           {:ok, pid} = ChannelSupervisor.start_channel(channel_id)
           :ok = ChannelServer.put_recent_message(pid, message)
@@ -282,6 +297,40 @@ defmodule DiscordClone.Chat do
         last_read_message_id: max(message.id)
       }
   end
+
+  defp latest_message_id_for_channel(channel_id) do
+    Repo.one(
+      from message in Message,
+        where: message.channel_id == ^channel_id,
+        select: max(message.id)
+    )
+  end
+
+  defp upsert_channel_read(user_id, channel_id, last_read_message_id) do
+    case Repo.get_by(ChannelRead, channel_id: channel_id, user_id: user_id) do
+      nil ->
+        %ChannelRead{}
+        |> ChannelRead.changeset(%{
+          channel_id: channel_id,
+          user_id: user_id,
+          last_read_message_id: last_read_message_id
+        })
+        |> Repo.insert()
+
+      %ChannelRead{} = channel_read ->
+        if cursor_after?(last_read_message_id, channel_read.last_read_message_id) do
+          channel_read
+          |> ChannelRead.changeset(%{last_read_message_id: last_read_message_id})
+          |> Repo.update()
+        else
+          {:ok, channel_read}
+        end
+    end
+  end
+
+  defp cursor_after?(nil, _current_cursor), do: false
+  defp cursor_after?(_new_cursor, nil), do: true
+  defp cursor_after?(new_cursor, current_cursor), do: new_cursor > current_cursor
 
   defp broadcast_message_created(%Message{} = message) do
     Phoenix.PubSub.broadcast_from(
