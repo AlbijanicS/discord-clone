@@ -1088,6 +1088,66 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
              )
     end
 
+    test "clears stale typing indicators after channel runtime loss", %{
+      conn: conn,
+      scope: receiver_scope
+    } do
+      sender_scope =
+        %{username: "typing_sender"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(receiver_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, sender_scope)
+      channel_id = workspace.default_channel_id
+      channel_path = ~p"/workspaces/#{workspace.id}/channels/#{channel_id}"
+      sender_conn = build_conn() |> log_in_user(sender_scope.user)
+      sender_id = sender_scope.user.id
+
+      {:ok, receiver_view, _html} = live(conn, channel_path)
+      {:ok, sender_view, _html} = live(sender_conn, channel_path)
+
+      sender_view
+      |> form("#message-composer-form", message: %{content: "typing before crash"})
+      |> render_change()
+
+      assert has_element?(
+               receiver_view,
+               "#channel-typing-indicator [data-typing-user-id='#{sender_id}']",
+               "typing_sender"
+             )
+
+      runtime_pid = ChannelServer.whereis(channel_id)
+      ref = Process.monitor(runtime_pid)
+      Process.exit(runtime_pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^runtime_pid, :killed}
+
+      refute has_element?(
+               receiver_view,
+               "#channel-typing-indicator [data-typing-user-id='#{sender_id}']"
+             )
+
+      sender_view
+      |> form("#message-composer-form", message: %{content: "typing after restart"})
+      |> render_change()
+
+      assert has_element?(
+               receiver_view,
+               "#channel-typing-indicator [data-typing-user-id='#{sender_id}']",
+               "typing_sender"
+             )
+
+      restarted_runtime_pid = ChannelServer.whereis(channel_id)
+      restarted_ref = Process.monitor(restarted_runtime_pid)
+      Process.exit(restarted_runtime_pid, :kill)
+      assert_receive {:DOWN, ^restarted_ref, :process, ^restarted_runtime_pid, :killed}
+
+      refute has_element?(
+               receiver_view,
+               "#channel-typing-indicator [data-typing-user-id='#{sender_id}']"
+             )
+    end
+
     test "shows load older when the initial message page is full", %{
       conn: conn,
       scope: scope

@@ -2,7 +2,7 @@ defmodule DiscordClone.ChatTest do
   use DiscordClone.DataCase, async: false
 
   alias DiscordClone.Chat
-  alias DiscordClone.Chat.{Message, WorkspaceServer}
+  alias DiscordClone.Chat.{ChannelServer, Message, WorkspaceServer}
   alias DiscordClone.Workspaces
 
   import DiscordClone.AccountsFixtures
@@ -215,6 +215,34 @@ defmodule DiscordClone.ChatTest do
       assert_receive {:typing_stopped, %{channel_id: ^channel_id, user_id: ^user_id} = payload}
       assert Map.keys(payload) |> Enum.sort() == [:channel_id, :user_id]
       assert {:ok, []} = Chat.list_typing_user_ids(scope, channel_id)
+    end
+
+    test "typing state is temporary across channel runtime loss and works again after restart" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      assert :ok = Chat.subscribe_to_channel_typing(scope, channel_id)
+      assert :ok = Chat.user_started_typing(scope, channel_id)
+      assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: user_id}}
+      assert user_id == scope.user.id
+      assert {:ok, [^user_id]} = Chat.list_typing_user_ids(scope, channel_id)
+
+      first_pid = ChannelServer.whereis(channel_id)
+      ref = Process.monitor(first_pid)
+      Process.exit(first_pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
+      _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
+
+      assert {:ok, []} = Chat.list_typing_user_ids(scope, channel_id)
+
+      assert :ok = Chat.user_started_typing(scope, channel_id)
+      assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: ^user_id}}
+      assert {:ok, [^user_id]} = Chat.list_typing_user_ids(scope, channel_id)
+
+      second_pid = ChannelServer.whereis(channel_id)
+      assert is_pid(second_pid)
+      assert second_pid != first_pid
     end
   end
 
@@ -764,8 +792,14 @@ defmodule DiscordClone.ChatTest do
       assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
       _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
 
+      subscriber = start_subscriber(scope, channel_id)
+      assert_receive {:subscribed, ^subscriber}
+
       assert {:ok, sent_message} =
                Chat.send_message(scope, channel_id, %{"content" => "after runtime loss"})
+
+      assert_receive {:subscriber_received, ^subscriber, {:message_created, received_message}}
+      assert received_message.id == sent_message.id
 
       assert {:ok, recent_messages} = Chat.list_recent_messages(scope, channel_id)
       assert Enum.map(recent_messages, & &1.id) == [stored_message.id, sent_message.id]

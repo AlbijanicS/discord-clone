@@ -18,7 +18,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id),
          {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id),
          {:ok, messages} <- load_recent_messages(socket, channel.id),
-         :ok <- ensure_channel_runtime(socket, channel.id),
+         {:ok, channel_runtime_monitor_ref} <- monitor_channel_runtime(socket, channel.id),
          :ok <- subscribe_to_channel_messages(socket, channel.id),
          :ok <- subscribe_to_channel_typing(socket, channel.id) do
       socket =
@@ -40,6 +40,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:channel_rename_form, nil)
         |> assign(:context_menu_position, nil)
         |> assign(:typing_user_ids, MapSet.new())
+        |> assign(:channel_runtime_monitor_ref, channel_runtime_monitor_ref)
         |> stream_configure(:messages, dom_id: &"message-#{&1.id}")
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
@@ -199,7 +200,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     if socket.assigns.selected_channel.id == channel_id do
       typing_user_ids = MapSet.put(socket.assigns.typing_user_ids, user_id)
 
-      {:noreply, assign(socket, :typing_user_ids, typing_user_ids)}
+      {:noreply,
+       socket
+       |> assign(:typing_user_ids, typing_user_ids)
+       |> monitor_current_channel_runtime()}
     else
       {:noreply, socket}
     end
@@ -213,6 +217,16 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     else
       {:noreply, socket}
     end
+  end
+
+  def handle_info(
+        {:DOWN, monitor_ref, :process, _pid, _reason},
+        %{assigns: %{channel_runtime_monitor_ref: monitor_ref}} = socket
+      ) do
+    {:noreply,
+     socket
+     |> assign(:typing_user_ids, MapSet.new())
+     |> assign(:channel_runtime_monitor_ref, nil)}
   end
 
   def handle_info(event, socket) do
@@ -648,14 +662,31 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
-  defp ensure_channel_runtime(socket, channel_id) do
+  defp monitor_channel_runtime(socket, channel_id) do
     if connected?(socket) do
       case Chat.ensure_channel_runtime(socket.assigns.current_scope, channel_id) do
-        {:ok, _pid} -> :ok
+        {:ok, pid} -> {:ok, Process.monitor(pid)}
         {:error, reason} -> {:error, reason}
       end
     else
-      :ok
+      {:ok, nil}
+    end
+  end
+
+  defp monitor_current_channel_runtime(
+         %{assigns: %{channel_runtime_monitor_ref: monitor_ref}} = socket
+       )
+       when is_reference(monitor_ref) do
+    socket
+  end
+
+  defp monitor_current_channel_runtime(socket) do
+    case Chat.ensure_channel_runtime(
+           socket.assigns.current_scope,
+           socket.assigns.selected_channel.id
+         ) do
+      {:ok, pid} -> assign(socket, :channel_runtime_monitor_ref, Process.monitor(pid))
+      {:error, _reason} -> socket
     end
   end
 

@@ -249,23 +249,21 @@ Prove:
 
 Type: vertical slice on top of the channel process foundation.
 
-Goal: channel process state drives online users and typing indicators.
+Goal: channel process state drives channel typing indicators while workspace
+presence remains workspace-scoped.
 
 Build:
 
-- join channel presence
-- leave channel presence
-- monitor LiveView processes
-- remove online users on `:DOWN`
 - typing started/stopped events
 - typing expiry
-- PubSub broadcasts for presence and typing changes
+- PubSub broadcasts for typing changes
+- keep online users in the workspace presence runtime
 
 Prove:
 
-- online users update as clients enter and leave
 - typing disappears automatically
-- process crash clears temporary state and rebuilds as LiveViews rejoin
+- process crash clears temporary typing state and rebuilds as LiveViews rejoin
+- workspace online status remains separate from channel runtime recovery
 
 ## Phase 9: Recovery And Failure Tests
 
