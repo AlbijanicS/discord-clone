@@ -30,8 +30,6 @@ defmodule DiscordClone.Chat do
 
   def initialize_workspace_reads_for_user(user_id, workspace_id) do
     with :ok <- authorize_workspace_member(workspace_id, user_id) do
-      now = DateTime.utc_now(:second)
-
       read_rows =
         Repo.all(
           from channel in Channel,
@@ -40,8 +38,33 @@ defmodule DiscordClone.Chat do
             where: channel.workspace_id == ^workspace_id,
             select: %{
               channel_id: channel.id,
-              user_id: type(^user_id, :id),
-              last_read_message_id: latest_message.last_read_message_id,
+              last_read_message_id: latest_message.last_read_message_id
+            }
+        )
+
+      Enum.reduce_while(read_rows, :ok, fn read_row, :ok ->
+        case upsert_channel_read(user_id, read_row.channel_id, read_row.last_read_message_id) do
+          {:ok, _channel_read} -> {:cont, :ok}
+          {:error, changeset} -> {:halt, {:error, changeset}}
+        end
+      end)
+    end
+  end
+
+  def initialize_channel_reads_for_workspace_members(channel_id) do
+    if Repo.exists?(from channel in Channel, where: channel.id == ^channel_id) do
+      now = DateTime.utc_now(:second)
+
+      read_rows =
+        Repo.all(
+          from channel in Channel,
+            join: membership in WorkspaceMembership,
+            on: membership.workspace_id == channel.workspace_id,
+            where: channel.id == ^channel_id,
+            select: %{
+              channel_id: channel.id,
+              user_id: membership.user_id,
+              last_read_message_id: nil,
               inserted_at: type(^now, :utc_datetime),
               updated_at: type(^now, :utc_datetime)
             }
@@ -50,12 +73,26 @@ defmodule DiscordClone.Chat do
       Repo.insert_all(
         ChannelRead,
         read_rows,
-        on_conflict: {:replace, [:last_read_message_id, :updated_at]},
+        on_conflict: :nothing,
         conflict_target: [:channel_id, :user_id]
       )
 
       :ok
+    else
+      {:error, :not_found}
     end
+  end
+
+  def delete_workspace_reads_for_user(user_id, workspace_id) do
+    Repo.delete_all(
+      from read in ChannelRead,
+        join: channel in Channel,
+        on: channel.id == read.channel_id,
+        where: channel.workspace_id == ^workspace_id,
+        where: read.user_id == ^user_id
+    )
+
+    :ok
   end
 
   def list_unread_counts(%Scope{user: %User{id: user_id}}, workspace_id) do

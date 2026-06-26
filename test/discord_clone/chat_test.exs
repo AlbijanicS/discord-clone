@@ -84,7 +84,7 @@ defmodule DiscordClone.ChatTest do
       assert Chat.initialize_workspace_reads_for_user(non_member_scope.user.id, workspace.id) ==
                {:error, :not_found}
 
-      assert Repo.aggregate(ChannelRead, :count) == 0
+      refute Repo.get_by(ChannelRead, user_id: non_member_scope.user.id)
     end
 
     test "keeps one read row per channel and user" do
@@ -102,6 +102,49 @@ defmodule DiscordClone.ChatTest do
       assert {:error, changeset} = Repo.insert(duplicate_changeset)
       assert %{channel_id: ["has already been taken"]} = errors_on(changeset)
       assert Repo.aggregate(ChannelRead, :count) == 1
+    end
+
+    test "does not move an existing read cursor backward" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, release_channel} =
+        Workspaces.create_channel(owner_scope, workspace.id, %{name: "release"})
+
+      {:ok, other_channel} =
+        Workspaces.create_channel(owner_scope, workspace.id, %{name: "other"})
+
+      release_message =
+        insert_message!(
+          release_channel.id,
+          owner_scope.user.id,
+          "release",
+          ~U[2026-06-19 10:00:00Z]
+        )
+
+      later_global_message =
+        insert_message!(
+          other_channel.id,
+          owner_scope.user.id,
+          "other",
+          ~U[2026-06-19 10:01:00Z]
+        )
+
+      add_workspace_member!(workspace, member_scope)
+
+      put_channel_read!(release_channel.id, member_scope.user.id, later_global_message.id)
+
+      assert :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      assert %ChannelRead{last_read_message_id: last_read_message_id} =
+               Repo.get_by(ChannelRead,
+                 channel_id: release_channel.id,
+                 user_id: member_scope.user.id
+               )
+
+      assert last_read_message_id == later_global_message.id
+      refute last_read_message_id == release_message.id
     end
 
     test "removes read rows when a channel is deleted" do
@@ -186,11 +229,7 @@ defmodule DiscordClone.ChatTest do
           ~U[2026-06-19 10:00:00Z]
         )
 
-      Repo.insert!(%ChannelRead{
-        channel_id: release_channel.id,
-        user_id: scope.user.id,
-        last_read_message_id: older_message.id
-      })
+      put_channel_read!(release_channel.id, scope.user.id, older_message.id)
 
       insert_message!(
         release_channel.id,
@@ -299,11 +338,7 @@ defmodule DiscordClone.ChatTest do
           ~U[2026-06-19 10:00:00Z]
         )
 
-      Repo.insert!(%ChannelRead{
-        channel_id: workspace.default_channel_id,
-        user_id: scope.user.id,
-        last_read_message_id: older_message.id
-      })
+      put_channel_read!(workspace.default_channel_id, scope.user.id, older_message.id)
 
       deleted_author_message =
         insert_message!(
@@ -346,11 +381,7 @@ defmodule DiscordClone.ChatTest do
 
       add_workspace_member!(workspace, member_scope)
 
-      Repo.insert!(%ChannelRead{
-        channel_id: release_channel.id,
-        user_id: member_scope.user.id,
-        last_read_message_id: nil
-      })
+      put_channel_read!(release_channel.id, member_scope.user.id, nil)
 
       post_membership_time = DateTime.add(DateTime.utc_now(:second), 10, :second)
 
@@ -390,11 +421,7 @@ defmodule DiscordClone.ChatTest do
           ~U[2026-06-19 10:00:00Z]
         )
 
-      Repo.insert!(%ChannelRead{
-        channel_id: release_channel.id,
-        user_id: scope.user.id,
-        last_read_message_id: older_message.id
-      })
+      put_channel_read!(release_channel.id, scope.user.id, older_message.id)
 
       insert_message!(
         release_channel.id,
@@ -436,11 +463,7 @@ defmodule DiscordClone.ChatTest do
 
       assert later_general_message.id > release_message.id
 
-      Repo.insert!(%ChannelRead{
-        channel_id: release_channel.id,
-        user_id: scope.user.id,
-        last_read_message_id: later_general_message.id
-      })
+      put_channel_read!(release_channel.id, scope.user.id, later_general_message.id)
 
       assert :ok = Chat.mark_channel_read(scope, release_channel.id)
 
@@ -474,6 +497,13 @@ defmodule DiscordClone.ChatTest do
           "latest update",
           ~U[2026-06-19 10:00:00Z]
         )
+
+      Repo.delete_all(
+        from read in ChannelRead,
+          where:
+            read.channel_id == ^workspace.default_channel_id and
+              read.user_id == ^scope.user.id
+      )
 
       assert Repo.get_by(ChannelRead,
                channel_id: workspace.default_channel_id,
@@ -1506,6 +1536,22 @@ defmodule DiscordClone.ChatTest do
       inserted_at: inserted_at,
       updated_at: inserted_at
     })
+  end
+
+  defp put_channel_read!(channel_id, user_id, last_read_message_id) do
+    case Repo.get_by(ChannelRead, channel_id: channel_id, user_id: user_id) do
+      nil ->
+        Repo.insert!(%ChannelRead{
+          channel_id: channel_id,
+          user_id: user_id,
+          last_read_message_id: last_read_message_id
+        })
+
+      %ChannelRead{} = channel_read ->
+        channel_read
+        |> Ecto.Changeset.change(last_read_message_id: last_read_message_id)
+        |> Repo.update!()
+    end
   end
 
   defp add_workspace_member!(workspace, scope) do

@@ -1,7 +1,7 @@
 defmodule DiscordClone.WorkspacesTest do
   use DiscordClone.DataCase
 
-  alias DiscordClone.Chat.{Message, WorkspaceServer}
+  alias DiscordClone.Chat.{ChannelRead, Message, WorkspaceServer}
   alias DiscordClone.Workspaces
   alias DiscordClone.Workspaces.{Channel, WorkspaceInvite, WorkspaceMembership}
 
@@ -26,6 +26,18 @@ defmodule DiscordClone.WorkspacesTest do
       assert %WorkspaceMembership{role: "owner"} =
                Repo.get_by(WorkspaceMembership,
                  workspace_id: workspace.id,
+                 user_id: scope.user.id
+               )
+    end
+
+    test "initializes the owner read row for the default general channel" do
+      scope = user_scope_fixture()
+
+      assert {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
+
+      assert %ChannelRead{last_read_message_id: nil} =
+               Repo.get_by(ChannelRead,
+                 channel_id: workspace.default_channel_id,
                  user_id: scope.user.id
                )
     end
@@ -420,6 +432,28 @@ defmodule DiscordClone.WorkspacesTest do
       assert channel.name == "general-chat"
     end
 
+    test "initializes empty read rows for all current workspace members" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "My Server"})
+      add_workspace_member!(workspace, member_scope)
+
+      assert {:ok, channel} =
+               Workspaces.create_channel(owner_scope, workspace.id, %{name: "planning"})
+
+      assert %ChannelRead{last_read_message_id: nil} =
+               Repo.get_by(ChannelRead,
+                 channel_id: channel.id,
+                 user_id: owner_scope.user.id
+               )
+
+      assert %ChannelRead{last_read_message_id: nil} =
+               Repo.get_by(ChannelRead,
+                 channel_id: channel.id,
+                 user_id: member_scope.user.id
+               )
+    end
+
     test "accepts string-keyed channel attributes" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
@@ -729,6 +763,41 @@ defmodule DiscordClone.WorkspacesTest do
       assert Repo.get!(WorkspaceInvite, invite.id).uses_count == 1
     end
 
+    test "initializes read rows for new invite members" do
+      owner_scope = user_scope_fixture()
+      invited_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, release_channel} =
+        Workspaces.create_channel(owner_scope, workspace.id, %{name: "release"})
+
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      release_message =
+        insert_message!(
+          release_channel.id,
+          owner_scope.user.id,
+          "Release notes",
+          DateTime.add(DateTime.utc_now(:second), -60, :second)
+        )
+
+      assert {:ok, _landing} = Workspaces.accept_workspace_invite(invited_scope, invite.code)
+
+      assert %ChannelRead{last_read_message_id: nil} =
+               Repo.get_by(ChannelRead,
+                 channel_id: workspace.default_channel_id,
+                 user_id: invited_scope.user.id
+               )
+
+      assert %ChannelRead{last_read_message_id: last_read_message_id} =
+               Repo.get_by(ChannelRead,
+                 channel_id: release_channel.id,
+                 user_id: invited_scope.user.id
+               )
+
+      assert last_read_message_id == release_message.id
+    end
+
     test "existing workspace members enter the landing channel without duplicate membership or usage" do
       owner_scope = user_scope_fixture()
       member_scope = user_scope_fixture()
@@ -752,6 +821,52 @@ defmodule DiscordClone.WorkspacesTest do
              ) == 1
 
       assert Repo.get!(WorkspaceInvite, invite.id).uses_count == 0
+    end
+
+    test "existing workspace member invite acceptance leaves read rows unchanged" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, release_channel} =
+        Workspaces.create_channel(owner_scope, workspace.id, %{name: "release"})
+
+      add_workspace_member!(workspace, member_scope)
+
+      first_message =
+        insert_message!(
+          release_channel.id,
+          owner_scope.user.id,
+          "First",
+          DateTime.add(DateTime.utc_now(:second), -60, :second)
+        )
+
+      _second_message =
+        insert_message!(
+          release_channel.id,
+          owner_scope.user.id,
+          "Second",
+          DateTime.add(DateTime.utc_now(:second), -30, :second)
+        )
+
+      Repo.insert!(%ChannelRead{
+        channel_id: release_channel.id,
+        user_id: member_scope.user.id,
+        last_read_message_id: first_message.id
+      })
+
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      assert {:ok, landing} = Workspaces.accept_workspace_invite(member_scope, invite.code)
+      assert landing.already_member? == true
+
+      assert %ChannelRead{last_read_message_id: last_read_message_id} =
+               Repo.get_by(ChannelRead,
+                 channel_id: release_channel.id,
+                 user_id: member_scope.user.id
+               )
+
+      assert last_read_message_id == first_message.id
     end
 
     test "workspace owners accept their own invites as navigation-only" do
@@ -1123,6 +1238,44 @@ defmodule DiscordClone.WorkspacesTest do
              )
 
       assert Workspaces.list_workspaces(member_scope) == {:ok, []}
+    end
+
+    test "deletes the leaving member read rows for channels in that workspace" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Team Space"})
+      {:ok, channel} = Workspaces.create_channel(owner_scope, workspace.id, %{name: "planning"})
+      add_workspace_member!(workspace, member_scope)
+
+      Repo.insert!(%ChannelRead{
+        channel_id: workspace.default_channel_id,
+        user_id: member_scope.user.id,
+        last_read_message_id: nil
+      })
+
+      Repo.insert!(%ChannelRead{
+        channel_id: channel.id,
+        user_id: member_scope.user.id,
+        last_read_message_id: nil
+      })
+
+      assert {:ok, %WorkspaceMembership{}} =
+               Workspaces.leave_workspace(member_scope, workspace.id)
+
+      refute Repo.get_by(ChannelRead,
+               channel_id: workspace.default_channel_id,
+               user_id: member_scope.user.id
+             )
+
+      refute Repo.get_by(ChannelRead,
+               channel_id: channel.id,
+               user_id: member_scope.user.id
+             )
+
+      assert Repo.get_by(ChannelRead,
+               channel_id: channel.id,
+               user_id: owner_scope.user.id
+             )
     end
 
     test "requires owners to delete the workspace instead of leaving" do

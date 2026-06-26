@@ -159,6 +159,12 @@ defmodule DiscordClone.Workspaces do
                                                         } ->
       workspace_default_channel_changeset(workspace, default_channel)
     end)
+    |> Multi.run(:owner_channel_reads, fn _repo, %{workspace: workspace} ->
+      case Chat.initialize_workspace_reads_for_user(user.id, workspace.id) do
+        :ok -> {:ok, :initialized}
+        {:error, reason} -> {:error, reason}
+      end
+    end)
   end
 
   defp workspace_attrs(%User{id: user_id}, attrs) do
@@ -219,7 +225,7 @@ defmodule DiscordClone.Workspaces do
   def create_channel(%Scope{user: %User{} = user}, workspace_id, attrs) when is_map(attrs) do
     with {:ok, workspace} <- get_workspace(workspace_id),
          :ok <- authorize_manage_channels(workspace, user) do
-      insert_channel(workspace, attrs)
+      create_channel_with_reads(workspace, attrs)
     end
   end
 
@@ -290,6 +296,13 @@ defmodule DiscordClone.Workspaces do
     |> Multi.run(:membership, fn repo, %{invite: invite} ->
       ensure_invite_membership(repo, invite, user)
     end)
+    |> Multi.run(:member_channel_reads, fn _repo,
+                                           %{
+                                             invite: invite,
+                                             membership: membership_result
+                                           } ->
+      initialize_invite_member_reads(user, invite, membership_result)
+    end)
     |> Multi.run(:invite_usage, fn repo, %{invite: invite, membership: membership_result} ->
       update_invite_usage(repo, invite, membership_result)
     end)
@@ -336,7 +349,20 @@ defmodule DiscordClone.Workspaces do
     with {:ok, _workspace} <- get_workspace(workspace_id),
          {:ok, membership} <- get_workspace_membership(workspace_id, user_id),
          :ok <- reject_owner_leave(membership) do
-      Repo.delete(membership)
+      Multi.new()
+      |> Multi.run(:channel_reads, fn _repo, _changes ->
+        :ok = Chat.delete_workspace_reads_for_user(user_id, workspace_id)
+        {:ok, :deleted}
+      end)
+      |> Multi.delete(:membership, membership)
+      |> Repo.transaction()
+      |> case do
+        {:ok, %{membership: membership}} ->
+          {:ok, membership}
+
+        {:error, failed_operation, failed_value, changes_so_far} ->
+          {:error, :leave_workspace_failed, failed_operation, failed_value, changes_so_far}
+      end
     end
   end
 
@@ -502,6 +528,25 @@ defmodule DiscordClone.Workspaces do
     {:ok, invite}
   end
 
+  defp initialize_invite_member_reads(
+         %User{id: user_id},
+         %WorkspaceInvite{workspace_id: workspace_id},
+         {:new_member, _membership}
+       ) do
+    case Chat.initialize_workspace_reads_for_user(user_id, workspace_id) do
+      :ok -> {:ok, :initialized}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp initialize_invite_member_reads(
+         %User{},
+         %WorkspaceInvite{},
+         {:existing_member, _membership}
+       ) do
+    {:ok, :unchanged}
+  end
+
   defp already_member?({:existing_member, _membership}), do: true
   defp already_member?({:new_member, _membership}), do: false
 
@@ -602,13 +647,28 @@ defmodule DiscordClone.Workspaces do
 
   defp authorize_delete_workspace(_workspace, _user_id), do: {:error, :owner_required}
 
-  defp insert_channel(%Workspace{id: workspace_id}, attrs) do
-    %Channel{}
-    |> Channel.create_changeset(channel_attrs(workspace_id, attrs))
-    |> Repo.insert()
+  defp create_channel_with_reads(%Workspace{} = workspace, attrs) do
+    Multi.new()
+    |> Multi.insert(
+      :channel,
+      Channel.create_changeset(%Channel{}, channel_attrs(workspace.id, attrs))
+    )
+    |> Multi.run(:channel_reads, fn _repo, %{channel: channel} ->
+      case Chat.initialize_channel_reads_for_workspace_members(channel.id) do
+        :ok -> {:ok, :initialized}
+        {:error, reason} -> {:error, reason}
+      end
+    end)
+    |> Repo.transaction()
     |> case do
-      {:ok, channel} -> {:ok, channel}
-      {:error, changeset} -> {:error, :invalid_channel, changeset}
+      {:ok, %{channel: channel}} ->
+        {:ok, channel}
+
+      {:error, :channel, changeset, _changes_so_far} ->
+        {:error, :invalid_channel, changeset}
+
+      {:error, failed_operation, failed_value, changes_so_far} ->
+        {:error, :channel_creation_failed, failed_operation, failed_value, changes_so_far}
     end
   end
 
