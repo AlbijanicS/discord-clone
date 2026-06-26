@@ -24,6 +24,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   attr :invite_form, :any, default: nil
   attr :invite_url, :string, default: nil
   attr :online_user_ids, :any, default: MapSet.new()
+  attr :channel_unread_counts, :map, default: %{}
 
   slot :inner_block
 
@@ -261,6 +262,19 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                       # {channel.name}
                     </.link>
                   <% end %>
+                  <span
+                    :if={channel_unread_count(@channel_unread_counts, channel, @selected_channel) > 0}
+                    id={"channel-#{channel.id}-unread-badge"}
+                    aria-label={
+                      channel_unread_label(
+                        channel_unread_count(@channel_unread_counts, channel, @selected_channel),
+                        channel
+                      )
+                    }
+                    class="mr-1 min-w-5 max-w-16 shrink-0 rounded-full bg-primary px-1.5 py-0.5 text-center text-[0.6875rem] font-bold leading-none text-primary-content shadow-sm ring-1 ring-primary/20"
+                  >
+                    {channel_unread_count(@channel_unread_counts, channel, @selected_channel)}
+                  </span>
                   <button
                     id={"channel-#{channel.id}-actions"}
                     type="button"
@@ -537,6 +551,18 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
 
   defp selected_channel?(channel, selected_channel),
     do: selected_channel && channel.id == selected_channel.id
+
+  defp channel_unread_count(_channel_unread_counts, channel, selected_channel)
+       when not is_nil(selected_channel) and channel.id == selected_channel.id,
+       do: 0
+
+  defp channel_unread_count(channel_unread_counts, channel, _selected_channel) do
+    Map.get(channel_unread_counts, channel.id, 0)
+  end
+
+  defp channel_unread_label(1, channel), do: "1 unread message in #{channel.name}"
+
+  defp channel_unread_label(count, channel), do: "#{count} unread messages in #{channel.name}"
 
   defp selected_workspace_aria(workspace, selected_workspace) do
     if selected_workspace?(workspace, selected_workspace), do: "page"

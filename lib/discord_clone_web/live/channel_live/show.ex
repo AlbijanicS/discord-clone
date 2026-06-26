@@ -17,6 +17,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
          {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id),
          {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id),
+         :ok <- mark_selected_channel_read(socket, channel.id),
+         {:ok, channel_unread_counts} <- load_channel_unread_counts(socket, workspace.id),
          {:ok, messages} <- load_recent_messages(socket, channel.id),
          {:ok, channel_runtime_monitor_ref} <- monitor_channel_runtime(socket, channel.id),
          :ok <- subscribe_to_channel_messages(socket, channel.id),
@@ -41,6 +43,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:context_menu_position, nil)
         |> assign(:typing_user_ids, MapSet.new())
         |> assign(:channel_runtime_monitor_ref, channel_runtime_monitor_ref)
+        |> assign(:channel_unread_counts, channel_unread_counts)
         |> stream_configure(:messages, dom_id: &"message-#{&1.id}")
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
@@ -81,6 +84,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         current_scope={@current_scope}
         main_state={:channel}
         online_user_ids={@online_user_ids}
+        channel_unread_counts={@channel_unread_counts}
       >
         <section
           id="channel-message-surface"
@@ -695,6 +699,22 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       Chat.list_recent_messages(socket.assigns.current_scope, channel_id)
     else
       {:ok, []}
+    end
+  end
+
+  defp mark_selected_channel_read(socket, channel_id) do
+    if connected?(socket) do
+      Chat.mark_channel_read(socket.assigns.current_scope, channel_id)
+    else
+      :ok
+    end
+  end
+
+  defp load_channel_unread_counts(socket, workspace_id) do
+    if connected?(socket) do
+      Chat.list_unread_counts(socket.assigns.current_scope, workspace_id)
+    else
+      {:ok, %{}}
     end
   end
 

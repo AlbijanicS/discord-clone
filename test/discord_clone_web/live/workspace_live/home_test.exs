@@ -8,6 +8,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
   alias DiscordClone.Chat
   alias DiscordClone.Chat.Message
   alias DiscordClone.Chat.{ChannelServer, WorkspaceServer}
+  alias DiscordCloneWeb.WorkspaceLive.Shell
   alias DiscordClone.Workspaces.{Channel, WorkspaceInvite, WorkspaceMembership}
   alias DiscordClone.Repo
 
@@ -169,6 +170,137 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-composer-form")
       assert has_element?(view, "#message_content")
       refute has_element?(view, "#message-composer-placeholder")
+    end
+
+    test "renders an unread badge for a sibling channel when entering a channel", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      {_owner_scope, workspace, sibling_channel} =
+        workspace_with_sibling_unread!(member_scope)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(
+               view,
+               "#channel-#{sibling_channel.id}-unread-badge[aria-label='1 unread message in ops']",
+               "1"
+             )
+    end
+
+    test "starts disconnected channel render with no unread badges", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      {_owner_scope, workspace, sibling_channel} =
+        workspace_with_sibling_unread!(member_scope)
+
+      html =
+        conn
+        |> get(~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+        |> html_response(200)
+
+      assert html
+             |> LazyHTML.from_fragment()
+             |> then(& &1["#channel-#{sibling_channel.id}-unread-badge"])
+             |> LazyHTML.attribute("id") == []
+    end
+
+    test "clears a channel unread badge after opening that channel", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      {_owner_scope, workspace, sibling_channel} =
+        workspace_with_sibling_unread!(member_scope)
+
+      default_channel_path =
+        ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+
+      sibling_channel_path = ~p"/workspaces/#{workspace.id}/channels/#{sibling_channel.id}"
+
+      {:ok, view, _html} = live(conn, default_channel_path)
+
+      assert has_element?(view, "#channel-#{sibling_channel.id}-unread-badge", "1")
+
+      {:ok, opened_view, _html} =
+        view
+        |> element("#channel-#{sibling_channel.id} a")
+        |> render_click()
+        |> follow_redirect(conn, sibling_channel_path)
+
+      assert has_element?(opened_view, "#channel-#{sibling_channel.id}[aria-current='page']")
+      refute has_element?(opened_view, "#channel-#{sibling_channel.id}-unread-badge")
+    end
+
+    test "renders exact larger unread counts and hides quiet channel badges", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      {:ok, busy_channel} = Workspaces.create_channel(owner_scope, workspace.id, %{name: "ops"})
+
+      {:ok, quiet_channel} =
+        Workspaces.create_channel(owner_scope, workspace.id, %{name: "quiet"})
+
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      now = DateTime.utc_now(:second)
+
+      for index <- 1..123 do
+        insert_message!(
+          busy_channel.id,
+          owner_scope.user.id,
+          "ops update #{index}",
+          DateTime.add(now, index, :second)
+        )
+      end
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(
+               view,
+               "#channel-#{busy_channel.id}-unread-badge[aria-label='123 unread messages in ops']",
+               "123"
+             )
+
+      refute has_element?(view, "#channel-#{quiet_channel.id}-unread-badge")
+      refute has_element?(view, "#channel-#{workspace.default_channel_id}-unread-badge")
+    end
+
+    test "suppresses the selected channel badge when the shell receives a transient count", %{
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, sibling_channel} = Workspaces.create_channel(scope, workspace.id, %{name: "ops"})
+      selected_channel = Repo.get!(Channel, workspace.default_channel_id)
+
+      html =
+        render_component(&Shell.app/1,
+          workspace_stream: [{"workspace-#{workspace.id}", workspace}],
+          channel_stream: [
+            {"channel-#{selected_channel.id}", selected_channel},
+            {"channel-#{sibling_channel.id}", sibling_channel}
+          ],
+          selected_workspace: workspace,
+          selected_channel: selected_channel,
+          current_scope: scope,
+          main_state: :empty_channel,
+          channel_unread_counts: %{selected_channel.id => 7, sibling_channel.id => 2}
+        )
+
+      document = LazyHTML.from_fragment(html)
+
+      assert document
+             |> then(& &1["#channel-#{sibling_channel.id}-unread-badge"])
+             |> LazyHTML.attribute("id") == ["channel-#{sibling_channel.id}-unread-badge"]
+
+      assert document
+             |> then(& &1["#channel-#{selected_channel.id}-unread-badge"])
+             |> LazyHTML.attribute("id") == []
     end
 
     test "starts a channel runtime after connected channel entry", %{
@@ -2109,6 +2241,18 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       role: "member"
     })
     |> Repo.insert!()
+  end
+
+  defp workspace_with_sibling_unread!(member_scope) do
+    owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+    {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+    {:ok, sibling_channel} = Workspaces.create_channel(owner_scope, workspace.id, %{name: "ops"})
+
+    add_workspace_member!(workspace, member_scope)
+    :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+    {:ok, _message} = Chat.send_message(owner_scope, sibling_channel.id, %{content: "ops update"})
+
+    {owner_scope, workspace, sibling_channel}
   end
 
   defp insert_message!(channel_id, user_id, content, inserted_at) do
