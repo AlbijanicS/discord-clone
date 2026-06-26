@@ -11,6 +11,7 @@ defmodule DiscordClone.Chat do
   alias DiscordClone.Accounts.{Scope, User}
 
   alias DiscordClone.Chat.{
+    ChannelRead,
     ChannelSupervisor,
     ChannelServer,
     Message,
@@ -26,6 +27,67 @@ defmodule DiscordClone.Chat do
   def change_message(attrs \\ %{}) do
     Message.changeset(%Message{}, attrs)
   end
+
+  def initialize_workspace_reads_for_user(user_id, workspace_id) do
+    with :ok <- authorize_workspace_member(workspace_id, user_id) do
+      now = DateTime.utc_now(:second)
+
+      read_rows =
+        Repo.all(
+          from channel in Channel,
+            left_join: latest_message in subquery(latest_message_per_channel_query()),
+            on: latest_message.channel_id == channel.id,
+            where: channel.workspace_id == ^workspace_id,
+            select: %{
+              channel_id: channel.id,
+              user_id: type(^user_id, :id),
+              last_read_message_id: latest_message.last_read_message_id,
+              inserted_at: type(^now, :utc_datetime),
+              updated_at: type(^now, :utc_datetime)
+            }
+        )
+
+      Repo.insert_all(
+        ChannelRead,
+        read_rows,
+        on_conflict: {:replace, [:last_read_message_id, :updated_at]},
+        conflict_target: [:channel_id, :user_id]
+      )
+
+      :ok
+    end
+  end
+
+  def list_unread_counts(%Scope{user: %User{id: user_id}}, workspace_id) do
+    with :ok <- authorize_workspace_member(workspace_id, user_id) do
+      unread_counts =
+        Repo.all(
+          from channel in Channel,
+            join: membership in WorkspaceMembership,
+            on:
+              membership.workspace_id == channel.workspace_id and
+                membership.user_id == ^user_id,
+            join: message in Message,
+            on: message.channel_id == channel.id,
+            left_join: read in ChannelRead,
+            on: read.channel_id == channel.id and read.user_id == ^user_id,
+            where: channel.workspace_id == ^workspace_id,
+            where: is_nil(message.user_id) or message.user_id != ^user_id,
+            where:
+              (not is_nil(read.last_read_message_id) and
+                 message.id > read.last_read_message_id) or
+                (is_nil(read.last_read_message_id) and
+                   message.inserted_at >= membership.inserted_at),
+            group_by: channel.id,
+            select: {channel.id, count(message.id)}
+        )
+        |> Map.new()
+
+      {:ok, unread_counts}
+    end
+  end
+
+  def list_unread_counts(_scope, _workspace_id), do: {:error, :unauthenticated}
 
   def subscribe_to_channel_messages(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
@@ -210,6 +272,15 @@ defmodule DiscordClone.Chat do
     else
       {:error, :not_found}
     end
+  end
+
+  defp latest_message_per_channel_query do
+    from message in Message,
+      group_by: message.channel_id,
+      select: %{
+        channel_id: message.channel_id,
+        last_read_message_id: max(message.id)
+      }
   end
 
   defp broadcast_message_created(%Message{} = message) do

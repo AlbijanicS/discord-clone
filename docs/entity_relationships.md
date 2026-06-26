@@ -342,4 +342,7 @@ These can be added after the core model works:
   `kind` field. For the learning project, using channel processes for DMs is
   reasonable because the live state needs are similar.
 - Unread counts: persist per-user read positions with `channel_reads`, not as
-  counters on users or channels.
+  counters on users or channels. A Channel read row stores a User's durable
+  message cursor for a Channel in Postgres. ChannelServer must not own read or
+  unread state because process memory is allowed to reset on crash, shutdown,
+  or reconnect.

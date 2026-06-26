@@ -8,6 +8,7 @@ defmodule DiscordClone.Workspaces.Channel do
     belongs_to :workspace, DiscordClone.Workspaces.Workspace
 
     has_many :messages, DiscordClone.Chat.Message
+    has_many :channel_reads, DiscordClone.Chat.ChannelRead
 
     timestamps(type: :utc_datetime)
   end
