@@ -692,6 +692,42 @@ defmodule DiscordClone.ChatTest do
     end
   end
 
+  describe "subscribe_to_workspace_messages/2" do
+    test "subscribed workspace members receive compact message refresh events including sender sessions" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert :ok = Chat.subscribe_to_workspace_messages(scope, workspace.id)
+
+      assert {:ok, sent_message} =
+               Chat.send_message(scope, workspace.default_channel_id, %{
+                 "content" => "refresh unread badges"
+               })
+
+      assert_receive {:workspace_message_created, payload}
+      assert payload.workspace_id == workspace.id
+      assert payload.channel_id == workspace.default_channel_id
+      assert payload.message_id == sent_message.id
+      assert payload.user_id == scope.user.id
+      refute Map.has_key?(payload, :message)
+    end
+
+    test "rejects anonymous scopes and logged-in users who are not workspace members" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      assert Chat.subscribe_to_workspace_messages(nil, workspace.id) ==
+               {:error, :unauthenticated}
+
+      assert Chat.subscribe_to_workspace_messages(%DiscordClone.Accounts.Scope{}, workspace.id) ==
+               {:error, :unauthenticated}
+
+      assert Chat.subscribe_to_workspace_messages(non_member_scope, workspace.id) ==
+               {:error, :not_found}
+    end
+  end
+
   describe "channel typing workflows" do
     test "workspace members can subscribe, start typing, and list raw typing user IDs" do
       scope = user_scope_fixture()

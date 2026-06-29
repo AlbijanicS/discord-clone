@@ -22,6 +22,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          {:ok, messages} <- load_recent_messages(socket, channel.id),
          {:ok, channel_runtime_monitor_ref} <- monitor_channel_runtime(socket, channel.id),
          :ok <- subscribe_to_channel_messages(socket, channel.id),
+         :ok <- subscribe_to_workspace_messages(socket, workspace.id),
          :ok <- subscribe_to_channel_typing(socket, channel.id) do
       socket =
         socket
@@ -198,6 +199,14 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
      socket
      |> stream_insert(:messages, message)
      |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})}
+  end
+
+  def handle_info({:workspace_message_created, %{workspace_id: workspace_id} = payload}, socket) do
+    if socket.assigns.selected_workspace.id == workspace_id do
+      {:noreply, refresh_channel_unread_counts_for_message(socket, payload)}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_info({:typing_started, %{channel_id: channel_id, user_id: user_id}}, socket) do
@@ -658,6 +667,14 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
+  defp subscribe_to_workspace_messages(socket, workspace_id) do
+    if connected?(socket) do
+      Chat.subscribe_to_workspace_messages(socket.assigns.current_scope, workspace_id)
+    else
+      :ok
+    end
+  end
+
   defp subscribe_to_channel_typing(socket, channel_id) do
     if connected?(socket) do
       Chat.subscribe_to_channel_typing(socket.assigns.current_scope, channel_id)
@@ -715,6 +732,37 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       Chat.list_unread_counts(socket.assigns.current_scope, workspace_id)
     else
       {:ok, %{}}
+    end
+  end
+
+  defp refresh_channel_unread_counts_for_message(socket, %{channel_id: channel_id})
+       when channel_id == socket.assigns.selected_channel.id do
+    with :ok <- Chat.mark_channel_read(socket.assigns.current_scope, channel_id),
+         {:ok, channel_unread_counts} <-
+           Chat.list_unread_counts(
+             socket.assigns.current_scope,
+             socket.assigns.selected_workspace.id
+           ) do
+      socket
+      |> assign(:channel_unread_counts, channel_unread_counts)
+      |> restream_channels(socket.assigns.selected_workspace.id)
+    else
+      {:error, _reason} -> socket
+    end
+  end
+
+  defp refresh_channel_unread_counts_for_message(socket, _payload) do
+    case Chat.list_unread_counts(
+           socket.assigns.current_scope,
+           socket.assigns.selected_workspace.id
+         ) do
+      {:ok, channel_unread_counts} ->
+        socket
+        |> assign(:channel_unread_counts, channel_unread_counts)
+        |> restream_channels(socket.assigns.selected_workspace.id)
+
+      {:error, _reason} ->
+        socket
     end
   end
 

@@ -233,6 +233,40 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute has_element?(opened_view, "#channel-#{sibling_channel.id}-unread-badge")
     end
 
+    test "refreshes a sibling channel unread badge from a live workspace message event", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, sibling_channel} =
+        Workspaces.create_channel(owner_scope, workspace.id, %{name: "ops"})
+
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      refute has_element?(view, "#channel-#{sibling_channel.id}-unread-badge")
+
+      assert {:ok, message} =
+               Chat.send_message(owner_scope, sibling_channel.id, %{
+                 "content" => "ops live update"
+               })
+
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(
+               view,
+               "#channel-#{sibling_channel.id}-unread-badge[aria-label='1 unread message in ops']",
+               "1"
+             )
+
+      refute has_element?(view, "#message-#{message.id}")
+    end
+
     test "renders exact larger unread counts and hides quiet channel badges", %{
       conn: conn,
       scope: member_scope
@@ -945,6 +979,47 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert List.last(message_ids) == "message-#{message.id}"
       assert "message-#{existing_message.id}" in message_ids
+    end
+
+    test "marks selected-channel live messages read without duplicating timeline entries", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      channel_path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+      sender_conn = build_conn() |> log_in_user(owner_scope.user)
+
+      {:ok, receiver_view, _html} = live(conn, channel_path)
+      {:ok, sender_view, _html} = live(sender_conn, channel_path)
+
+      sender_view
+      |> form("#message-composer-form", message: %{content: "read while open"})
+      |> render_submit()
+
+      message =
+        Message
+        |> order_by([message], desc: message.id)
+        |> limit(1)
+        |> Repo.one!()
+
+      _ = :sys.get_state(receiver_view.pid)
+
+      assert has_element?(receiver_view, "#message-#{message.id}-content", "read while open")
+      refute has_element?(receiver_view, "#channel-#{workspace.default_channel_id}-unread-badge")
+      assert Chat.list_unread_counts(member_scope, workspace.id) == {:ok, %{}}
+
+      message_ids =
+        receiver_view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> then(& &1["#channel-messages > article"])
+        |> LazyHTML.attribute("id")
+
+      assert Enum.count(message_ids, &(&1 == "message-#{message.id}")) == 1
     end
 
     test "does not deliver live messages across channels in the same workspace", %{

@@ -150,6 +150,14 @@ defmodule DiscordClone.Chat do
 
   def subscribe_to_channel_messages(_scope, _channel_id), do: {:error, :unauthenticated}
 
+  def subscribe_to_workspace_messages(%Scope{user: %User{id: user_id}}, workspace_id) do
+    with :ok <- authorize_workspace_member(workspace_id, user_id) do
+      Phoenix.PubSub.subscribe(DiscordClone.PubSub, workspace_messages_topic(workspace_id))
+    end
+  end
+
+  def subscribe_to_workspace_messages(_scope, _workspace_id), do: {:error, :unauthenticated}
+
   def subscribe_to_channel_typing(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
       Phoenix.PubSub.subscribe(DiscordClone.PubSub, channel_messages_topic(channel_id))
@@ -275,7 +283,7 @@ defmodule DiscordClone.Chat do
   def list_older_messages(_scope, _channel_id, _cursor), do: {:error, :unauthenticated}
 
   def send_message(%Scope{user: %User{id: user_id}}, channel_id, attrs) do
-    with %Channel{} <- get_member_channel(channel_id, user_id) do
+    with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
       %Message{}
       |> Message.changeset(%{
         "content" => Map.get(attrs, "content") || Map.get(attrs, :content),
@@ -291,6 +299,7 @@ defmodule DiscordClone.Chat do
           :ok = ChannelServer.put_recent_message(pid, message)
           :ok = ChannelServer.user_stopped_typing(pid, user_id)
           :ok = broadcast_message_created(message)
+          :ok = broadcast_workspace_message_created(channel.workspace_id, message)
           {:ok, message}
 
         {:error, changeset} ->
@@ -379,4 +388,19 @@ defmodule DiscordClone.Chat do
   end
 
   defp channel_messages_topic(channel_id), do: "chat:channel:#{channel_id}"
+  defp workspace_messages_topic(workspace_id), do: "chat:workspace:#{workspace_id}:messages"
+
+  defp broadcast_workspace_message_created(workspace_id, %Message{} = message) do
+    Phoenix.PubSub.broadcast(
+      DiscordClone.PubSub,
+      workspace_messages_topic(workspace_id),
+      {:workspace_message_created,
+       %{
+         workspace_id: workspace_id,
+         channel_id: message.channel_id,
+         message_id: message.id,
+         user_id: message.user_id
+       }}
+    )
+  end
 end
