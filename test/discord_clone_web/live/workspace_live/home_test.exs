@@ -1578,6 +1578,38 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#channel-#{workspace.default_channel_id}-rename")
     end
 
+    test "refreshes unread badges when opening a channel action menu", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, sibling_channel} =
+        Workspaces.create_channel(owner_scope, workspace.id, %{name: "ops"})
+
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      refute has_element?(view, "#channel-#{sibling_channel.id}-unread-badge")
+
+      inserted_at = DateTime.add(DateTime.utc_now(:second), 5, :second)
+      insert_message!(sibling_channel.id, owner_scope.user.id, "ops update", inserted_at)
+
+      view
+      |> element("#channel-#{sibling_channel.id}-actions")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#channel-#{sibling_channel.id}-unread-badge[aria-label='1 unread message in ops']",
+               "1"
+             )
+    end
+
     test "opens the channel action menu from a context menu event", %{
       conn: conn,
       scope: scope
@@ -1600,6 +1632,41 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
              )
 
       assert has_element?(view, "#channel-#{workspace.default_channel_id}-rename")
+    end
+
+    test "refreshes unread badges when opening a channel context menu", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, sibling_channel} =
+        Workspaces.create_channel(owner_scope, workspace.id, %{name: "ops"})
+
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      refute has_element?(view, "#channel-#{sibling_channel.id}-unread-badge")
+
+      inserted_at = DateTime.add(DateTime.utc_now(:second), 5, :second)
+      insert_message!(sibling_channel.id, owner_scope.user.id, "ops update", inserted_at)
+
+      render_hook(view, "open_context_menu", %{
+        "type" => "channel",
+        "id" => sibling_channel.id,
+        "x" => 320,
+        "y" => 180
+      })
+
+      assert has_element?(
+               view,
+               "#channel-#{sibling_channel.id}-unread-badge[aria-label='1 unread message in ops']",
+               "1"
+             )
     end
 
     test "opens the workspace action menu with rename", %{conn: conn, scope: scope} do
@@ -1894,6 +1961,45 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#channel-#{workspace.default_channel_id}-rename-form")
     end
 
+    test "refreshes unread badges while a different channel is being renamed", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      {:ok, unread_channel} = Workspaces.create_channel(owner_scope, workspace.id, %{name: "ops"})
+
+      {:ok, renamed_channel} =
+        Workspaces.create_channel(owner_scope, workspace.id, %{name: "planning"})
+
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      view
+      |> element("#channel-#{renamed_channel.id}-actions")
+      |> render_click()
+
+      refute has_element?(view, "#channel-#{unread_channel.id}-unread-badge")
+
+      inserted_at = DateTime.add(DateTime.utc_now(:second), 5, :second)
+      insert_message!(unread_channel.id, owner_scope.user.id, "ops update", inserted_at)
+
+      view
+      |> element("#channel-#{renamed_channel.id}-rename")
+      |> render_click()
+
+      assert has_element?(view, "#channel-#{renamed_channel.id}-rename-form")
+
+      assert has_element?(
+               view,
+               "#channel-#{unread_channel.id}-unread-badge[aria-label='1 unread message in ops']",
+               "1"
+             )
+    end
+
     test "renames the selected channel and keeps the channel URL", %{conn: conn, scope: scope} do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
       path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
@@ -1938,6 +2044,45 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute has_element?(view, "#channel-#{channel.id}")
       refute Repo.get(Channel, channel.id)
       assert has_element?(view, "#channel-#{workspace.default_channel_id}[aria-current='page']")
+    end
+
+    test "refreshes unread badges after deleting another channel", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      {:ok, unread_channel} = Workspaces.create_channel(owner_scope, workspace.id, %{name: "ops"})
+
+      {:ok, deleted_channel} =
+        Workspaces.create_channel(owner_scope, workspace.id, %{name: "planning"})
+
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      view
+      |> element("#channel-#{deleted_channel.id}-actions")
+      |> render_click()
+
+      refute has_element?(view, "#channel-#{unread_channel.id}-unread-badge")
+
+      inserted_at = DateTime.add(DateTime.utc_now(:second), 5, :second)
+      insert_message!(unread_channel.id, owner_scope.user.id, "ops update", inserted_at)
+
+      view
+      |> element("#channel-#{deleted_channel.id}-delete")
+      |> render_click()
+
+      refute has_element?(view, "#channel-#{deleted_channel.id}")
+
+      assert has_element?(
+               view,
+               "#channel-#{unread_channel.id}-unread-badge[aria-label='1 unread message in ops']",
+               "1"
+             )
     end
 
     test "deletes the current channel and navigates to workspace entry", %{

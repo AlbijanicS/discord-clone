@@ -466,7 +466,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       |> assign(:channel_action_menu_id, String.to_integer(channel_id))
       |> assign(:workspace_action_menu_id, nil)
       |> assign(:context_menu_position, nil)
-      |> stream(:channels, channels, reset: true)
+      |> refresh_channel_sidebar(workspace_id, channels)
 
     {:noreply, socket}
   end
@@ -484,7 +484,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       |> assign(:channel_action_menu_id, to_integer(channel_id))
       |> assign(:workspace_action_menu_id, nil)
       |> assign(:context_menu_position, %{x: to_integer(x), y: to_integer(y)})
-      |> stream(:channels, channels, reset: true)
+      |> refresh_channel_sidebar(workspace_id, channels)
 
     {:noreply, socket}
   end
@@ -509,7 +509,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       |> assign(:workspace_action_menu_id, nil)
       |> assign(:channel_action_menu_id, nil)
       |> assign(:context_menu_position, nil)
-      |> restream_channels(workspace_id)
+      |> refresh_channel_sidebar(workspace_id)
 
     {:noreply, socket}
   end
@@ -525,7 +525,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:channel_action_menu_id, nil)
         |> assign(:renaming_channel_id, channel.id)
         |> assign(:channel_rename_form, channel_form(workspace_id, %{name: channel.name}))
-        |> stream(:channels, channels, reset: true)
+        |> refresh_channel_sidebar(workspace_id, channels)
 
       {:noreply, socket}
     else
@@ -548,7 +548,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
           socket
           |> assign(:channel_form, channel_form(workspace_id))
           |> assign(:show_channel_form?, false)
-          |> stream(:channels, channels, reset: true)
+          |> refresh_channel_sidebar(workspace_id, channels)
 
         {:noreply,
          push_navigate(socket, to: ~p"/workspaces/#{workspace_id}/channels/#{channel.id}")}
@@ -594,7 +594,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
           |> assign(:renaming_channel_id, nil)
           |> assign(:channel_rename_form, nil)
           |> assign(:channel_action_menu_id, nil)
-          |> stream(:channels, channels, reset: true)
+          |> refresh_channel_sidebar(workspace_id, channels)
 
         {:noreply, socket}
 
@@ -604,7 +604,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          |> assign(:renaming_channel_id, String.to_integer(channel_id))
          |> assign(:channel_rename_form, to_form(changeset, as: :channel, action: :insert))
          |> assign(:channel_action_menu_id, nil)
-         |> restream_channels(workspace_id)}
+         |> refresh_channel_sidebar(workspace_id)}
 
       {:error, _reason} ->
         {:noreply,
@@ -625,10 +625,12 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         {:noreply, push_navigate(socket, to: ~p"/workspaces/#{workspace_id}")}
 
       {:ok, _channel} ->
+        {:ok, channels} = Workspaces.list_channels(socket.assigns.current_scope, workspace_id)
+
         {:noreply,
          socket
          |> assign(:channel_action_menu_id, nil)
-         |> restream_channels(workspace_id)}
+         |> refresh_channel_sidebar(workspace_id, channels)}
 
       {:error, :landing_channel_required} ->
         {:noreply, put_flash(socket, :error, "The landing channel cannot be deleted.")}
@@ -737,33 +739,15 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   defp refresh_channel_unread_counts_for_message(socket, %{channel_id: channel_id})
        when channel_id == socket.assigns.selected_channel.id do
-    with :ok <- Chat.mark_channel_read(socket.assigns.current_scope, channel_id),
-         {:ok, channel_unread_counts} <-
-           Chat.list_unread_counts(
-             socket.assigns.current_scope,
-             socket.assigns.selected_workspace.id
-           ) do
-      socket
-      |> assign(:channel_unread_counts, channel_unread_counts)
-      |> restream_channels(socket.assigns.selected_workspace.id)
+    with :ok <- Chat.mark_channel_read(socket.assigns.current_scope, channel_id) do
+      refresh_channel_sidebar(socket, socket.assigns.selected_workspace.id)
     else
       {:error, _reason} -> socket
     end
   end
 
   defp refresh_channel_unread_counts_for_message(socket, _payload) do
-    case Chat.list_unread_counts(
-           socket.assigns.current_scope,
-           socket.assigns.selected_workspace.id
-         ) do
-      {:ok, channel_unread_counts} ->
-        socket
-        |> assign(:channel_unread_counts, channel_unread_counts)
-        |> restream_channels(socket.assigns.selected_workspace.id)
-
-      {:error, _reason} ->
-        socket
-    end
+    refresh_channel_sidebar(socket, socket.assigns.selected_workspace.id)
   end
 
   defp start_typing(socket) do
@@ -803,8 +787,21 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     stream(socket, :workspaces, workspaces, reset: true)
   end
 
-  defp restream_channels(socket, workspace_id) do
+  defp refresh_channel_sidebar(socket, workspace_id) do
     {:ok, channels} = Workspaces.list_channels(socket.assigns.current_scope, workspace_id)
+    refresh_channel_sidebar(socket, workspace_id, channels)
+  end
+
+  defp refresh_channel_sidebar(socket, workspace_id, channels) do
+    socket =
+      case Chat.list_unread_counts(socket.assigns.current_scope, workspace_id) do
+        {:ok, channel_unread_counts} ->
+          assign(socket, :channel_unread_counts, channel_unread_counts)
+
+        {:error, _reason} ->
+          socket
+      end
+
     stream(socket, :channels, channels, reset: true)
   end
 
