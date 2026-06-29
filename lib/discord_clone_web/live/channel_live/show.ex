@@ -122,24 +122,33 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
             <article
               :for={{dom_id, message} <- @streams.messages}
               id={dom_id}
-              class="group flex gap-3 rounded px-2 py-2 transition hover:bg-base-200/70"
+              data-message-row="full"
+              class="group grid grid-cols-[2.5rem_minmax(0,1fr)] gap-3 rounded px-2 py-2 transition hover:bg-base-200/70"
             >
-              <div class="flex size-9 shrink-0 items-center justify-center rounded bg-primary/10 text-sm font-semibold text-primary">
+              <div
+                id={"#{dom_id}-avatar"}
+                class="flex size-9 shrink-0 items-center justify-center rounded bg-primary/10 text-sm font-semibold text-primary"
+                aria-hidden="true"
+              >
                 {user_initial(message.user)}
               </div>
-              <div class="min-w-0 flex-1">
-                <div class="flex flex-wrap items-baseline gap-2">
+              <div id={"#{dom_id}-body"} class="min-w-0">
+                <div id={"#{dom_id}-header"} class="flex flex-wrap items-baseline gap-2">
                   <span id={"#{dom_id}-author"} class="font-semibold">
                     {message.user.username}
                   </span>
                   <time
+                    id={"#{dom_id}-timestamp"}
                     datetime={DateTime.to_iso8601(message.inserted_at)}
                     class="text-xs text-base-content/50"
                   >
                     {compact_time(message.inserted_at)}
                   </time>
                 </div>
-                <p id={"#{dom_id}-content"} class="mt-1 whitespace-pre-wrap break-words text-sm">
+                <p
+                  id={"#{dom_id}-content"}
+                  class="mt-1 whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]"
+                >
                   {message.content}
                 </p>
               </div>

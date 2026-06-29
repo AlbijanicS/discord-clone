@@ -305,6 +305,47 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute has_element?(view, "#channel-#{workspace.default_channel_id}-unread-badge")
     end
 
+    test "scopes unread badges to the current user", %{
+      conn: unread_conn,
+      scope: unread_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      read_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      read_conn = build_conn() |> log_in_user(read_scope.user)
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, sibling_channel} =
+        Workspaces.create_channel(owner_scope, workspace.id, %{name: "ops"})
+
+      add_workspace_member!(workspace, unread_scope)
+      add_workspace_member!(workspace, read_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(unread_scope.user.id, workspace.id)
+      :ok = Chat.initialize_workspace_reads_for_user(read_scope.user.id, workspace.id)
+
+      {:ok, _message} =
+        Chat.send_message(owner_scope, sibling_channel.id, %{"content" => "ops update"})
+
+      assert :ok = Chat.mark_channel_read(read_scope, sibling_channel.id)
+
+      {:ok, unread_view, _html} =
+        live(
+          unread_conn,
+          ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+        )
+
+      {:ok, read_view, _html} =
+        live(read_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(
+               unread_view,
+               "#channel-#{sibling_channel.id}-unread-badge[aria-label='1 unread message in ops']",
+               "1"
+             )
+
+      refute has_element?(read_view, "#channel-#{sibling_channel.id}-unread-badge")
+    end
+
     test "suppresses the selected channel badge when the shell receives a transient count", %{
       scope: scope
     } do
@@ -775,6 +816,53 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-#{message.id}-author", scope.user.username)
       assert has_element?(view, "#message-#{message.id} time[datetime='2026-06-19T10:30:00Z']")
       assert has_element?(view, "#message-#{message.id}-content", message.content)
+    end
+
+    test "renders persisted channel messages in a stable anchored row layout", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      content = "first line\n#{String.duplicate("unbroken", 24)} 😀😀😀"
+
+      message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          content,
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#message-#{message.id}[data-message-row='full']")
+
+      assert has_element?(
+               view,
+               "#message-#{message.id}-avatar",
+               scope.user.username |> String.first() |> String.upcase()
+             )
+
+      assert has_element?(view, "#message-#{message.id}-body")
+      assert has_element?(view, "#message-#{message.id}-header")
+      assert has_element?(view, "#message-#{message.id}-author", scope.user.username)
+
+      assert has_element?(
+               view,
+               "#message-#{message.id}-timestamp[datetime='2026-06-19T10:30:00Z']"
+             )
+
+      content_text =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> then(& &1["#message-#{message.id}-content"])
+        |> LazyHTML.text()
+        |> String.trim()
+
+      assert content_text == content
     end
 
     test "renders persisted messages after channel runtime loss", %{
