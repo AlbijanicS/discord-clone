@@ -3,6 +3,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   alias DiscordClone.{Chat, Workspaces}
   alias DiscordClone.Chat.WorkspacePresence, as: PresenceEvents
+  alias DiscordCloneWeb.ChannelLive.MessageRows
   alias DiscordCloneWeb.WorkspaceLive.Presence
   alias DiscordCloneWeb.WorkspaceLive.Shell
 
@@ -34,6 +35,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:show_channel_form?, false)
         |> assign(:message_form, message_form())
         |> assign(:oldest_message, List.first(messages))
+        |> assign(:latest_message, List.last(messages))
         |> assign(:has_older_messages?, length(messages) == @message_page_size)
         |> assign(:workspace_action_menu_id, nil)
         |> assign(:renaming_workspace_id, nil)
@@ -48,7 +50,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> stream_configure(:messages, dom_id: &"message-#{&1.id}")
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
-        |> stream(:messages, messages)
+        |> stream(:messages, MessageRows.annotate(messages))
         |> Presence.prepare_workspace(workspace.id, members)
 
       {:ok, socket}
@@ -120,36 +122,48 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               </div>
             </div>
             <article
-              :for={{dom_id, message} <- @streams.messages}
+              :for={{dom_id, row} <- @streams.messages}
               id={dom_id}
-              data-message-row="full"
-              class="group grid grid-cols-[2.5rem_minmax(0,1fr)] gap-3 rounded px-2 py-2 transition hover:bg-base-200/70"
+              data-message-row={row_kind(row)}
+              class={[
+                "group grid grid-cols-[2.5rem_minmax(0,1fr)] gap-3 rounded px-2 transition hover:bg-base-200/70",
+                if(row.row_kind == :compact, do: "py-1", else: "py-2")
+              ]}
             >
               <div
+                :if={row.row_kind == :full}
                 id={"#{dom_id}-avatar"}
                 class="flex size-9 shrink-0 items-center justify-center rounded bg-primary/10 text-sm font-semibold text-primary"
                 aria-hidden="true"
               >
-                {user_initial(message.user)}
+                {user_initial(row.message.user)}
               </div>
+              <div :if={row.row_kind == :compact} id={"#{dom_id}-spacer"} aria-hidden="true"></div>
               <div id={"#{dom_id}-body"} class="min-w-0">
-                <div id={"#{dom_id}-header"} class="flex flex-wrap items-baseline gap-2">
+                <div
+                  :if={row.row_kind == :full}
+                  id={"#{dom_id}-header"}
+                  class="flex flex-wrap items-baseline gap-2"
+                >
                   <span id={"#{dom_id}-author"} class="font-semibold">
-                    {message.user.username}
+                    {row.message.user.username}
                   </span>
                   <time
                     id={"#{dom_id}-timestamp"}
-                    datetime={DateTime.to_iso8601(message.inserted_at)}
+                    datetime={DateTime.to_iso8601(row.message.inserted_at)}
                     class="text-xs text-base-content/50"
                   >
-                    {compact_time(message.inserted_at)}
+                    {compact_time(row.message.inserted_at)}
                   </time>
                 </div>
                 <p
                   id={"#{dom_id}-content"}
-                  class="mt-1 whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]"
+                  class={[
+                    "whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]",
+                    row.row_kind == :full && "mt-1"
+                  ]}
                 >
-                  {message.content}
+                  {row.message.content}
                 </p>
               </div>
             </article>
@@ -204,9 +218,12 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   @impl true
   def handle_info({:message_created, message}, socket) do
+    row = MessageRows.annotate_next(socket.assigns.latest_message, message)
+
     {:noreply,
      socket
-     |> stream_insert(:messages, message)
+     |> assign(:latest_message, message)
+     |> stream_insert(:messages, row)
      |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})}
   end
 
@@ -310,9 +327,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       {:ok, older_messages} ->
         socket =
           older_messages
+          |> MessageRows.annotate()
           |> Enum.reverse()
-          |> Enum.reduce(socket, fn message, socket ->
-            stream_insert(socket, :messages, message, at: 0)
+          |> Enum.reduce(socket, fn row, socket ->
+            stream_insert(socket, :messages, row, at: 0)
           end)
           |> assign(:oldest_message, List.first(older_messages) || socket.assigns.oldest_message)
           |> assign(:has_older_messages?, length(older_messages) == @message_page_size)
@@ -334,12 +352,15 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
            message_params
          ) do
       {:ok, message} ->
+        row = MessageRows.annotate_next(socket.assigns.latest_message, message)
+
         {:noreply,
          socket
          |> assign(:message_form, message_form())
+         |> assign(:latest_message, message)
          |> push_event("clear_message_composer", %{input_id: "message_content"})
          |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})
-         |> stream_insert(:messages, message)}
+         |> stream_insert(:messages, row)}
 
       {:error, :invalid_message, changeset} ->
         {:noreply,
@@ -686,13 +707,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
-  defp subscribe_to_channel_typing(socket, channel_id) do
-    if connected?(socket) do
-      Chat.subscribe_to_channel_typing(socket.assigns.current_scope, channel_id)
-    else
-      :ok
-    end
-  end
+  defp subscribe_to_channel_typing(_socket, _channel_id), do: :ok
 
   defp monitor_channel_runtime(socket, channel_id) do
     if connected?(socket) do
@@ -818,6 +833,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   defp to_integer(value) when is_binary(value), do: String.to_integer(value)
 
   defp compact_time(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%H:%M")
+
+  defp row_kind(%{row_kind: row_kind}), do: Atom.to_string(row_kind)
 
   defp user_initial(%{username: username}) when is_binary(username) do
     username

@@ -865,6 +865,118 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert content_text == content
     end
 
+    test "groups consecutive same-author messages within five minutes", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      first_message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "first thought",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      second_message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "follow-up thought",
+          ~U[2026-06-19 10:33:00Z]
+        )
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#message-#{first_message.id}[data-message-row='full']")
+      assert has_element?(view, "#message-#{first_message.id}-avatar")
+      assert has_element?(view, "#message-#{first_message.id}-header")
+
+      assert has_element?(view, "#message-#{second_message.id}[data-message-row='compact']")
+      assert has_element?(view, "#message-#{second_message.id}-spacer[aria-hidden='true']")
+      assert has_element?(view, "#message-#{second_message.id}-body")
+      assert has_element?(view, "#message-#{second_message.id}-content", "follow-up thought")
+      refute has_element?(view, "#message-#{second_message.id}-avatar")
+      refute has_element?(view, "#message-#{second_message.id}-header")
+    end
+
+    test "starts a full message row when the speaker changes", %{
+      conn: conn,
+      scope: first_scope
+    } do
+      second_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(first_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, second_scope)
+
+      first_message =
+        insert_message!(
+          workspace.default_channel_id,
+          first_scope.user.id,
+          "first speaker",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      second_message =
+        insert_message!(
+          workspace.default_channel_id,
+          second_scope.user.id,
+          "second speaker",
+          ~U[2026-06-19 10:31:00Z]
+        )
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#message-#{first_message.id}[data-message-row='full']")
+      assert has_element?(view, "#message-#{second_message.id}[data-message-row='full']")
+      assert has_element?(view, "#message-#{second_message.id}-avatar")
+      assert has_element?(view, "#message-#{second_message.id}-header")
+
+      assert has_element?(
+               view,
+               "#message-#{second_message.id}-author",
+               second_scope.user.username
+             )
+    end
+
+    test "starts a full message row when the same speaker is outside the grouping window", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      first_message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "morning note",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      second_message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "later note",
+          ~U[2026-06-19 10:36:00Z]
+        )
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#message-#{first_message.id}[data-message-row='full']")
+      assert has_element?(view, "#message-#{second_message.id}[data-message-row='full']")
+      assert has_element?(view, "#message-#{second_message.id}-avatar")
+      assert has_element?(view, "#message-#{second_message.id}-header")
+
+      assert has_element?(
+               view,
+               "#message-#{second_message.id}-timestamp[datetime='2026-06-19T10:36:00Z']"
+             )
+    end
+
     test "renders persisted messages after channel runtime loss", %{
       conn: conn,
       scope: scope
@@ -927,6 +1039,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert message.channel_id == workspace.default_channel_id
       assert message.user_id == scope.user.id
       assert has_element?(view, "#message-#{message.id}")
+      assert has_element?(view, "#message-#{message.id}[data-message-row='full']")
+      assert has_element?(view, "#message-#{message.id}-author", scope.user.username)
       assert has_element?(view, "#message-#{message.id}-content", "hello from liveview")
       refute has_element?(view, "#message_content[value='  hello from liveview  ']")
 
@@ -935,6 +1049,11 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert_push_event(view, "scroll_channel_messages_to_bottom", %{
         container_id: "channel-messages"
       })
+
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(view, "#message-#{message.id}[data-message-row='full']")
+      assert has_element?(view, "#message-#{message.id}-author", scope.user.username)
     end
 
     test "renders the sender's saved message exactly once", %{
@@ -1024,7 +1143,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       existing_message =
         insert_message!(
           workspace.default_channel_id,
-          owner_scope.user.id,
+          member_scope.user.id,
           "already here",
           ~U[2026-06-19 10:00:00Z]
         )
