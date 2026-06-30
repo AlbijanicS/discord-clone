@@ -34,6 +34,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          :ok <- subscribe_to_channel_messages(socket, channel.id),
          :ok <- subscribe_to_workspace_messages(socket, workspace.id),
          :ok <- subscribe_to_channel_typing(socket, channel.id) do
+      message_rows = MessageRows.annotate(messages)
+
       socket =
         socket
         |> assign(:selected_workspace, workspace)
@@ -57,10 +59,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:channel_runtime_monitor_ref, channel_runtime_monitor_ref)
         |> assign(:channel_unread_counts, channel_unread_counts)
         |> assign(:reaction_summaries, reaction_summaries)
+        |> assign(:message_rows_by_id, message_rows_by_id(message_rows))
         |> stream_configure(:messages, dom_id: &"message-#{&1.id}")
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
-        |> stream(:messages, MessageRows.annotate(messages))
+        |> stream(:messages, message_rows)
         |> Presence.prepare_workspace(workspace.id, members)
 
       {:ok, socket}
@@ -282,6 +285,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     {:noreply,
      socket
      |> assign(:latest_message, message)
+     |> put_message_row(row)
      |> stream_insert(:messages, row)
      |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})}
   end
@@ -413,6 +417,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          socket
          |> assign(:message_form, message_form())
          |> assign(:latest_message, message)
+         |> put_message_row(row)
          |> push_event("clear_message_composer", %{input_id: "message_content"})
          |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})
          |> stream_insert(:messages, row)}
@@ -443,9 +448,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   end
 
   def handle_event("toggle_reaction", %{"message-id" => message_id, "emoji" => emoji}, socket) do
-    case Chat.toggle_reaction(socket.assigns.current_scope, to_integer(message_id), emoji) do
+    message_id = to_integer(message_id)
+
+    case Chat.toggle_reaction(socket.assigns.current_scope, message_id, emoji) do
       {:ok, _reaction_or_deleted_reaction} ->
-        {:noreply, socket}
+        {:noreply, refresh_reaction_summary(socket, message_id)}
 
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "Reaction could not be saved.")}
@@ -763,6 +770,29 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     Map.get(reaction_summaries, message_id, [])
   end
 
+  defp refresh_reaction_summary(socket, message_id) do
+    socket =
+      case Chat.list_reaction_summaries(socket.assigns.current_scope, [message_id]) do
+        {:ok, %{^message_id => summaries}} ->
+          reaction_summaries =
+            Map.put(socket.assigns.reaction_summaries, message_id, summaries)
+
+          assign(socket, :reaction_summaries, reaction_summaries)
+
+        {:ok, %{}} ->
+          assign(
+            socket,
+            :reaction_summaries,
+            Map.delete(socket.assigns.reaction_summaries, message_id)
+          )
+
+        {:error, _reason} ->
+          put_flash(socket, :error, "Reaction summary could not be refreshed.")
+      end
+
+    restream_message_row(socket, message_id)
+  end
+
   defp reaction_palette, do: @reaction_palette
 
   defp reaction_option_id(message_id, index), do: "message-#{message_id}-reaction-option-#{index}"
@@ -792,13 +822,32 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     boundary_row =
       MessageRows.annotate_next(List.last(older_messages), socket.assigns.oldest_message)
 
-    older_messages
-    |> MessageRows.annotate()
+    older_rows = MessageRows.annotate(older_messages)
+
+    older_rows
     |> Enum.reverse()
-    |> Enum.reduce(socket, fn row, socket ->
+    |> Enum.reduce(put_message_rows(socket, [boundary_row | older_rows]), fn row, socket ->
       stream_insert(socket, :messages, row, at: 0)
     end)
     |> stream_insert(:messages, boundary_row)
+  end
+
+  defp message_rows_by_id(rows) do
+    Map.new(rows, fn row -> {row.message.id, row} end)
+  end
+
+  defp put_message_row(socket, row), do: put_message_rows(socket, [row])
+
+  defp put_message_rows(socket, rows) do
+    message_rows_by_id = Map.merge(socket.assigns.message_rows_by_id, message_rows_by_id(rows))
+    assign(socket, :message_rows_by_id, message_rows_by_id)
+  end
+
+  defp restream_message_row(socket, message_id) do
+    case Map.fetch(socket.assigns.message_rows_by_id, message_id) do
+      {:ok, row} -> stream_insert(socket, :messages, row)
+      :error -> socket
+    end
   end
 
   defp subscribe_to_channel_messages(socket, channel_id) do

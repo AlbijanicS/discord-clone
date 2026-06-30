@@ -1027,12 +1027,21 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       |> element("#message-#{message_id}-reaction-option-0")
       |> render_click()
 
+      assert has_element?(
+               view,
+               "#message-#{message_id}-reaction-0[data-current-user-reacted='true'][aria-label='👍 reaction, 1 reaction, you reacted']",
+               "👍 1"
+             )
+
       assert {:ok, %{^message_id => [%{emoji: "👍", count: 1, reacted?: true}]}} =
                Chat.list_reaction_summaries(scope, [message_id])
 
       view
       |> element("#message-#{message_id}-reaction-option-0")
       |> render_click()
+
+      refute has_element?(view, "#message-#{message_id}-reactions")
+      refute has_element?(view, "#message-#{message_id}-reaction-0")
 
       assert {:ok, %{}} = Chat.list_reaction_summaries(scope, [message_id])
     end
