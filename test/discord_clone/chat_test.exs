@@ -993,6 +993,54 @@ defmodule DiscordClone.ChatTest do
       assert summaries[requested_message.id] == [%{emoji: "👍", count: 1, reacted?: true}]
     end
 
+    test "returns persisted reaction summaries after channel runtime loss" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      message = insert_message!(channel_id, scope.user.id, "durable signal", now())
+      assert {:ok, _reaction} = Chat.toggle_reaction(scope, message.id, "👍")
+
+      assert {:ok, first_pid} = Chat.ensure_channel_runtime(scope, channel_id)
+      assert %{channel_id: ^channel_id} = :sys.get_state(first_pid)
+
+      ref = Process.monitor(first_pid)
+      Process.exit(first_pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
+      _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
+      assert ChannelServer.whereis(channel_id) == nil
+
+      assert {:ok, summaries} = Chat.list_reaction_summaries(scope, [message.id])
+
+      assert summaries == %{
+               message.id => [
+                 %{emoji: "👍", count: 1, reacted?: true}
+               ]
+             }
+
+      assert {:ok, second_pid} = Chat.ensure_channel_runtime(scope, channel_id)
+      assert second_pid != first_pid
+    end
+
+    test "does not store reaction ownership in channel runtime state" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      message = insert_message!(channel_id, scope.user.id, "state boundary", now())
+      assert {:ok, _reaction} = Chat.toggle_reaction(scope, message.id, "👍")
+
+      assert {:ok, pid} = Chat.ensure_channel_runtime(scope, channel_id)
+      state = :sys.get_state(pid)
+
+      assert Map.take(state, [
+               :reactions,
+               :reaction_counts,
+               :reaction_rows,
+               :reaction_summaries
+             ]) == %{}
+    end
+
     test "rejects anonymous scopes and logged-in users who are not workspace members" do
       owner_scope = user_scope_fixture()
       non_member_scope = user_scope_fixture()

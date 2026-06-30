@@ -54,6 +54,8 @@ defmodule DiscordClone.Chat.ChannelServer do
 
   @impl true
   def init({channel_id, recent_messages}) do
+    # Reactions are durable product state loaded through Chat from Postgres;
+    # the channel runtime only owns temporary cache and presence-style state.
     {:ok,
      %{
        channel_id: channel_id,

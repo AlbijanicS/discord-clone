@@ -20,23 +20,23 @@ mentions, or direct messages.
 
 ## Acceptance criteria
 
-- [ ] Full message rows, compact grouped rows, empty state, older-message
+- [x] Full message rows, compact grouped rows, empty state, older-message
       loading, live inserts, and composer spacing still work together.
-- [ ] Supported emoji shortcodes render safely in message content.
-- [ ] Unknown shortcodes remain unchanged.
-- [ ] Reaction pills render counts and current-User reacted state.
-- [ ] Fixed palette controls can add and remove reactions.
-- [ ] Other connected Channel viewers can observe reaction count changes
+- [x] Supported emoji shortcodes render safely in message content.
+- [x] Unknown shortcodes remain unchanged.
+- [x] Reaction pills render counts and current-User reacted state.
+- [x] Fixed palette controls can add and remove reactions.
+- [x] Other connected Channel viewers can observe reaction count changes
       without refresh where practical.
-- [ ] Non-members and anonymous scopes cannot react to private Workspace
+- [x] Non-members and anonymous scopes cannot react to private Workspace
       messages.
-- [ ] Invalid emoji payloads are rejected.
-- [ ] Reaction summaries survive refresh and Channel runtime loss.
-- [ ] Reaction controls and summaries include accessible labels.
-- [ ] No route or router-scope changes were introduced.
-- [ ] The web layer still uses public Chat APIs rather than Repo or runtime
+- [x] Invalid emoji payloads are rejected.
+- [x] Reaction summaries survive refresh and Channel runtime loss.
+- [x] Reaction controls and summaries include accessible labels.
+- [x] No route or router-scope changes were introduced.
+- [x] The web layer still uses public Chat APIs rather than Repo or runtime
       internals.
-- [ ] Focused tests and `mix precommit` pass.
+- [x] Focused tests and `mix precommit` pass.
 
 ## Blocked by
 

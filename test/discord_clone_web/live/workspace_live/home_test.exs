@@ -887,6 +887,40 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
              )
     end
 
+    test "keeps reaction summaries visible after page refresh", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+
+      message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "refresh proof",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      assert {:ok, _reaction} = Chat.toggle_reaction(scope, message.id, "👍")
+
+      {:ok, first_view, _html} = live(conn, channel_path)
+
+      assert has_element?(
+               first_view,
+               "#message-#{message.id}-reaction-0[aria-label='👍 reaction, 1 reaction, you reacted']",
+               "👍 1"
+             )
+
+      {:ok, refreshed_view, _html} = live(conn, channel_path)
+
+      assert has_element?(
+               refreshed_view,
+               "#message-#{message.id}-reaction-0[aria-label='👍 reaction, 1 reaction, you reacted']",
+               "👍 1"
+             )
+    end
+
     test "does not render empty reaction chrome for messages without reactions", %{
       conn: conn,
       scope: scope
@@ -1084,6 +1118,110 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert has_element?(viewer_view, "#message-#{message.id}[data-message-row='full']")
       assert has_element?(viewer_view, "#message-#{message.id}-content", "please react live")
+    end
+
+    test "keeps the full message experience working together", %{
+      conn: viewer_conn,
+      scope: viewer_scope
+    } do
+      sender_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(sender_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, viewer_scope)
+      channel_id = workspace.default_channel_id
+
+      first_message =
+        insert_message!(
+          channel_id,
+          sender_scope.user.id,
+          "Ship it :thumbsup:",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      second_message =
+        insert_message!(
+          channel_id,
+          sender_scope.user.id,
+          "Launch :rocketship:",
+          ~U[2026-06-19 10:31:00Z]
+        )
+
+      channel_path = ~p"/workspaces/#{workspace.id}/channels/#{channel_id}"
+      sender_conn = build_conn() |> log_in_user(sender_scope.user)
+
+      {:ok, viewer_view, _html} = live(viewer_conn, channel_path)
+      {:ok, sender_view, _html} = live(sender_conn, channel_path)
+
+      assert has_element?(viewer_view, "#channel-message-surface")
+      assert has_element?(viewer_view, "#channel-messages[phx-hook='ChannelMessages']")
+      assert has_element?(viewer_view, "#message-composer-form")
+      assert has_element?(viewer_view, "#message-composer-shell")
+      assert has_element?(viewer_view, "#message-composer-submit")
+      assert has_element?(viewer_view, "#message-#{first_message.id}[data-message-row='full']")
+      assert has_element?(viewer_view, "#message-#{first_message.id}-avatar")
+      assert has_element?(viewer_view, "#message-#{first_message.id}-header")
+      assert has_element?(viewer_view, "#message-#{first_message.id}-content", "Ship it 👍")
+
+      assert has_element?(
+               viewer_view,
+               "#message-#{second_message.id}[data-message-row='compact']"
+             )
+
+      assert has_element?(viewer_view, "#message-#{second_message.id}-spacer[aria-hidden='true']")
+
+      assert has_element?(
+               viewer_view,
+               "#message-#{second_message.id}-content",
+               "Launch :rocketship:"
+             )
+
+      refute has_element?(viewer_view, "#message-#{second_message.id}-avatar")
+      refute has_element?(viewer_view, "#message-#{second_message.id}-reactions")
+
+      assert has_element?(
+               sender_view,
+               "#message-#{second_message.id}-reaction-option-0[aria-label='React with 👍 to message']",
+               "👍"
+             )
+
+      sender_view
+      |> element("#message-#{second_message.id}-reaction-option-0")
+      |> render_click()
+
+      _ = :sys.get_state(viewer_view.pid)
+
+      assert has_element?(
+               viewer_view,
+               "#message-#{second_message.id}-reaction-0[data-current-user-reacted='false'][aria-label='👍 reaction, 1 reaction, you have not reacted']",
+               "👍 1"
+             )
+
+      viewer_view
+      |> element("#message-#{second_message.id}-reaction-option-0")
+      |> render_click()
+
+      assert has_element?(
+               viewer_view,
+               "#message-#{second_message.id}-reaction-0[data-current-user-reacted='true'][aria-label='👍 reaction, 2 reactions, you reacted']",
+               "👍 2"
+             )
+
+      viewer_view
+      |> element("#message-#{second_message.id}-reaction-option-0")
+      |> render_click()
+
+      assert has_element?(
+               viewer_view,
+               "#message-#{second_message.id}-reaction-0[data-current-user-reacted='false'][aria-label='👍 reaction, 1 reaction, you have not reacted']",
+               "👍 1"
+             )
+
+      {:ok, refreshed_view, _html} = live(viewer_conn, channel_path)
+
+      assert has_element?(
+               refreshed_view,
+               "#message-#{second_message.id}-reaction-0[data-current-user-reacted='false'][aria-label='👍 reaction, 1 reaction, you have not reacted']",
+               "👍 1"
+             )
     end
 
     test "rejects invalid reaction payloads sent to the palette event", %{
@@ -1343,6 +1481,42 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert has_element?(view, "#message-#{first_message.id}-content", "before runtime loss")
       assert has_element?(view, "#message-#{second_message.id}-content", "after runtime loss")
+
+      replacement_pid = ChannelServer.whereis(channel_id)
+      assert is_pid(replacement_pid)
+      assert replacement_pid != first_pid
+    end
+
+    test "renders persisted reaction summaries after channel runtime loss", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      message =
+        insert_message!(
+          channel_id,
+          scope.user.id,
+          "reaction before runtime loss",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      assert {:ok, _reaction} = Chat.toggle_reaction(scope, message.id, "👍")
+
+      assert {:ok, first_pid} = Chat.ensure_channel_runtime(scope, channel_id)
+      ref = Process.monitor(first_pid)
+      Process.exit(first_pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
+      _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/channels/#{channel_id}")
+
+      assert has_element?(
+               view,
+               "#message-#{message.id}-reaction-0[aria-label='👍 reaction, 1 reaction, you reacted']",
+               "👍 1"
+             )
 
       replacement_pid = ChannelServer.whereis(channel_id)
       assert is_pid(replacement_pid)

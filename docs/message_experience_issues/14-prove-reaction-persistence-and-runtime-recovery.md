@@ -17,14 +17,14 @@ durable-versus-temporary state boundary.
 
 ## Acceptance criteria
 
-- [ ] Reaction summaries survive page refresh.
-- [ ] Reaction summaries survive Channel runtime crash or restart.
-- [ ] Reaction data remains available through Chat after ChannelServer state is
+- [x] Reaction summaries survive page refresh.
+- [x] Reaction summaries survive Channel runtime crash or restart.
+- [x] Reaction data remains available through Chat after ChannelServer state is
       lost.
-- [ ] No reaction counts or reaction rows are stored in ChannelServer state.
-- [ ] Documentation or comments clarify that reactions are Postgres-owned
+- [x] No reaction counts or reaction rows are stored in ChannelServer state.
+- [x] Documentation or comments clarify that reactions are Postgres-owned
       durable state where useful.
-- [ ] Focused tests prove runtime loss does not delete or hide persisted
+- [x] Focused tests prove runtime loss does not delete or hide persisted
       reactions.
 
 ## Blocked by
