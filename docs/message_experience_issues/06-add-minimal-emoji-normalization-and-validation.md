@@ -17,15 +17,15 @@ This slice should not add reaction storage, shortcode rendering, or UI changes.
 
 ## Acceptance criteria
 
-- [ ] A small Chat-owned emoji module exposes normalization and validation
+- [x] A small Chat-owned emoji module exposes normalization and validation
       behavior.
-- [ ] Trimming and normalization are applied consistently.
-- [ ] Blank values are rejected.
-- [ ] Oversized values are rejected.
-- [ ] Values with more than one grapheme are rejected for reaction validation.
-- [ ] Direct Unicode emoji input can validate when it is one grapheme.
-- [ ] The module does not add a full Unicode emoji database.
-- [ ] Focused unit tests cover valid emoji, trimming, blank input, oversized
+- [x] Trimming and normalization are applied consistently.
+- [x] Blank values are rejected.
+- [x] Oversized values are rejected.
+- [x] Values with more than one grapheme are rejected for reaction validation.
+- [x] Direct Unicode emoji input can validate when it is one grapheme.
+- [x] The module does not add a full Unicode emoji database.
+- [x] Focused unit tests cover valid emoji, trimming, blank input, oversized
       input, and multi-grapheme rejection.
 
 ## Blocked by

@@ -108,7 +108,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
             id="channel-messages"
             phx-update="stream"
             phx-hook="ChannelMessages"
-            class="min-h-0 flex-1 overflow-y-auto p-6"
+            class="min-h-0 flex-1 scroll-pb-6 overflow-y-auto px-5 py-6"
           >
             <div
               id="channel-empty-state"
@@ -125,15 +125,16 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               :for={{dom_id, row} <- @streams.messages}
               id={dom_id}
               data-message-row={row_kind(row)}
+              data-hover-surface="message-row"
               class={[
-                "group grid grid-cols-[2.5rem_minmax(0,1fr)] gap-3 rounded px-2 transition hover:bg-base-200/70",
-                if(row.row_kind == :compact, do: "py-1", else: "py-2")
+                "group grid grid-cols-[2.75rem_minmax(0,1fr)] gap-3 rounded-md px-3 transition-colors duration-150 hover:bg-base-200/75 focus-within:bg-base-200/75",
+                if(row.row_kind == :compact, do: "py-1", else: "py-2.5")
               ]}
             >
               <div
                 :if={row.row_kind == :full}
                 id={"#{dom_id}-avatar"}
-                class="flex size-9 shrink-0 items-center justify-center rounded bg-primary/10 text-sm font-semibold text-primary"
+                class="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-sm font-semibold text-primary ring-1 ring-primary/10 transition group-hover:bg-primary/15"
                 aria-hidden="true"
               >
                 {user_initial(row.message.user)}
@@ -159,7 +160,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                 <p
                   id={"#{dom_id}-content"}
                   class={[
-                    "whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]",
+                    "whitespace-pre-wrap break-words text-sm leading-6 text-base-content/90 [overflow-wrap:anywhere]",
                     row.row_kind == :full && "mt-1"
                   ]}
                 >
@@ -182,7 +183,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               {member.user.username} is typing...
             </span>
           </div>
-          <div class="border-t border-base-300/70 bg-base-100 px-5 py-4">
+          <div
+            id="message-composer-panel"
+            class="border-t border-base-300/70 bg-base-100/95 px-5 pb-5 pt-3"
+          >
             <.form
               for={@message_form}
               id="message-composer-form"
@@ -191,20 +195,23 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               phx-hook="MessageComposer"
               class="flex items-start gap-3"
             >
-              <div class="min-w-0 flex-1">
+              <div
+                id="message-composer-shell"
+                class="min-w-0 flex-1 rounded-lg border border-base-300/80 bg-base-200/45 px-3 py-2 shadow-sm transition focus-within:border-primary/45 focus-within:bg-base-100 focus-within:ring-2 focus-within:ring-primary/15"
+              >
                 <.input
                   field={@message_form[:content]}
                   type="text"
                   placeholder={"Message ##{@selected_channel.name}"}
                   autocomplete="off"
                   phx-throttle="3000"
-                  class="w-full rounded border border-base-300 bg-base-200/70 px-4 py-3 text-sm text-base-content outline-none transition placeholder:text-base-content/40 focus:border-primary focus:bg-base-100 focus:ring-2 focus:ring-primary/20"
+                  class="w-full rounded-md border border-transparent bg-transparent px-1 py-2.5 text-sm text-base-content outline-none transition placeholder:text-base-content/40 focus:border-transparent focus:ring-0"
                 />
               </div>
               <button
                 id="message-composer-submit"
                 type="submit"
-                class="rounded bg-primary px-4 py-3 text-sm font-semibold text-primary-content transition hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary/30"
+                class="rounded-md bg-primary px-4 py-3 text-sm font-semibold text-primary-content shadow-sm transition hover:-translate-y-0.5 hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary/30"
               >
                 Send
               </button>

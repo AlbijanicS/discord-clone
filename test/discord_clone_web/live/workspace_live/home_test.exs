@@ -902,6 +902,46 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute has_element?(view, "#message-#{second_message.id}-header")
     end
 
+    test "keeps polished row and composer surfaces on stable selectors", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      first_message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "anchored thought",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      second_message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "connected follow-up",
+          ~U[2026-06-19 10:31:00Z]
+        )
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(
+               view,
+               "#message-#{first_message.id}[data-message-row='full'][data-hover-surface='message-row']"
+             )
+
+      assert has_element?(
+               view,
+               "#message-#{second_message.id}[data-message-row='compact'][data-hover-surface='message-row']"
+             )
+
+      assert has_element?(view, "#message-composer-panel #message-composer-form")
+      assert has_element?(view, "#message-composer-shell #message_content")
+      assert has_element?(view, "#message-composer-submit")
+    end
+
     test "starts a full message row when the speaker changes", %{
       conn: conn,
       scope: first_scope
