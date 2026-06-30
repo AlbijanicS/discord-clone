@@ -3,7 +3,7 @@ defmodule DiscordClone.ChatTest do
 
   alias DiscordClone.Chat
   alias DiscordClone.Accounts.User
-  alias DiscordClone.Chat.{ChannelRead, ChannelServer, Message, WorkspaceServer}
+  alias DiscordClone.Chat.{ChannelRead, ChannelServer, Message, MessageReaction, WorkspaceServer}
   alias DiscordClone.Workspaces
   alias DiscordClone.Workspaces.Channel
   alias DiscordClone.Workspaces.WorkspaceMembership
@@ -725,6 +725,158 @@ defmodule DiscordClone.ChatTest do
 
       assert Chat.subscribe_to_workspace_messages(non_member_scope, workspace.id) ==
                {:error, :not_found}
+    end
+  end
+
+  describe "toggle_reaction/3" do
+    test "allows a workspace member to add a reaction to an accessible message" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "ship it",
+          ~U[2026-06-30 10:00:00Z]
+        )
+
+      assert {:ok, reaction} = Chat.toggle_reaction(scope, message.id, " 👍 ")
+
+      assert reaction.message_id == message.id
+      assert reaction.user_id == scope.user.id
+      assert reaction.emoji == "👍"
+      assert Repo.get_by(MessageReaction, message_id: message.id, user_id: scope.user.id)
+      assert count_reactions(message.id, scope.user.id, "👍") == 1
+    end
+
+    test "toggles the current user's existing reaction off" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      message = insert_message!(workspace.default_channel_id, scope.user.id, "done", now())
+
+      assert {:ok, reaction} = Chat.toggle_reaction(scope, message.id, "👍")
+      assert {:ok, deleted_reaction} = Chat.toggle_reaction(scope, message.id, "👍")
+
+      assert deleted_reaction.id == reaction.id
+      refute Repo.get(MessageReaction, reaction.id)
+      refute Repo.get_by(MessageReaction, message_id: message.id, user_id: scope.user.id)
+    end
+
+    test "keeps different users' matching emoji reactions as separate rows" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      message =
+        insert_message!(workspace.default_channel_id, owner_scope.user.id, "ship it", now())
+
+      assert {:ok, owner_reaction} = Chat.toggle_reaction(owner_scope, message.id, "👍")
+      assert {:ok, member_reaction} = Chat.toggle_reaction(member_scope, message.id, "👍")
+
+      assert owner_reaction.id != member_reaction.id
+
+      reaction_users =
+        MessageReaction
+        |> where([reaction], reaction.message_id == ^message.id and reaction.emoji == "👍")
+        |> select([reaction], reaction.user_id)
+        |> Repo.all()
+        |> Enum.sort()
+
+      assert reaction_users == Enum.sort([owner_scope.user.id, member_scope.user.id])
+    end
+
+    test "allows one user to react with different emoji to the same message" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      message = insert_message!(workspace.default_channel_id, scope.user.id, "choices", now())
+
+      assert {:ok, thumbs_up} = Chat.toggle_reaction(scope, message.id, "👍")
+      assert {:ok, heart} = Chat.toggle_reaction(scope, message.id, "❤️")
+
+      assert thumbs_up.id != heart.id
+
+      reaction_emoji =
+        MessageReaction
+        |> where(
+          [reaction],
+          reaction.message_id == ^message.id and reaction.user_id == ^scope.user.id
+        )
+        |> select([reaction], reaction.emoji)
+        |> Repo.all()
+        |> Enum.sort()
+
+      assert reaction_emoji == Enum.sort(["👍", "❤️"])
+    end
+
+    test "rejects anonymous scopes" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      message = insert_message!(workspace.default_channel_id, scope.user.id, "private", now())
+
+      assert Chat.toggle_reaction(nil, message.id, "👍") == {:error, :unauthenticated}
+
+      assert Chat.toggle_reaction(%DiscordClone.Accounts.Scope{}, message.id, "👍") ==
+               {:error, :unauthenticated}
+
+      refute Repo.get_by(MessageReaction, message_id: message.id)
+    end
+
+    test "rejects logged-in users who are not workspace members" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      message =
+        insert_message!(workspace.default_channel_id, owner_scope.user.id, "private", now())
+
+      assert Chat.toggle_reaction(non_member_scope, message.id, "👍") == {:error, :not_found}
+
+      refute Repo.get_by(MessageReaction,
+               message_id: message.id,
+               user_id: non_member_scope.user.id
+             )
+    end
+
+    test "rejects invalid emoji payloads before storing reaction state" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      message = insert_message!(workspace.default_channel_id, scope.user.id, "payloads", now())
+
+      assert Chat.toggle_reaction(scope, message.id, "👍❤️") ==
+               {:error, :invalid_emoji, :multiple_graphemes}
+
+      assert Chat.toggle_reaction(scope, message.id, "   ") == {:error, :invalid_emoji, :blank}
+      assert Chat.toggle_reaction(scope, message.id, nil) == {:error, :invalid_emoji, :invalid}
+
+      refute Repo.get_by(MessageReaction, message_id: message.id)
+    end
+
+    test "removes related reaction rows when the message is deleted" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      message = insert_message!(workspace.default_channel_id, scope.user.id, "cleanup", now())
+
+      assert {:ok, reaction} = Chat.toggle_reaction(scope, message.id, "👍")
+      Repo.delete!(message)
+
+      refute Repo.get(MessageReaction, reaction.id)
+    end
+
+    test "removes related reaction rows when the user is deleted" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      message =
+        insert_message!(workspace.default_channel_id, owner_scope.user.id, "cleanup", now())
+
+      assert {:ok, reaction} = Chat.toggle_reaction(member_scope, message.id, "👍")
+      Repo.delete!(member_scope.user)
+
+      refute Repo.get(MessageReaction, reaction.id)
     end
   end
 
@@ -1572,6 +1724,18 @@ defmodule DiscordClone.ChatTest do
       inserted_at: inserted_at,
       updated_at: inserted_at
     })
+  end
+
+  defp now, do: DateTime.utc_now(:second)
+
+  defp count_reactions(message_id, user_id, emoji) do
+    Repo.one(
+      from reaction in MessageReaction,
+        where:
+          reaction.message_id == ^message_id and reaction.user_id == ^user_id and
+            reaction.emoji == ^emoji,
+        select: count(reaction.id)
+    )
   end
 
   defp put_channel_read!(channel_id, user_id, last_read_message_id) do

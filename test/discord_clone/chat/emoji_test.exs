@@ -33,6 +33,10 @@ defmodule DiscordClone.Chat.EmojiTest do
     test "rejects malformed binary reaction values" do
       assert Emoji.validate_reaction(<<255>>) == {:error, :invalid}
     end
+
+    test "rejects non-binary reaction values" do
+      assert Emoji.validate_reaction(nil) == {:error, :invalid}
+    end
   end
 
   describe "render_shortcodes/1" do

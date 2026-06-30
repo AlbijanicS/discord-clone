@@ -14,7 +14,9 @@ defmodule DiscordClone.Chat do
     ChannelRead,
     ChannelSupervisor,
     ChannelServer,
+    Emoji,
     Message,
+    MessageReaction,
     WorkspacePresence,
     WorkspacePresenceRuntime
   }
@@ -312,6 +314,34 @@ defmodule DiscordClone.Chat do
 
   def send_message(_scope, _channel_id, _attrs), do: {:error, :unauthenticated}
 
+  def toggle_reaction(%Scope{user: %User{id: user_id}}, message_id, emoji) do
+    with {:ok, normalized_emoji} <- Emoji.validate_reaction(emoji),
+         %Message{} = message <- get_member_message(message_id, user_id) do
+      case Repo.get_by(MessageReaction,
+             message_id: message.id,
+             user_id: user_id,
+             emoji: normalized_emoji
+           ) do
+        nil ->
+          %MessageReaction{}
+          |> MessageReaction.changeset(%{
+            message_id: message.id,
+            user_id: user_id,
+            emoji: normalized_emoji
+          })
+          |> Repo.insert()
+
+        %MessageReaction{} = reaction ->
+          Repo.delete(reaction)
+      end
+    else
+      nil -> {:error, :not_found}
+      {:error, reason} -> {:error, :invalid_emoji, reason}
+    end
+  end
+
+  def toggle_reaction(_scope, _message_id, _emoji), do: {:error, :unauthenticated}
+
   defp get_member_channel(channel_id, user_id) do
     Repo.one(
       from channel in Channel,
@@ -320,6 +350,20 @@ defmodule DiscordClone.Chat do
           membership.workspace_id == channel.workspace_id and
             membership.user_id == ^user_id,
         where: channel.id == ^channel_id,
+        limit: 1
+    )
+  end
+
+  defp get_member_message(message_id, user_id) do
+    Repo.one(
+      from message in Message,
+        join: channel in Channel,
+        on: channel.id == message.channel_id,
+        join: membership in WorkspaceMembership,
+        on:
+          membership.workspace_id == channel.workspace_id and
+            membership.user_id == ^user_id,
+        where: message.id == ^message_id,
         limit: 1
     )
   end

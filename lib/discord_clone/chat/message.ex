@@ -8,6 +8,8 @@ defmodule DiscordClone.Chat.Message do
     belongs_to :channel, DiscordClone.Workspaces.Channel
     belongs_to :user, DiscordClone.Accounts.User
 
+    has_many :message_reactions, DiscordClone.Chat.MessageReaction
+
     timestamps(type: :utc_datetime)
   end
 

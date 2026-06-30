@@ -25,6 +25,8 @@ defmodule DiscordClone.Chat.Emoji do
     end
   end
 
+  def validate_reaction(_value), do: {:error, :invalid}
+
   defp normalize_reaction(value) do
     value
     |> String.trim()

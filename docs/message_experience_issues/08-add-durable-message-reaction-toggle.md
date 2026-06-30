@@ -19,24 +19,24 @@ reaction pills or live refresh behavior yet.
 
 ## Acceptance criteria
 
-- [ ] A migration creates durable message reactions with message, user, emoji,
+- [x] A migration creates durable message reactions with message, user, emoji,
       and timestamp fields.
-- [ ] The migration is generated with `mix ecto.gen.migration`.
-- [ ] A unique index prevents duplicate rows for one message, User, and emoji.
-- [ ] Message deletion removes related reaction rows.
-- [ ] User deletion removes related reaction rows.
-- [ ] A Chat-owned reaction schema exists.
-- [ ] Chat exposes `toggle_reaction(scope, message_id, emoji)`.
-- [ ] Authenticated Workspace Members can add a reaction to an accessible
+- [x] The migration is generated with `mix ecto.gen.migration`.
+- [x] A unique index prevents duplicate rows for one message, User, and emoji.
+- [x] Message deletion removes related reaction rows.
+- [x] User deletion removes related reaction rows.
+- [x] A Chat-owned reaction schema exists.
+- [x] Chat exposes `toggle_reaction(scope, message_id, emoji)`.
+- [x] Authenticated Workspace Members can add a reaction to an accessible
       message.
-- [ ] Toggling the same emoji again removes the current User's reaction.
-- [ ] Different Users can react with the same emoji.
-- [ ] One User can react with different emoji to the same message.
-- [ ] Anonymous scopes are rejected.
-- [ ] Logged-in non-members cannot react to inaccessible Workspace messages.
-- [ ] Invalid emoji payloads are rejected before durable mutation.
-- [ ] Reaction state is not stored in ChannelServer.
-- [ ] Focused Chat context tests cover authorization, toggling, uniqueness,
+- [x] Toggling the same emoji again removes the current User's reaction.
+- [x] Different Users can react with the same emoji.
+- [x] One User can react with different emoji to the same message.
+- [x] Anonymous scopes are rejected.
+- [x] Logged-in non-members cannot react to inaccessible Workspace messages.
+- [x] Invalid emoji payloads are rejected before durable mutation.
+- [x] Reaction state is not stored in ChannelServer.
+- [x] Focused Chat context tests cover authorization, toggling, uniqueness,
       invalid emoji, and cleanup behavior.
 
 ## Blocked by
