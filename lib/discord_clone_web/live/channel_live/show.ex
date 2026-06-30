@@ -22,6 +22,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          :ok <- mark_selected_channel_read(socket, channel.id),
          {:ok, channel_unread_counts} <- load_channel_unread_counts(socket, workspace.id),
          {:ok, messages} <- load_recent_messages(socket, channel.id),
+         {:ok, reaction_summaries} <- load_reaction_summaries(socket, messages),
          {:ok, channel_runtime_monitor_ref} <- monitor_channel_runtime(socket, channel.id),
          :ok <- subscribe_to_channel_messages(socket, channel.id),
          :ok <- subscribe_to_workspace_messages(socket, workspace.id),
@@ -48,6 +49,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:typing_user_ids, MapSet.new())
         |> assign(:channel_runtime_monitor_ref, channel_runtime_monitor_ref)
         |> assign(:channel_unread_counts, channel_unread_counts)
+        |> assign(:reaction_summaries, reaction_summaries)
         |> stream_configure(:messages, dom_id: &"message-#{&1.id}")
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
@@ -761,6 +763,16 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       Chat.list_recent_messages(socket.assigns.current_scope, channel_id)
     else
       {:ok, []}
+    end
+  end
+
+  defp load_reaction_summaries(socket, messages) do
+    if connected?(socket) do
+      message_ids = Enum.map(messages, & &1.id)
+
+      Chat.list_reaction_summaries(socket.assigns.current_scope, message_ids)
+    else
+      {:ok, %{}}
     end
   end
 

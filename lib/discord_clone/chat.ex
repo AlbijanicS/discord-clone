@@ -342,6 +342,35 @@ defmodule DiscordClone.Chat do
 
   def toggle_reaction(_scope, _message_id, _emoji), do: {:error, :unauthenticated}
 
+  def list_reaction_summaries(%Scope{user: %User{}}, []), do: {:ok, %{}}
+
+  def list_reaction_summaries(%Scope{user: %User{id: user_id}}, message_ids)
+      when is_list(message_ids) do
+    message_ids = Enum.uniq(message_ids)
+
+    with :ok <- authorize_member_messages(message_ids, user_id) do
+      summaries =
+        MessageReaction
+        |> where([reaction], reaction.message_id in ^message_ids)
+        |> group_by([reaction], [reaction.message_id, reaction.emoji])
+        |> order_by([reaction], asc: reaction.message_id, asc: reaction.emoji)
+        |> select([reaction], %{
+          message_id: reaction.message_id,
+          emoji: reaction.emoji,
+          count: count(reaction.id),
+          reacted?: fragment("bool_or(? = ?)", reaction.user_id, ^user_id)
+        })
+        |> Repo.all()
+        |> Enum.group_by(& &1.message_id, fn summary ->
+          %{emoji: summary.emoji, count: summary.count, reacted?: summary.reacted?}
+        end)
+
+      {:ok, summaries}
+    end
+  end
+
+  def list_reaction_summaries(_scope, _message_ids), do: {:error, :unauthenticated}
+
   defp get_member_channel(channel_id, user_id) do
     Repo.one(
       from channel in Channel,
@@ -366,6 +395,27 @@ defmodule DiscordClone.Chat do
         where: message.id == ^message_id,
         limit: 1
     )
+  end
+
+  defp authorize_member_messages(message_ids, user_id) do
+    accessible_message_count =
+      Repo.one(
+        from message in Message,
+          join: channel in Channel,
+          on: channel.id == message.channel_id,
+          join: membership in WorkspaceMembership,
+          on:
+            membership.workspace_id == channel.workspace_id and
+              membership.user_id == ^user_id,
+          where: message.id in ^message_ids,
+          select: count(message.id)
+      )
+
+    if accessible_message_count == length(message_ids) do
+      :ok
+    else
+      {:error, :not_found}
+    end
   end
 
   defp authorize_workspace_member(workspace_id, user_id) do

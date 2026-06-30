@@ -18,19 +18,19 @@ rendering reaction pills yet.
 
 ## Acceptance criteria
 
-- [ ] Chat exposes a public workflow for loading reaction summaries for a
+- [x] Chat exposes a public workflow for loading reaction summaries for a
       bounded list of message IDs.
-- [ ] The workflow requires an authenticated scope.
-- [ ] The workflow verifies Workspace membership through the messages'
+- [x] The workflow requires an authenticated scope.
+- [x] The workflow verifies Workspace membership through the messages'
       Channels.
-- [ ] Summaries are keyed by message ID.
-- [ ] Each summary includes emoji counts.
-- [ ] Each summary includes whether the current User reacted for each emoji.
-- [ ] The current User's reacted state is viewer-specific.
-- [ ] Summary loading avoids one query per message.
-- [ ] The Channel LiveView can assign reaction summaries for initially loaded
+- [x] Summaries are keyed by message ID.
+- [x] Each summary includes emoji counts.
+- [x] Each summary includes whether the current User reacted for each emoji.
+- [x] The current User's reacted state is viewer-specific.
+- [x] Summary loading avoids one query per message.
+- [x] The Channel LiveView can assign reaction summaries for initially loaded
       recent messages without rendering pills yet.
-- [ ] Focused Chat context tests cover counts, viewer-specific reacted state,
+- [x] Focused Chat context tests cover counts, viewer-specific reacted state,
       scoping, and bounded loading.
 
 ## Blocked by

@@ -880,6 +880,119 @@ defmodule DiscordClone.ChatTest do
     end
   end
 
+  describe "list_reaction_summaries/2" do
+    test "returns emoji counts keyed by accessible message ID" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      message = insert_message!(workspace.default_channel_id, scope.user.id, "ship it", now())
+
+      assert {:ok, _reaction} = Chat.toggle_reaction(scope, message.id, "👍")
+
+      assert {:ok, summaries} = Chat.list_reaction_summaries(scope, [message.id])
+
+      assert summaries == %{
+               message.id => [
+                 %{emoji: "👍", count: 1, reacted?: true}
+               ]
+             }
+    end
+
+    test "marks reacted state for the current viewer only" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      message =
+        insert_message!(workspace.default_channel_id, owner_scope.user.id, "ship it", now())
+
+      assert {:ok, _reaction} = Chat.toggle_reaction(owner_scope, message.id, "👍")
+
+      assert {:ok, owner_summaries} = Chat.list_reaction_summaries(owner_scope, [message.id])
+      assert {:ok, member_summaries} = Chat.list_reaction_summaries(member_scope, [message.id])
+
+      assert owner_summaries == %{
+               message.id => [
+                 %{emoji: "👍", count: 1, reacted?: true}
+               ]
+             }
+
+      assert member_summaries == %{
+               message.id => [
+                 %{emoji: "👍", count: 1, reacted?: false}
+               ]
+             }
+    end
+
+    test "groups counts by requested message and emoji" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      first_message =
+        insert_message!(workspace.default_channel_id, owner_scope.user.id, "first", now())
+
+      second_message =
+        insert_message!(workspace.default_channel_id, owner_scope.user.id, "second", now())
+
+      assert {:ok, _reaction} = Chat.toggle_reaction(owner_scope, first_message.id, "👍")
+      assert {:ok, _reaction} = Chat.toggle_reaction(member_scope, first_message.id, "👍")
+      assert {:ok, _reaction} = Chat.toggle_reaction(member_scope, first_message.id, "❤️")
+      assert {:ok, _reaction} = Chat.toggle_reaction(member_scope, second_message.id, "👀")
+
+      assert {:ok, summaries} =
+               Chat.list_reaction_summaries(owner_scope, [first_message.id, second_message.id])
+
+      assert summaries == %{
+               first_message.id => [
+                 %{emoji: "❤️", count: 1, reacted?: false},
+                 %{emoji: "👍", count: 2, reacted?: true}
+               ],
+               second_message.id => [
+                 %{emoji: "👀", count: 1, reacted?: false}
+               ]
+             }
+    end
+
+    test "only returns summaries for the bounded message list" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      requested_message =
+        insert_message!(workspace.default_channel_id, scope.user.id, "in", now())
+
+      other_message = insert_message!(workspace.default_channel_id, scope.user.id, "out", now())
+
+      assert {:ok, _reaction} = Chat.toggle_reaction(scope, requested_message.id, "👍")
+      assert {:ok, _reaction} = Chat.toggle_reaction(scope, other_message.id, "❤️")
+
+      assert {:ok, summaries} = Chat.list_reaction_summaries(scope, [requested_message.id])
+
+      assert Map.keys(summaries) == [requested_message.id]
+      assert summaries[requested_message.id] == [%{emoji: "👍", count: 1, reacted?: true}]
+    end
+
+    test "rejects anonymous scopes and logged-in users who are not workspace members" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      message =
+        insert_message!(workspace.default_channel_id, owner_scope.user.id, "private", now())
+
+      assert {:ok, _reaction} = Chat.toggle_reaction(owner_scope, message.id, "👍")
+
+      assert Chat.list_reaction_summaries(nil, [message.id]) == {:error, :unauthenticated}
+
+      assert Chat.list_reaction_summaries(%DiscordClone.Accounts.Scope{}, [message.id]) ==
+               {:error, :unauthenticated}
+
+      assert Chat.list_reaction_summaries(non_member_scope, [message.id]) ==
+               {:error, :not_found}
+    end
+  end
+
   describe "channel typing workflows" do
     test "workspace members can subscribe, start typing, and list raw typing user IDs" do
       scope = user_scope_fixture()
