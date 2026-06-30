@@ -859,6 +859,121 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-#{message.id}-content", "Launch :rocketship:")
     end
 
+    test "renders reaction pills under persisted channel messages", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "tiny celebration",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      assert {:ok, _reaction} = Chat.toggle_reaction(scope, message.id, "👍")
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#message-#{message.id}-reactions")
+
+      assert has_element?(
+               view,
+               "#message-#{message.id}-reaction-0[aria-label='👍 reaction, 1 reaction, you reacted']",
+               "👍 1"
+             )
+    end
+
+    test "does not render empty reaction chrome for messages without reactions", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "plain update",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#message-#{message.id}-content", "plain update")
+      refute has_element?(view, "#message-#{message.id}-reactions")
+      refute has_element?(view, "#message-#{message.id}-reaction-0")
+    end
+
+    test "renders another member's reaction without the current user state", %{
+      conn: conn,
+      scope: scope
+    } do
+      other_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, other_scope)
+
+      message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "someone noticed",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      assert {:ok, _reaction} = Chat.toggle_reaction(other_scope, message.id, "❤️")
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(
+               view,
+               "#message-#{message.id}-reaction-0[data-current-user-reacted='false'][aria-label='❤️ reaction, 1 reaction, you have not reacted']",
+               "❤️ 1"
+             )
+    end
+
+    test "renders reaction pills under compact grouped message rows", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      first_message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "first thought",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      second_message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "follow-up thought",
+          ~U[2026-06-19 10:31:00Z]
+        )
+
+      assert {:ok, _reaction} = Chat.toggle_reaction(scope, second_message.id, "👀")
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#message-#{first_message.id}[data-message-row='full']")
+      assert has_element?(view, "#message-#{second_message.id}[data-message-row='compact']")
+
+      assert has_element?(
+               view,
+               "#message-#{second_message.id}-body #message-#{second_message.id}-reaction-0[data-current-user-reacted='true']",
+               "👀 1"
+             )
+    end
+
     test "renders persisted channel messages in a stable anchored row layout", %{
       conn: conn,
       scope: scope

@@ -17,14 +17,14 @@ keeping mutation controls for a later issue.
 
 ## Acceptance criteria
 
-- [ ] Reaction pills render under messages with reaction summaries.
-- [ ] Each pill shows the emoji and count.
-- [ ] Pills for the current User's reactions have a distinct visual state.
-- [ ] Messages without reactions do not show empty reaction chrome.
-- [ ] Reaction pill layout works for full rows and compact grouped rows.
-- [ ] Reaction pill buttons or containers have stable DOM IDs for tests.
-- [ ] Reaction pills include accessible labels.
-- [ ] Focused LiveView tests verify reaction pill rendering and current-User
+- [x] Reaction pills render under messages with reaction summaries.
+- [x] Each pill shows the emoji and count.
+- [x] Pills for the current User's reactions have a distinct visual state.
+- [x] Messages without reactions do not show empty reaction chrome.
+- [x] Reaction pill layout works for full rows and compact grouped rows.
+- [x] Reaction pill buttons or containers have stable DOM IDs for tests.
+- [x] Reaction pills include accessible labels.
+- [x] Focused LiveView tests verify reaction pill rendering and current-User
       reacted state through selectors.
 
 ## Blocked by

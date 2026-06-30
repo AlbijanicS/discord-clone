@@ -169,6 +169,27 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                 >
                   {Emoji.render_shortcodes(row.message.content)}
                 </p>
+                <%= if reaction_summaries_for(@reaction_summaries, row.message.id) != [] do %>
+                  <div
+                    id={"#{dom_id}-reactions"}
+                    class="mt-1.5 flex flex-wrap items-center gap-1.5"
+                    aria-label="Message reactions"
+                  >
+                    <span
+                      :for={
+                        {summary, index} <-
+                          Enum.with_index(reaction_summaries_for(@reaction_summaries, row.message.id))
+                      }
+                      id={reaction_pill_id(row.message.id, index)}
+                      data-current-user-reacted={to_string(summary.reacted?)}
+                      class={reaction_pill_class(summary)}
+                      aria-label={reaction_pill_label(summary)}
+                    >
+                      <span aria-hidden="true">{summary.emoji}</span>
+                      <span>{summary.count}</span>
+                    </span>
+                  </div>
+                <% end %>
               </div>
             </article>
           </div>
@@ -695,6 +716,29 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     attrs
     |> Chat.change_message()
     |> to_form(as: :message)
+  end
+
+  defp reaction_summaries_for(reaction_summaries, message_id) do
+    Map.get(reaction_summaries, message_id, [])
+  end
+
+  defp reaction_pill_id(message_id, index), do: "message-#{message_id}-reaction-#{index}"
+
+  defp reaction_pill_label(%{emoji: emoji, count: count, reacted?: reacted?}) do
+    reacted_label = if reacted?, do: "you reacted", else: "you have not reacted"
+
+    "#{emoji} reaction, #{count} #{reaction_count_label(count)}, #{reacted_label}"
+  end
+
+  defp reaction_count_label(1), do: "reaction"
+  defp reaction_count_label(_count), do: "reactions"
+
+  defp reaction_pill_class(%{reacted?: true}) do
+    "inline-flex items-center gap-1 rounded-full border border-primary/35 bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary shadow-sm transition"
+  end
+
+  defp reaction_pill_class(_summary) do
+    "inline-flex items-center gap-1 rounded-full border border-base-300 bg-base-200/70 px-2 py-0.5 text-xs font-semibold text-base-content/75 transition"
   end
 
   defp prepend_older_message_rows([], socket), do: socket
