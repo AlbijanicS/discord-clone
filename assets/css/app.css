@@ -103,3 +103,16 @@
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
 /* This file is for your main application CSS */
+
+#message-composer-shell .fieldset {
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+#message-composer-shell label {
+  display: block;
+}
+
+#message-composer-shell input {
+  box-shadow: none;
+}

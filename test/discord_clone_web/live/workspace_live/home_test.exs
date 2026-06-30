@@ -1057,6 +1057,11 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
                "👀"
              )
 
+      refute has_element?(
+               view,
+               "#message-#{message_id}-reaction-palette[class*='group-focus-within']"
+             )
+
       view
       |> element("#message-#{message_id}-reaction-option-0")
       |> render_click()
@@ -2949,6 +2954,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       {:ok, view, _html} =
         live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
 
+      view
+      |> element("#workspace-#{workspace.id}-actions")
+      |> render_click()
+
       refute has_element?(view, "#workspace-#{workspace.id}-invite-new")
     end
 
@@ -2964,6 +2973,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       {:ok, view, _html} =
         live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
 
+      view
+      |> element("#workspace-#{workspace.id}-actions")
+      |> render_click()
+
       assert has_element?(view, "#workspace-#{workspace.id}-invite-new")
     end
 
@@ -2971,6 +2984,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
 
       {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/invites/new")
+
+      view
+      |> element("#workspace-#{workspace.id}-actions")
+      |> render_click()
 
       assert has_element?(view, "#workspace-app-shell")
       assert has_element?(view, "#workspace-#{workspace.id}[aria-current='page']")

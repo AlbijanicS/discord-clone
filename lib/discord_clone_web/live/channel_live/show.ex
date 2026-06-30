@@ -108,12 +108,15 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
           class="flex h-full min-h-0 flex-col bg-base-100"
           aria-label={"Messages in #{@selected_channel.name}"}
         >
-          <div :if={@has_older_messages?} class="border-b border-base-300/60 px-6 py-3 text-center">
+          <div
+            :if={@has_older_messages?}
+            class="px-6 py-3 text-center shadow-[0_1px_0_rgb(255_255_255/0.04)]"
+          >
             <button
               id="load-older-messages"
               type="button"
               phx-click="load_older_messages"
-              class="rounded border border-base-300 bg-base-100 px-4 py-2 text-sm font-semibold text-base-content/70 transition hover:-translate-y-0.5 hover:border-primary/40 hover:text-base-content focus:outline-none focus:ring-2 focus:ring-primary/20"
+              class="rounded bg-base-200/80 px-4 py-2 text-sm font-semibold text-base-content/70 shadow-sm transition hover:-translate-y-0.5 hover:bg-base-200 hover:text-base-content focus:outline-none focus:ring-2 focus:ring-primary/20"
             >
               Load older
             </button>
@@ -141,66 +144,62 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               data-message-row={row_kind(row)}
               data-hover-surface="message-row"
               class={[
-                "group relative grid grid-cols-[2.75rem_minmax(0,1fr)] gap-3 rounded-md px-3 transition-colors duration-150 hover:bg-base-200/75 focus-within:bg-base-200/75",
-                if(row.row_kind == :compact, do: "py-1", else: "py-2.5")
+                "group relative grid w-full grid-cols-[2.75rem_minmax(0,1fr)] gap-x-3 rounded-md px-3 transition-colors duration-150 hover:bg-base-200/70 focus-within:bg-base-200/70",
+                if(row.row_kind == :compact, do: "py-0.5", else: "py-1.5")
               ]}
             >
               <div
-                id={"#{dom_id}-reaction-palette"}
-                class={[
-                  "absolute right-3 z-10 flex items-center gap-1 rounded-md border border-base-300/80 bg-base-100/95 p-1 opacity-0 shadow-sm transition duration-150 group-hover:opacity-100 group-focus-within:opacity-100",
-                  if(row.row_kind == :compact, do: "top-0.5", else: "top-2")
-                ]}
-                aria-label="Reaction palette"
-              >
-                <button
-                  :for={{{emoji, label}, index} <- Enum.with_index(reaction_palette())}
-                  id={reaction_option_id(row.message.id, index)}
-                  type="button"
-                  phx-click="toggle_reaction"
-                  phx-value-message-id={row.message.id}
-                  phx-value-emoji={emoji}
-                  class="flex size-7 items-center justify-center rounded text-sm transition hover:bg-base-200 focus:outline-none focus:ring-2 focus:ring-primary/20"
-                  aria-label={label}
-                >
-                  <span aria-hidden="true">{emoji}</span>
-                </button>
-              </div>
-              <div
                 :if={row.row_kind == :full}
                 id={"#{dom_id}-avatar"}
-                class="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-sm font-semibold text-primary ring-1 ring-primary/10 transition group-hover:bg-primary/15"
+                class="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-sm font-semibold text-primary ring-1 ring-primary/20 transition group-hover:bg-primary/20"
                 aria-hidden="true"
               >
                 {user_initial(row.message.user)}
               </div>
               <div :if={row.row_kind == :compact} id={"#{dom_id}-spacer"} aria-hidden="true"></div>
-              <div id={"#{dom_id}-body"} class="min-w-0">
+              <div id={"#{dom_id}-body"} class="relative min-w-0 pr-40">
+                <div
+                  id={"#{dom_id}-reaction-palette"}
+                  class={[
+                    "pointer-events-none absolute right-0 z-10 flex items-center gap-0.5 rounded-md bg-base-100/95 p-0.5 opacity-0 shadow-lg shadow-base-300/20 ring-1 ring-base-content/10 transition duration-150 group-hover:pointer-events-auto group-hover:opacity-100",
+                    if(row.row_kind == :compact, do: "top-0", else: "top-0.5")
+                  ]}
+                  aria-label="Reaction palette"
+                >
+                  <button
+                    :for={{{emoji, label}, index} <- Enum.with_index(reaction_palette())}
+                    id={reaction_option_id(row.message.id, index)}
+                    type="button"
+                    phx-click="toggle_reaction"
+                    phx-value-message-id={row.message.id}
+                    phx-value-emoji={emoji}
+                    class="flex size-7 items-center justify-center rounded text-sm transition hover:bg-base-200 focus:outline-none focus:ring-2 focus:ring-primary/25"
+                    aria-label={label}
+                    title={label}
+                  >
+                    <span aria-hidden="true">{emoji}</span>
+                  </button>
+                </div>
                 <div
                   :if={row.row_kind == :full}
                   id={"#{dom_id}-header"}
-                  class="flex flex-wrap items-baseline gap-2"
+                  class="flex min-h-5 flex-wrap items-baseline gap-2 pr-40"
                 >
-                  <span id={"#{dom_id}-author"} class="font-semibold">
+                  <span
+                    id={"#{dom_id}-author"}
+                    class="text-sm font-semibold leading-5 text-base-content"
+                  >
                     {row.message.user.username}
                   </span>
                   <time
                     id={"#{dom_id}-timestamp"}
                     datetime={DateTime.to_iso8601(row.message.inserted_at)}
-                    class="text-xs text-base-content/50"
+                    class="text-xs font-medium leading-5 text-base-content/50"
                   >
                     {compact_time(row.message.inserted_at)}
                   </time>
                 </div>
-                <p
-                  id={"#{dom_id}-content"}
-                  class={[
-                    "whitespace-pre-wrap break-words text-sm leading-6 text-base-content/90 [overflow-wrap:anywhere]",
-                    row.row_kind == :full && "mt-1"
-                  ]}
-                >
-                  {Emoji.render_shortcodes(row.message.content)}
-                </p>
+                {message_content(row, dom_id)}
                 <%= if reaction_summaries_for(@reaction_summaries, row.message.id) != [] do %>
                   <div
                     id={"#{dom_id}-reactions"}
@@ -227,7 +226,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
           </div>
           <div
             id="channel-typing-indicator"
-            class="min-h-6 border-t border-base-300/50 px-6 py-2 text-xs font-medium text-base-content/60"
+            class="min-h-6 px-6 py-2 text-xs font-medium text-base-content/60 shadow-[0_-1px_0_rgb(255_255_255/0.035)]"
             aria-live="polite"
           >
             <span
@@ -241,7 +240,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
           </div>
           <div
             id="message-composer-panel"
-            class="border-t border-base-300/70 bg-base-100/95 px-5 pb-5 pt-3"
+            class="bg-base-100/95 px-5 pb-4 pt-3 shadow-[0_-12px_28px_rgb(0_0_0/0.10),0_-1px_0_rgb(255_255_255/0.04)]"
           >
             <.form
               for={@message_form}
@@ -249,11 +248,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               phx-change="message_typing"
               phx-submit="send_message"
               phx-hook="MessageComposer"
-              class="flex items-start gap-3"
+              class="flex items-end gap-3"
             >
               <div
                 id="message-composer-shell"
-                class="min-w-0 flex-1 rounded-lg border border-base-300/80 bg-base-200/45 px-3 py-2 shadow-sm transition focus-within:border-primary/45 focus-within:bg-base-100 focus-within:ring-2 focus-within:ring-primary/15"
+                class="min-w-0 flex-1 rounded-lg bg-base-200/80 px-3 py-2 shadow-inner shadow-base-300/30 ring-1 ring-base-300/60 transition focus-within:bg-base-200 focus-within:ring-primary/35"
               >
                 <.input
                   field={@message_form[:content]}
@@ -261,13 +260,14 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                   placeholder={"Message ##{@selected_channel.name}"}
                   autocomplete="off"
                   phx-throttle="3000"
-                  class="w-full rounded-md border border-transparent bg-transparent px-1 py-2.5 text-sm text-base-content outline-none transition placeholder:text-base-content/40 focus:border-transparent focus:ring-0"
+                  class="w-full appearance-none border-0 bg-transparent px-1 py-2 text-sm leading-5 text-base-content outline-none ring-0 transition placeholder:text-base-content/40 focus:border-0 focus:outline-none focus:ring-0"
+                  error_class="input-error border-0 ring-0"
                 />
               </div>
               <button
                 id="message-composer-submit"
                 type="submit"
-                class="rounded-md bg-primary px-4 py-3 text-sm font-semibold text-primary-content shadow-sm transition hover:-translate-y-0.5 hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary/30"
+                class="rounded-md bg-primary px-5 py-3 text-sm font-semibold text-primary-content shadow-sm transition hover:-translate-y-0.5 hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary/30"
               >
                 Send
               </button>
@@ -819,6 +819,24 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   defp reaction_pill_class(_summary) do
     "inline-flex items-center gap-1 rounded-full border border-base-300 bg-base-200/70 px-2 py-0.5 text-xs font-semibold text-base-content/75 transition"
+  end
+
+  defp message_content(row, dom_id) do
+    {:safe, attrs} =
+      Phoenix.HTML.attributes_escape(
+        id: "#{dom_id}-content",
+        class: [
+          "whitespace-pre-wrap break-words text-sm leading-5 text-base-content/90 [overflow-wrap:anywhere]",
+          row.row_kind == :full && "mt-0.5"
+        ]
+      )
+
+    {:safe, content} =
+      row.message.content
+      |> Emoji.render_shortcodes()
+      |> Phoenix.HTML.html_escape()
+
+    {:safe, ["<p", attrs, ">", content, "</p>"]}
   end
 
   defp prepend_older_message_rows([], socket), do: socket

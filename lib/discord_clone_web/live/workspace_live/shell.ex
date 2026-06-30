@@ -36,7 +36,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
     >
       <aside
         id="workspace-sidebar"
-        class="flex min-h-0 flex-col items-center border-b border-base-300 bg-base-300 p-3 lg:border-b-0 lg:border-r"
+        class="flex min-h-0 flex-col items-center bg-base-300 p-3 shadow-[inset_-1px_0_0_rgb(255_255_255/0.03)]"
       >
         <button
           :if={@workspace_form && !@show_workspace_form?}
@@ -113,7 +113,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
 
       <aside
         id="channel-sidebar"
-        class="hidden min-h-0 flex-col border-r border-base-300 bg-base-200 lg:flex"
+        class="hidden min-h-0 flex-col bg-base-200 shadow-[inset_-1px_0_0_rgb(255_255_255/0.04)] lg:flex"
       >
         <div class="min-h-0 flex-1 overflow-y-auto p-4">
           <%= if @selected_workspace do %>
@@ -139,15 +139,6 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                     {@selected_workspace.name}
                   </p>
                 <% end %>
-                <.link
-                  :if={can_create_workspace_invite?(@selected_workspace, @current_scope)}
-                  id={"workspace-#{@selected_workspace.id}-invite-new"}
-                  navigate={~p"/workspaces/#{@selected_workspace.id}/invites/new"}
-                  class="btn btn-square btn-xs btn-ghost shrink-0 transition hover:scale-105"
-                  aria-label={"Create invite for #{@selected_workspace.name}"}
-                >
-                  <.icon name="hero-user-plus" class="size-4" />
-                </.link>
                 <button
                   id={"workspace-#{@selected_workspace.id}-actions"}
                   type="button"
@@ -162,11 +153,20 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                   :if={@workspace_action_menu_id == @selected_workspace.id}
                   id={"workspace-#{@selected_workspace.id}-menu"}
                   style={context_menu_style(@context_menu_position)}
-                  class={menu_class(@context_menu_position, "absolute right-0 top-8", "w-40")}
+                  class={menu_class(@context_menu_position, "absolute right-0 top-8", "w-44")}
                   phx-click-away="close_context_menu"
                   phx-window-keydown="close_context_menu"
                   phx-key="escape"
                 >
+                  <.link
+                    :if={can_create_workspace_invite?(@selected_workspace, @current_scope)}
+                    id={"workspace-#{@selected_workspace.id}-invite-new"}
+                    navigate={~p"/workspaces/#{@selected_workspace.id}/invites/new"}
+                    class="block w-full rounded px-3 py-2 text-left text-sm transition hover:bg-base-200"
+                    aria-label={"Create invite for #{@selected_workspace.name}"}
+                  >
+                    Invite
+                  </.link>
                   <button
                     id={"workspace-#{@selected_workspace.id}-rename"}
                     type="button"
@@ -232,7 +232,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                   data-context-menu-type="channel"
                   data-context-menu-id={channel.id}
                   class={[
-                    "group relative flex items-center gap-1 rounded text-sm transition",
+                    "group relative flex items-center rounded-md text-sm transition",
                     selected_channel?(channel, @selected_channel) &&
                       "bg-base-300 font-semibold text-base-content",
                     !selected_channel?(channel, @selected_channel) &&
@@ -257,7 +257,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                   <% else %>
                     <.link
                       navigate={~p"/workspaces/#{@selected_workspace.id}/channels/#{channel.id}"}
-                      class="min-w-0 flex-1 truncate px-3 py-2"
+                      class="min-w-0 flex-1 truncate py-2 pl-3 pr-16"
                     >
                       # {channel.name}
                     </.link>
@@ -271,14 +271,14 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                         channel
                       )
                     }
-                    class="mr-1 min-w-5 max-w-16 shrink-0 rounded-full bg-primary px-1.5 py-0.5 text-center text-[0.6875rem] font-bold leading-none text-primary-content shadow-sm ring-1 ring-primary/20"
+                    class="absolute right-9 top-1/2 min-w-5 max-w-10 -translate-y-1/2 rounded-full bg-primary px-1.5 py-0.5 text-center text-[0.6875rem] font-bold leading-none text-primary-content shadow-sm ring-1 ring-primary/30"
                   >
                     {channel_unread_count(@channel_unread_counts, channel, @selected_channel)}
                   </span>
                   <button
                     id={"channel-#{channel.id}-actions"}
                     type="button"
-                    class="btn btn-square btn-xs btn-ghost mr-1 opacity-80 transition hover:opacity-100"
+                    class="btn btn-square btn-xs btn-ghost absolute right-1 top-1/2 -translate-y-1/2 opacity-70 transition hover:opacity-100"
                     phx-click="open_channel_actions"
                     phx-value-channel_id={channel.id}
                     aria-label={"Open #{channel.name} channel actions"}
@@ -357,7 +357,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
 
         <div
           :if={@current_scope && @current_scope.user}
-          class="border-t border-base-300 bg-base-300/70 p-3"
+          class="bg-base-300/70 p-3 shadow-[inset_0_1px_0_rgb(255_255_255/0.04)]"
         >
           <div class="flex items-center gap-3">
             <div class="flex size-9 shrink-0 items-center justify-center rounded bg-primary text-sm font-semibold text-primary-content">
@@ -389,7 +389,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
       <main id="workspace-main" class={main_class(@main_state)}>
         <%= case @main_state do %>
           <% :channel -> %>
-            <header class="border-b border-base-300 px-6 py-4">
+            <header class="bg-base-100/95 px-6 py-4 shadow-[0_1px_0_rgb(255_255_255/0.04),0_10px_28px_rgb(0_0_0/0.08)]">
               <p id="selected-channel-title" class="text-sm font-semibold">
                 # {@selected_channel.name}
               </p>
@@ -482,9 +482,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
         :if={@selected_workspace}
         id="workspace-members-sidebar"
         aria-label="Workspace members"
-        class="hidden min-h-0 border-l border-base-300 bg-base-200/80 xl:flex xl:flex-col"
+        class="hidden min-h-0 bg-base-200/80 shadow-[inset_1px_0_0_rgb(255_255_255/0.04)] xl:flex xl:flex-col"
       >
-        <div class="border-b border-base-300 px-4 py-4">
+        <div class="px-4 py-4 shadow-[0_1px_0_rgb(255_255_255/0.04)]">
           <p class="text-xs font-semibold uppercase tracking-wide text-base-content/50">
             Members
           </p>
