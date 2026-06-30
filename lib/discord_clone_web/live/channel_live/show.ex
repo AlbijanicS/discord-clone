@@ -327,11 +327,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       {:ok, older_messages} ->
         socket =
           older_messages
-          |> MessageRows.annotate()
-          |> Enum.reverse()
-          |> Enum.reduce(socket, fn row, socket ->
-            stream_insert(socket, :messages, row, at: 0)
-          end)
+          |> prepend_older_message_rows(socket)
           |> assign(:oldest_message, List.first(older_messages) || socket.assigns.oldest_message)
           |> assign(:has_older_messages?, length(older_messages) == @message_page_size)
 
@@ -689,6 +685,21 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     attrs
     |> Chat.change_message()
     |> to_form(as: :message)
+  end
+
+  defp prepend_older_message_rows([], socket), do: socket
+
+  defp prepend_older_message_rows(older_messages, socket) do
+    boundary_row =
+      MessageRows.annotate_next(List.last(older_messages), socket.assigns.oldest_message)
+
+    older_messages
+    |> MessageRows.annotate()
+    |> Enum.reverse()
+    |> Enum.reduce(socket, fn row, socket ->
+      stream_insert(socket, :messages, row, at: 0)
+    end)
+    |> stream_insert(:messages, boundary_row)
   end
 
   defp subscribe_to_channel_messages(socket, channel_id) do

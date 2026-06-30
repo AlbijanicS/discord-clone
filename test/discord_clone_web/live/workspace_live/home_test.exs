@@ -1056,6 +1056,39 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-#{message.id}-author", scope.user.username)
     end
 
+    test "groups a sent live message with the current newest same-author message", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      existing_message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "already thinking",
+          DateTime.add(DateTime.utc_now(:second), -60, :second)
+        )
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      view
+      |> form("#message-composer-form", message: %{content: "same thread"})
+      |> render_submit()
+
+      sent_message =
+        Message
+        |> order_by([message], desc: message.id)
+        |> limit(1)
+        |> Repo.one!()
+
+      assert has_element?(view, "#message-#{existing_message.id}[data-message-row='full']")
+      assert has_element?(view, "#message-#{sent_message.id}[data-message-row='compact']")
+      assert has_element?(view, "#message-#{sent_message.id}-spacer[aria-hidden='true']")
+      refute has_element?(view, "#message-#{sent_message.id}-header")
+    end
+
     test "renders the sender's saved message exactly once", %{
       conn: conn,
       scope: scope
@@ -1164,6 +1197,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
         |> Repo.one!()
 
       assert has_element?(receiver_view, "#message-#{message.id}")
+      assert has_element?(receiver_view, "#message-#{message.id}[data-message-row='full']")
 
       assert has_element?(
                receiver_view,
@@ -1636,6 +1670,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       recent_cursor = Enum.at(messages, 5)
 
       assert has_element?(view, "#message-#{recent_cursor.id}")
+      assert has_element?(view, "#message-#{recent_cursor.id}[data-message-row='full']")
       refute has_element?(view, "#message-#{hd(messages).id}")
 
       view
@@ -1656,6 +1691,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert has_element?(view, "#message-#{hd(messages).id}")
       assert has_element?(view, "#message-#{recent_cursor.id}")
+      assert has_element?(view, "#message-#{recent_cursor.id}[data-message-row='compact']")
       refute has_element?(view, "#load-older-messages")
 
       refute_push_event(view, "scroll_channel_messages_to_bottom", %{
