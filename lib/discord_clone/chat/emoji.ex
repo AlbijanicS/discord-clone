@@ -4,6 +4,16 @@ defmodule DiscordClone.Chat.Emoji do
   """
 
   @max_reaction_bytes 64
+  @shortcodes %{
+    ":thumbsup:" => "👍",
+    ":heart:" => "❤️"
+  }
+
+  def render_shortcodes(content) when is_binary(content) do
+    Enum.reduce(@shortcodes, content, fn {shortcode, emoji}, rendered ->
+      String.replace(rendered, shortcode, emoji)
+    end)
+  end
 
   def validate_reaction(value) when is_binary(value) do
     if String.valid?(value) do

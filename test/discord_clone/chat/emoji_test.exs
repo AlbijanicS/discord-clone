@@ -34,4 +34,14 @@ defmodule DiscordClone.Chat.EmojiTest do
       assert Emoji.validate_reaction(<<255>>) == {:error, :invalid}
     end
   end
+
+  describe "render_shortcodes/1" do
+    test "replaces supported shortcodes with emoji" do
+      assert Emoji.render_shortcodes("ship it :thumbsup: :heart:") == "ship it 👍 ❤️"
+    end
+
+    test "leaves unknown shortcodes unchanged" do
+      assert Emoji.render_shortcodes("deploying :rocketship:") == "deploying :rocketship:"
+    end
+  end
 end

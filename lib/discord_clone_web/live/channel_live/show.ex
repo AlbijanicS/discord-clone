@@ -2,6 +2,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   use DiscordCloneWeb, :live_view
 
   alias DiscordClone.{Chat, Workspaces}
+  alias DiscordClone.Chat.Emoji
   alias DiscordClone.Chat.WorkspacePresence, as: PresenceEvents
   alias DiscordCloneWeb.ChannelLive.MessageRows
   alias DiscordCloneWeb.WorkspaceLive.Presence
@@ -164,7 +165,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                     row.row_kind == :full && "mt-1"
                   ]}
                 >
-                  {row.message.content}
+                  {Emoji.render_shortcodes(row.message.content)}
                 </p>
               </div>
             </article>

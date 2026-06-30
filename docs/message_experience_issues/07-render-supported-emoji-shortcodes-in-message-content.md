@@ -18,15 +18,15 @@ rendering concern for v1, not persisted token metadata.
 
 ## Acceptance criteria
 
-- [ ] The emoji module exposes shortcode parsing for a small explicit allowlist.
-- [ ] Supported shortcodes render as emoji in Channel message content.
-- [ ] Unknown shortcodes remain plain text.
-- [ ] Direct Unicode emoji in messages remains visible.
-- [ ] Message content is still persisted as the User typed it.
-- [ ] Rendering remains safe for HEEx and does not introduce raw HTML risks.
-- [ ] Focused emoji tests cover supported shortcode replacement and unknown
+- [x] The emoji module exposes shortcode parsing for a small explicit allowlist.
+- [x] Supported shortcodes render as emoji in Channel message content.
+- [x] Unknown shortcodes remain plain text.
+- [x] Direct Unicode emoji in messages remains visible.
+- [x] Message content is still persisted as the User typed it.
+- [x] Rendering remains safe for HEEx and does not introduce raw HTML risks.
+- [x] Focused emoji tests cover supported shortcode replacement and unknown
       shortcode passthrough.
-- [ ] Focused LiveView tests verify supported shortcode rendering through stable
+- [x] Focused LiveView tests verify supported shortcode rendering through stable
       selectors.
 
 ## Blocked by

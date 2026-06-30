@@ -818,6 +818,47 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-#{message.id}-content", message.content)
     end
 
+    test "renders supported emoji shortcodes in persisted channel messages", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "Ship it :thumbsup:",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert Repo.get!(Message, message.id).content == "Ship it :thumbsup:"
+      assert has_element?(view, "#message-#{message.id}-content", "Ship it 👍")
+    end
+
+    test "leaves unknown emoji shortcodes unchanged in channel messages", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "Launch :rocketship:",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#message-#{message.id}-content", "Launch :rocketship:")
+    end
+
     test "renders persisted channel messages in a stable anchored row layout", %{
       conn: conn,
       scope: scope
