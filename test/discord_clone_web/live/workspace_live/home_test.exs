@@ -974,6 +974,94 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
              )
     end
 
+    test "toggles a reaction from the fixed message palette", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "please react",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      message_id = message.id
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(
+               view,
+               "#message-#{message_id}-reaction-option-0[aria-label='React with 👍 to message']",
+               "👍"
+             )
+
+      assert has_element?(
+               view,
+               "#message-#{message_id}-reaction-option-1[aria-label='React with ❤️ to message']",
+               "❤️"
+             )
+
+      assert has_element?(
+               view,
+               "#message-#{message_id}-reaction-option-2[aria-label='React with 😂 to message']",
+               "😂"
+             )
+
+      assert has_element?(
+               view,
+               "#message-#{message_id}-reaction-option-3[aria-label='React with 🎉 to message']",
+               "🎉"
+             )
+
+      assert has_element?(
+               view,
+               "#message-#{message_id}-reaction-option-4[aria-label='React with 👀 to message']",
+               "👀"
+             )
+
+      view
+      |> element("#message-#{message_id}-reaction-option-0")
+      |> render_click()
+
+      assert {:ok, %{^message_id => [%{emoji: "👍", count: 1, reacted?: true}]}} =
+               Chat.list_reaction_summaries(scope, [message_id])
+
+      view
+      |> element("#message-#{message_id}-reaction-option-0")
+      |> render_click()
+
+      assert {:ok, %{}} = Chat.list_reaction_summaries(scope, [message_id])
+    end
+
+    test "rejects invalid reaction payloads sent to the palette event", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "tamper-resistant",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      render_click(view, "toggle_reaction", %{
+        "message-id" => Integer.to_string(message.id),
+        "emoji" => "👍❤️"
+      })
+
+      assert {:ok, %{}} = Chat.list_reaction_summaries(scope, [message.id])
+    end
+
     test "renders persisted channel messages in a stable anchored row layout", %{
       conn: conn,
       scope: scope

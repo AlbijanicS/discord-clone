@@ -9,6 +9,13 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   alias DiscordCloneWeb.WorkspaceLive.Shell
 
   @message_page_size 50
+  @reaction_palette [
+    {"👍", "React with 👍 to message"},
+    {"❤️", "React with ❤️ to message"},
+    {"😂", "React with 😂 to message"},
+    {"🎉", "React with 🎉 to message"},
+    {"👀", "React with 👀 to message"}
+  ]
 
   @impl true
   def mount(%{"workspace_id" => workspace_id, "channel_id" => channel_id}, _session, socket) do
@@ -130,10 +137,31 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               data-message-row={row_kind(row)}
               data-hover-surface="message-row"
               class={[
-                "group grid grid-cols-[2.75rem_minmax(0,1fr)] gap-3 rounded-md px-3 transition-colors duration-150 hover:bg-base-200/75 focus-within:bg-base-200/75",
+                "group relative grid grid-cols-[2.75rem_minmax(0,1fr)] gap-3 rounded-md px-3 transition-colors duration-150 hover:bg-base-200/75 focus-within:bg-base-200/75",
                 if(row.row_kind == :compact, do: "py-1", else: "py-2.5")
               ]}
             >
+              <div
+                id={"#{dom_id}-reaction-palette"}
+                class={[
+                  "absolute right-3 z-10 flex items-center gap-1 rounded-md border border-base-300/80 bg-base-100/95 p-1 opacity-0 shadow-sm transition duration-150 group-hover:opacity-100 group-focus-within:opacity-100",
+                  if(row.row_kind == :compact, do: "top-0.5", else: "top-2")
+                ]}
+                aria-label="Reaction palette"
+              >
+                <button
+                  :for={{{emoji, label}, index} <- Enum.with_index(reaction_palette())}
+                  id={reaction_option_id(row.message.id, index)}
+                  type="button"
+                  phx-click="toggle_reaction"
+                  phx-value-message-id={row.message.id}
+                  phx-value-emoji={emoji}
+                  class="flex size-7 items-center justify-center rounded text-sm transition hover:bg-base-200 focus:outline-none focus:ring-2 focus:ring-primary/20"
+                  aria-label={label}
+                >
+                  <span aria-hidden="true">{emoji}</span>
+                </button>
+              </div>
               <div
                 :if={row.row_kind == :full}
                 id={"#{dom_id}-avatar"}
@@ -412,6 +440,19 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   def handle_event("message_typing", _params, socket) do
     start_typing(socket)
+  end
+
+  def handle_event("toggle_reaction", %{"message-id" => message_id, "emoji" => emoji}, socket) do
+    case Chat.toggle_reaction(socket.assigns.current_scope, to_integer(message_id), emoji) do
+      {:ok, _reaction_or_deleted_reaction} ->
+        {:noreply, socket}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Reaction could not be saved.")}
+
+      {:error, _reason, _detail} ->
+        {:noreply, put_flash(socket, :error, "Reaction could not be saved.")}
+    end
   end
 
   def handle_event("open_workspace_actions", %{"workspace_id" => workspace_id}, socket) do
@@ -721,6 +762,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   defp reaction_summaries_for(reaction_summaries, message_id) do
     Map.get(reaction_summaries, message_id, [])
   end
+
+  defp reaction_palette, do: @reaction_palette
+
+  defp reaction_option_id(message_id, index), do: "message-#{message_id}-reaction-option-#{index}"
 
   defp reaction_pill_id(message_id, index), do: "message-#{message_id}-reaction-#{index}"
 
