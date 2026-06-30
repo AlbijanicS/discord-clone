@@ -880,6 +880,26 @@ defmodule DiscordClone.ChatTest do
     end
   end
 
+  describe "subscribe_to_channel_reactions/2" do
+    test "subscribed workspace members receive compact reaction-change events" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      message = insert_message!(workspace.default_channel_id, scope.user.id, "ship it", now())
+
+      subscriber = start_reaction_subscriber(scope, workspace.default_channel_id)
+      assert_receive {:subscribed, ^subscriber}
+
+      assert {:ok, _reaction} = Chat.toggle_reaction(scope, message.id, " 👍 ")
+
+      assert_receive {:subscriber_received, ^subscriber, {:reaction_changed, payload}}
+      assert payload.message_id == message.id
+      assert payload.emoji == "👍"
+      refute Map.has_key?(payload, :message)
+      refute Map.has_key?(payload, :reaction)
+      refute Map.has_key?(payload, :user)
+    end
+  end
+
   describe "list_reaction_summaries/2" do
     test "returns emoji counts keyed by accessible message ID" do
       scope = user_scope_fixture()
@@ -1882,6 +1902,21 @@ defmodule DiscordClone.ChatTest do
 
     spawn_link(fn ->
       assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
+      send(parent, {:subscribed, self()})
+
+      receive do
+        event -> send(parent, {:subscriber_received, self(), event})
+      after
+        1_000 -> send(parent, {:subscriber_timeout, self()})
+      end
+    end)
+  end
+
+  defp start_reaction_subscriber(scope, channel_id) do
+    parent = self()
+
+    spawn_link(fn ->
+      assert :ok = Chat.subscribe_to_channel_reactions(scope, channel_id)
       send(parent, {:subscribed, self()})
 
       receive do

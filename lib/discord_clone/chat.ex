@@ -152,6 +152,16 @@ defmodule DiscordClone.Chat do
 
   def subscribe_to_channel_messages(_scope, _channel_id), do: {:error, :unauthenticated}
 
+  def subscribe_to_channel_reactions(%Scope{user: %User{id: user_id}}, channel_id) do
+    with %Channel{} <- get_member_channel(channel_id, user_id) do
+      Phoenix.PubSub.subscribe(DiscordClone.PubSub, channel_reactions_topic(channel_id))
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def subscribe_to_channel_reactions(_scope, _channel_id), do: {:error, :unauthenticated}
+
   def subscribe_to_workspace_messages(%Scope{user: %User{id: user_id}}, workspace_id) do
     with :ok <- authorize_workspace_member(workspace_id, user_id) do
       Phoenix.PubSub.subscribe(DiscordClone.PubSub, workspace_messages_topic(workspace_id))
@@ -334,6 +344,14 @@ defmodule DiscordClone.Chat do
         %MessageReaction{} = reaction ->
           Repo.delete(reaction)
       end
+      |> case do
+        {:ok, reaction_or_deleted_reaction} ->
+          :ok = broadcast_reaction_changed(message, normalized_emoji)
+          {:ok, reaction_or_deleted_reaction}
+
+        {:error, changeset} ->
+          {:error, changeset}
+      end
     else
       nil -> {:error, :not_found}
       {:error, reason} -> {:error, :invalid_emoji, reason}
@@ -482,7 +500,17 @@ defmodule DiscordClone.Chat do
   end
 
   defp channel_messages_topic(channel_id), do: "chat:channel:#{channel_id}"
+  defp channel_reactions_topic(channel_id), do: "chat:channel:#{channel_id}:reactions"
   defp workspace_messages_topic(workspace_id), do: "chat:workspace:#{workspace_id}:messages"
+
+  defp broadcast_reaction_changed(%Message{} = message, emoji) do
+    Phoenix.PubSub.broadcast_from(
+      DiscordClone.PubSub,
+      self(),
+      channel_reactions_topic(message.channel_id),
+      {:reaction_changed, %{message_id: message.id, emoji: emoji}}
+    )
+  end
 
   defp broadcast_workspace_message_created(workspace_id, %Message{} = message) do
     Phoenix.PubSub.broadcast(

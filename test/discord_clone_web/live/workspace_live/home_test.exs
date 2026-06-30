@@ -1046,6 +1046,46 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert {:ok, %{}} = Chat.list_reaction_summaries(scope, [message_id])
     end
 
+    test "refreshes another connected viewer after a reaction changes", %{
+      conn: viewer_conn,
+      scope: viewer_scope
+    } do
+      sender_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(sender_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, viewer_scope)
+
+      message =
+        insert_message!(
+          workspace.default_channel_id,
+          sender_scope.user.id,
+          "please react live",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      channel_path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+      sender_conn = build_conn() |> log_in_user(sender_scope.user)
+
+      {:ok, viewer_view, _html} = live(viewer_conn, channel_path)
+      {:ok, sender_view, _html} = live(sender_conn, channel_path)
+
+      refute has_element?(viewer_view, "#message-#{message.id}-reactions")
+
+      sender_view
+      |> element("#message-#{message.id}-reaction-option-0")
+      |> render_click()
+
+      _ = :sys.get_state(viewer_view.pid)
+
+      assert has_element?(
+               viewer_view,
+               "#message-#{message.id}-reaction-0[data-current-user-reacted='false'][aria-label='👍 reaction, 1 reaction, you have not reacted']",
+               "👍 1"
+             )
+
+      assert has_element?(viewer_view, "#message-#{message.id}[data-message-row='full']")
+      assert has_element?(viewer_view, "#message-#{message.id}-content", "please react live")
+    end
+
     test "rejects invalid reaction payloads sent to the palette event", %{
       conn: conn,
       scope: scope

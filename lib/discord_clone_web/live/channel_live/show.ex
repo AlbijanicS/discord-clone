@@ -32,6 +32,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          {:ok, reaction_summaries} <- load_reaction_summaries(socket, messages),
          {:ok, channel_runtime_monitor_ref} <- monitor_channel_runtime(socket, channel.id),
          :ok <- subscribe_to_channel_messages(socket, channel.id),
+         :ok <- subscribe_to_channel_reactions(socket, channel.id),
          :ok <- subscribe_to_workspace_messages(socket, workspace.id),
          :ok <- subscribe_to_channel_typing(socket, channel.id) do
       message_rows = MessageRows.annotate(messages)
@@ -296,6 +297,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     else
       {:noreply, socket}
     end
+  end
+
+  def handle_info({:reaction_changed, %{message_id: message_id}}, socket) do
+    {:noreply, refresh_reaction_summary(socket, message_id)}
   end
 
   def handle_info({:typing_started, %{channel_id: channel_id, user_id: user_id}}, socket) do
@@ -853,6 +858,14 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   defp subscribe_to_channel_messages(socket, channel_id) do
     if connected?(socket) do
       Chat.subscribe_to_channel_messages(socket.assigns.current_scope, channel_id)
+    else
+      :ok
+    end
+  end
+
+  defp subscribe_to_channel_reactions(socket, channel_id) do
+    if connected?(socket) do
+      Chat.subscribe_to_channel_reactions(socket.assigns.current_scope, channel_id)
     else
       :ok
     end
