@@ -17,6 +17,8 @@ defmodule DiscordClone.Accounts.User do
       foreign_key: :created_by_user_id
 
     has_many :messages, DiscordClone.Chat.Message
+    has_many :channel_read_states, DiscordClone.Chat.ChannelReadState
+    has_many :channel_unread_spans, DiscordClone.Chat.ChannelUnreadSpan
 
     timestamps(type: :utc_datetime)
   end

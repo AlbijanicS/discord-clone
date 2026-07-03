@@ -1,7 +1,14 @@
 defmodule DiscordClone.WorkspacesTest do
   use DiscordClone.DataCase
 
-  alias DiscordClone.Chat.{ChannelRead, Message, WorkspaceServer}
+  alias DiscordClone.Chat.{
+    ChannelRead,
+    ChannelReadState,
+    ChannelUnreadSpan,
+    Message,
+    WorkspaceServer
+  }
+
   alias DiscordClone.Workspaces
   alias DiscordClone.Workspaces.{Channel, WorkspaceInvite, WorkspaceMembership}
 
@@ -37,6 +44,22 @@ defmodule DiscordClone.WorkspacesTest do
 
       assert %ChannelRead{last_read_message_id: nil} =
                Repo.get_by(ChannelRead,
+                 channel_id: workspace.default_channel_id,
+                 user_id: scope.user.id
+               )
+    end
+
+    test "initializes the owner read state for the default general channel" do
+      scope = user_scope_fixture()
+
+      assert {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
+
+      assert %ChannelReadState{
+               unread_count: 0,
+               first_unread_seq: nil,
+               last_unread_seq: nil
+             } =
+               Repo.get_by(ChannelReadState,
                  channel_id: workspace.default_channel_id,
                  user_id: scope.user.id
                )
@@ -452,6 +475,31 @@ defmodule DiscordClone.WorkspacesTest do
                  channel_id: channel.id,
                  user_id: member_scope.user.id
                )
+
+      assert %ChannelReadState{unread_count: 0} =
+               Repo.get_by(ChannelReadState,
+                 channel_id: channel.id,
+                 user_id: owner_scope.user.id
+               )
+
+      assert %ChannelReadState{unread_count: 0} =
+               Repo.get_by(ChannelReadState,
+                 channel_id: channel.id,
+                 user_id: member_scope.user.id
+               )
+    end
+
+    test "starts empty channels with no message sequence progress" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
+
+      assert Repo.get!(Channel, workspace.default_channel_id).last_message_seq == 0
+
+      assert {:ok, channel} =
+               Workspaces.create_channel(scope, workspace.id, %{name: "planning"})
+
+      assert channel.last_message_seq == 0
+      assert Repo.get!(Channel, channel.id).last_message_seq == 0
     end
 
     test "accepts string-keyed channel attributes" do
@@ -796,6 +844,21 @@ defmodule DiscordClone.WorkspacesTest do
                )
 
       assert last_read_message_id == release_message.id
+
+      assert %ChannelReadState{
+               unread_count: 0,
+               first_unread_seq: nil,
+               last_unread_seq: nil
+             } =
+               Repo.get_by(ChannelReadState,
+                 channel_id: release_channel.id,
+                 user_id: invited_scope.user.id
+               )
+
+      refute Repo.get_by(ChannelUnreadSpan,
+               channel_id: release_channel.id,
+               user_id: invited_scope.user.id
+             )
     end
 
     test "existing workspace members enter the landing channel without duplicate membership or usage" do
@@ -855,6 +918,26 @@ defmodule DiscordClone.WorkspacesTest do
         last_read_message_id: first_message.id
       })
 
+      Repo.insert!(
+        ChannelReadState.changeset(%ChannelReadState{}, %{
+          channel_id: release_channel.id,
+          user_id: member_scope.user.id,
+          unread_count: 1,
+          first_unread_seq: 2,
+          last_unread_seq: 2,
+          last_viewed_anchor_seq: 1
+        })
+      )
+
+      Repo.insert!(
+        ChannelUnreadSpan.changeset(%ChannelUnreadSpan{}, %{
+          channel_id: release_channel.id,
+          user_id: member_scope.user.id,
+          from_seq: 2,
+          to_seq: 2
+        })
+      )
+
       {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
 
       assert {:ok, landing} = Workspaces.accept_workspace_invite(member_scope, invite.code)
@@ -867,6 +950,23 @@ defmodule DiscordClone.WorkspacesTest do
                )
 
       assert last_read_message_id == first_message.id
+
+      assert %ChannelReadState{
+               unread_count: 1,
+               first_unread_seq: 2,
+               last_unread_seq: 2,
+               last_viewed_anchor_seq: 1
+             } =
+               Repo.get_by(ChannelReadState,
+                 channel_id: release_channel.id,
+                 user_id: member_scope.user.id
+               )
+
+      assert %ChannelUnreadSpan{from_seq: 2, to_seq: 2} =
+               Repo.get_by(ChannelUnreadSpan,
+                 channel_id: release_channel.id,
+                 user_id: member_scope.user.id
+               )
     end
 
     test "workspace owners accept their own invites as navigation-only" do
@@ -1245,6 +1345,7 @@ defmodule DiscordClone.WorkspacesTest do
       member_scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Team Space"})
       {:ok, channel} = Workspaces.create_channel(owner_scope, workspace.id, %{name: "planning"})
+      {:ok, other_workspace} = Workspaces.create_workspace(member_scope, %{name: "Other Space"})
       add_workspace_member!(workspace, member_scope)
 
       Repo.insert!(%ChannelRead{
@@ -1259,6 +1360,53 @@ defmodule DiscordClone.WorkspacesTest do
         last_read_message_id: nil
       })
 
+      Repo.insert!(
+        ChannelReadState.changeset(%ChannelReadState{}, %{
+          channel_id: workspace.default_channel_id,
+          user_id: member_scope.user.id,
+          unread_count: 1,
+          first_unread_seq: 1,
+          last_unread_seq: 1
+        })
+      )
+
+      Repo.insert!(
+        ChannelUnreadSpan.changeset(%ChannelUnreadSpan{}, %{
+          channel_id: workspace.default_channel_id,
+          user_id: member_scope.user.id,
+          from_seq: 1,
+          to_seq: 1
+        })
+      )
+
+      Repo.insert!(
+        ChannelReadState.changeset(%ChannelReadState{}, %{
+          channel_id: channel.id,
+          user_id: member_scope.user.id,
+          unread_count: 1,
+          first_unread_seq: 1,
+          last_unread_seq: 1
+        })
+      )
+
+      Repo.insert!(
+        ChannelUnreadSpan.changeset(%ChannelUnreadSpan{}, %{
+          channel_id: channel.id,
+          user_id: member_scope.user.id,
+          from_seq: 1,
+          to_seq: 1
+        })
+      )
+
+      Repo.insert!(
+        ChannelUnreadSpan.changeset(%ChannelUnreadSpan{}, %{
+          channel_id: other_workspace.default_channel_id,
+          user_id: member_scope.user.id,
+          from_seq: 1,
+          to_seq: 1
+        })
+      )
+
       assert {:ok, %WorkspaceMembership{}} =
                Workspaces.leave_workspace(member_scope, workspace.id)
 
@@ -1272,9 +1420,39 @@ defmodule DiscordClone.WorkspacesTest do
                user_id: member_scope.user.id
              )
 
+      refute Repo.get_by(ChannelReadState,
+               channel_id: workspace.default_channel_id,
+               user_id: member_scope.user.id
+             )
+
+      refute Repo.get_by(ChannelUnreadSpan,
+               channel_id: workspace.default_channel_id,
+               user_id: member_scope.user.id
+             )
+
+      refute Repo.get_by(ChannelReadState,
+               channel_id: channel.id,
+               user_id: member_scope.user.id
+             )
+
+      refute Repo.get_by(ChannelUnreadSpan,
+               channel_id: channel.id,
+               user_id: member_scope.user.id
+             )
+
       assert Repo.get_by(ChannelRead,
                channel_id: channel.id,
                user_id: owner_scope.user.id
+             )
+
+      assert Repo.get_by(ChannelReadState,
+               channel_id: other_workspace.default_channel_id,
+               user_id: member_scope.user.id
+             )
+
+      assert Repo.get_by(ChannelUnreadSpan,
+               channel_id: other_workspace.default_channel_id,
+               user_id: member_scope.user.id
              )
     end
 
@@ -1364,13 +1542,35 @@ defmodule DiscordClone.WorkspacesTest do
   end
 
   defp insert_message!(channel_id, user_id, content, inserted_at) do
-    Repo.insert!(%Message{
-      channel_id: channel_id,
-      user_id: user_id,
-      content: content,
-      inserted_at: inserted_at,
-      updated_at: inserted_at
-    })
+    {:ok, message} =
+      Repo.transaction(fn ->
+        channel =
+          Repo.one!(
+            from channel in Channel,
+              where: channel.id == ^channel_id,
+              lock: "FOR UPDATE"
+          )
+
+        seq = channel.last_message_seq + 1
+
+        message =
+          Repo.insert!(%Message{
+            channel_id: channel_id,
+            user_id: user_id,
+            content: content,
+            seq: seq,
+            inserted_at: inserted_at,
+            updated_at: inserted_at
+          })
+
+        channel
+        |> Ecto.Changeset.change(last_message_seq: seq)
+        |> Repo.update!()
+
+        message
+      end)
+
+    message
   end
 
   defp set_invite_policy!(workspace, invite_policy) do

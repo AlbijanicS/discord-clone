@@ -295,6 +295,16 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                     phx-key="escape"
                   >
                     <button
+                      :if={channel_has_unread?(@channel_unread_counts, channel)}
+                      id={"channel-#{channel.id}-mark-read"}
+                      type="button"
+                      class="block w-full rounded px-3 py-2 text-left text-sm transition hover:bg-base-200"
+                      phx-click="mark_sidebar_channel_read"
+                      phx-value-channel_id={channel.id}
+                    >
+                      Mark as read
+                    </button>
+                    <button
                       id={"channel-#{channel.id}-rename"}
                       type="button"
                       class="block w-full rounded px-3 py-2 text-left text-sm transition hover:bg-base-200"
@@ -558,6 +568,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
 
   defp channel_unread_count(channel_unread_counts, channel, _selected_channel) do
     Map.get(channel_unread_counts, channel.id, 0)
+  end
+
+  defp channel_has_unread?(channel_unread_counts, channel) do
+    Map.get(channel_unread_counts, channel.id, 0) > 0
   end
 
   defp channel_unread_label(1, channel), do: "1 unread message in #{channel.name}"

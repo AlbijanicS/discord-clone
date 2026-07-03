@@ -3,6 +3,7 @@ defmodule DiscordClone.Chat.ChannelRuntimeTest do
 
   alias DiscordClone.Chat.{ChannelServer, ChannelSupervisor, Message}
   alias DiscordClone.{Repo, Workspaces}
+  alias DiscordClone.Workspaces.Channel
 
   import DiscordClone.AccountsFixtures
 
@@ -133,13 +134,35 @@ defmodule DiscordClone.Chat.ChannelRuntimeTest do
   end
 
   defp insert_message!(channel_id, user_id, content, inserted_at) do
-    Repo.insert!(%Message{
-      channel_id: channel_id,
-      user_id: user_id,
-      content: content,
-      inserted_at: inserted_at,
-      updated_at: inserted_at
-    })
+    {:ok, message} =
+      Repo.transaction(fn ->
+        channel =
+          Repo.one!(
+            from channel in Channel,
+              where: channel.id == ^channel_id,
+              lock: "FOR UPDATE"
+          )
+
+        seq = channel.last_message_seq + 1
+
+        message =
+          Repo.insert!(%Message{
+            channel_id: channel_id,
+            user_id: user_id,
+            content: content,
+            seq: seq,
+            inserted_at: inserted_at,
+            updated_at: inserted_at
+          })
+
+        channel
+        |> Ecto.Changeset.change(last_message_seq: seq)
+        |> Repo.update!()
+
+        message
+      end)
+
+    message
   end
 
   defp put_channel_runtime_timeout(timeout_ms) do

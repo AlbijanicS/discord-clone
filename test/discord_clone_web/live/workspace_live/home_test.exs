@@ -6,7 +6,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
   alias DiscordClone.Workspaces
   alias DiscordClone.Chat
-  alias DiscordClone.Chat.Message
+  alias DiscordClone.Chat.{ChannelReadState, Message}
   alias DiscordClone.Chat.{ChannelServer, WorkspaceServer}
   alias DiscordCloneWeb.WorkspaceLive.Shell
   alias DiscordClone.Workspaces.{Channel, WorkspaceInvite, WorkspaceMembership}
@@ -207,12 +207,34 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
              |> LazyHTML.attribute("id") == []
     end
 
-    test "clears a channel unread badge after opening that channel", %{
+    test "opens an unread channel near its unread messages without marking it read", %{
       conn: conn,
       scope: member_scope
     } do
-      {_owner_scope, workspace, sibling_channel} =
-        workspace_with_sibling_unread!(member_scope)
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, sibling_channel} =
+        Workspaces.create_channel(owner_scope, workspace.id, %{name: "ops"})
+
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      messages =
+        for index <- 1..60 do
+          insert_message!(
+            sibling_channel.id,
+            owner_scope.user.id,
+            "ops update #{index}",
+            DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+          )
+        end
+
+      unread_message = Enum.at(messages, 9)
+      latest_message = List.last(messages)
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(member_scope, sibling_channel.id, 10, 12)
 
       default_channel_path =
         ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
@@ -221,7 +243,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       {:ok, view, _html} = live(conn, default_channel_path)
 
-      assert has_element?(view, "#channel-#{sibling_channel.id}-unread-badge", "1")
+      assert has_element?(view, "#channel-#{sibling_channel.id}-unread-badge", "3")
 
       {:ok, opened_view, _html} =
         view
@@ -230,7 +252,517 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
         |> follow_redirect(conn, sibling_channel_path)
 
       assert has_element?(opened_view, "#channel-#{sibling_channel.id}[aria-current='page']")
+      assert has_element?(opened_view, "#message-#{unread_message.id}-content", "ops update 10")
+
+      assert has_element?(
+               opened_view,
+               "#channel-unread-divider[data-unread-divider-seq='10']"
+             )
+
+      assert has_element?(
+               opened_view,
+               "#channel-unread-divider-marker[data-message-id='#{unread_message.id}']"
+             )
+
+      refute has_element?(opened_view, "#message-#{latest_message.id}-content", "ops update 60")
       refute has_element?(opened_view, "#channel-#{sibling_channel.id}-unread-badge")
+
+      assert Chat.list_unread_counts(member_scope, workspace.id) ==
+               {:ok, %{sibling_channel.id => 3}}
+    end
+
+    test "jumps to oldest unread from the selected channel without marking it read", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      messages =
+        for index <- 1..80 do
+          insert_message!(
+            workspace.default_channel_id,
+            owner_scope.user.id,
+            "general update #{index}",
+            DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+          )
+        end
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      latest_message = List.last(messages)
+      oldest_unread_message = Enum.at(messages, 9)
+
+      assert has_element?(view, "#message-#{latest_message.id}-content", "general update 80")
+      refute has_element?(view, "#message-#{oldest_unread_message.id}-content")
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(member_scope, workspace.default_channel_id, 10, 12)
+
+      send(
+        view.pid,
+        {:workspace_message_created,
+         %{workspace_id: workspace.id, channel_id: workspace.default_channel_id}}
+      )
+
+      assert has_element?(view, "#selected-channel-unread-actions")
+      refute has_element?(view, "#channel-unread-divider")
+      assert has_element?(view, "#jump-to-oldest-unread", "Jump to oldest unread")
+      assert has_element?(view, "#mark-channel-read", "Mark as read")
+      refute has_element?(view, "#selected-channel-unread-count")
+      refute has_element?(view, "#jump-to-next-unread")
+      refute render(view) =~ "Jump to next unread"
+
+      view
+      |> element("#jump-to-oldest-unread")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#message-#{oldest_unread_message.id}-content",
+               "general update 10"
+             )
+
+      refute has_element?(view, "#message-#{latest_message.id}-content")
+      assert has_element?(view, "#channel-unread-divider[data-unread-divider-seq='10']")
+      refute has_element?(view, "#selected-channel-unread-actions")
+
+      assert Chat.list_unread_counts(member_scope, workspace.id) ==
+               {:ok, %{workspace.default_channel_id => 3}}
+    end
+
+    test "marks the selected channel read without changing the message window", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      for index <- 1..80 do
+        insert_message!(
+          workspace.default_channel_id,
+          owner_scope.user.id,
+          "general update #{index}",
+          DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+        )
+      end
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(member_scope, workspace.default_channel_id, 10, 12)
+
+      send(
+        view.pid,
+        {:workspace_message_created,
+         %{workspace_id: workspace.id, channel_id: workspace.default_channel_id}}
+      )
+
+      assert has_element?(view, "#selected-channel-unread-actions")
+      refute has_element?(view, "#channel-unread-divider")
+      message_ids_before = rendered_message_ids(view)
+
+      view
+      |> element("#mark-channel-read")
+      |> render_click()
+
+      refute has_element?(view, "#selected-channel-unread-actions")
+      assert rendered_message_ids(view) == message_ids_before
+      assert Chat.list_unread_counts(member_scope, workspace.id) == {:ok, %{}}
+    end
+
+    test "marks rendered visible message ranges read from the channel hook", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      messages =
+        for index <- 1..80 do
+          insert_message!(
+            workspace.default_channel_id,
+            owner_scope.user.id,
+            "general update #{index}",
+            DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+          )
+        end
+
+      first_read_message = Enum.at(messages, 9)
+      last_read_message = Enum.at(messages, 11)
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(member_scope, workspace.default_channel_id, 10, 12)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#channel-unread-divider[data-unread-divider-seq='10']")
+      refute has_element?(view, "#selected-channel-unread-actions")
+      assert has_element?(view, "#message-#{first_read_message.id}[data-message-seq='10']")
+      assert has_element?(view, "#message-#{last_read_message.id}[data-message-seq='12']")
+
+      render_hook(view, "visible_read_observed", %{
+        "ranges" => [%{"from_seq" => "10", "to_seq" => "12"}]
+      })
+
+      refute has_element?(view, "#selected-channel-unread-actions")
+      refute has_element?(view, "#channel-unread-divider")
+      assert Chat.list_unread_counts(member_scope, workspace.id) == {:ok, %{}}
+    end
+
+    test "keeps the unread divider stable after a visible-read event", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      messages =
+        for index <- 1..80 do
+          insert_message!(
+            workspace.default_channel_id,
+            owner_scope.user.id,
+            "general update #{index}",
+            DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+          )
+        end
+
+      original_divider_message = Enum.at(messages, 9)
+      next_unread_message = Enum.at(messages, 10)
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(member_scope, workspace.default_channel_id, 10, 12)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#channel-unread-divider[data-unread-divider-seq='10']")
+
+      assert has_element?(
+               view,
+               "#channel-unread-divider-marker[data-message-id='#{original_divider_message.id}']"
+             )
+
+      render_hook(view, "visible_read_observed", %{
+        "ranges" => [%{"from_seq" => "10", "to_seq" => "10"}]
+      })
+
+      assert has_element?(view, "#channel-unread-divider[data-unread-divider-seq='10']")
+
+      assert has_element?(
+               view,
+               "#channel-unread-divider-marker[data-message-id='#{original_divider_message.id}']"
+             )
+
+      refute has_element?(
+               view,
+               "#channel-unread-divider-marker[data-message-id='#{next_unread_message.id}']"
+             )
+
+      assert Chat.list_unread_counts(member_scope, workspace.id) ==
+               {:ok, %{workspace.default_channel_id => 2}}
+    end
+
+    test "ignores invalid and non-rendered visible-read ranges from the channel hook", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      messages =
+        for index <- 1..80 do
+          insert_message!(
+            workspace.default_channel_id,
+            owner_scope.user.id,
+            "general update #{index}",
+            DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+          )
+        end
+
+      non_rendered_message = Enum.at(messages, 69)
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(member_scope, workspace.default_channel_id, 10, 12)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#channel-unread-divider[data-unread-divider-seq='10']")
+      refute has_element?(view, "#selected-channel-unread-actions")
+      refute has_element?(view, "#message-#{non_rendered_message.id}[data-message-seq='70']")
+
+      for ranges <- [
+            [%{"from_seq" => "11", "to_seq" => "11"}, %{"from_seq" => "10", "to_seq" => "10"}],
+            [%{"from_seq" => "70", "to_seq" => "70"}],
+            [%{"from_seq" => "12", "to_seq" => "10"}],
+            [%{"from_seq" => "1", "to_seq" => "51"}],
+            [%{"from_seq" => "not-a-sequence", "to_seq" => "12"}]
+          ] do
+        render_hook(view, "visible_read_observed", %{"ranges" => ranges})
+
+        assert Chat.list_unread_counts(member_scope, workspace.id) ==
+                 {:ok, %{workspace.default_channel_id => 3}}
+      end
+
+      assert has_element?(view, "#channel-unread-divider[data-unread-divider-seq='10']")
+      refute has_element?(view, "#selected-channel-unread-actions")
+    end
+
+    test "persists a rendered scroll anchor from the channel hook", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      messages =
+        for index <- 1..80 do
+          insert_message!(
+            workspace.default_channel_id,
+            scope.user.id,
+            "anchorable update #{index}",
+            DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+          )
+        end
+
+      anchored_message = Enum.at(messages, 39)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#message-#{anchored_message.id}[data-message-seq='40']")
+
+      render_hook(view, "scroll_anchor_observed", %{"seq" => "40"})
+
+      assert %ChannelReadState{last_viewed_anchor_seq: 40} =
+               Repo.get_by(ChannelReadState,
+                 channel_id: workspace.default_channel_id,
+                 user_id: scope.user.id
+               )
+    end
+
+    test "ignores invalid scroll anchors and preserves unread state", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      messages =
+        for index <- 1..80 do
+          insert_message!(
+            workspace.default_channel_id,
+            owner_scope.user.id,
+            "anchor guard update #{index}",
+            DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+          )
+        end
+
+      non_rendered_message = Enum.at(messages, 19)
+      rendered_message = Enum.at(messages, 39)
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(member_scope, workspace.default_channel_id, 40, 42)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#channel-unread-divider[data-unread-divider-seq='40']")
+      refute has_element?(view, "#selected-channel-unread-actions")
+      refute has_element?(view, "#message-#{non_rendered_message.id}[data-message-seq='20']")
+      assert has_element?(view, "#message-#{rendered_message.id}[data-message-seq='40']")
+
+      for payload <- [
+            %{"seq" => "20"},
+            %{"seq" => "81"},
+            %{"seq" => "not-a-sequence"},
+            %{}
+          ] do
+        render_hook(view, "scroll_anchor_observed", payload)
+
+        assert %ChannelReadState{last_viewed_anchor_seq: nil} =
+                 Repo.get_by(ChannelReadState,
+                   channel_id: workspace.default_channel_id,
+                   user_id: member_scope.user.id
+                 )
+
+        assert Chat.list_unread_counts(member_scope, workspace.id) ==
+                 {:ok, %{workspace.default_channel_id => 3}}
+      end
+
+      render_hook(view, "scroll_anchor_observed", %{"seq" => "40"})
+
+      assert %ChannelReadState{
+               last_viewed_anchor_seq: 40,
+               unread_count: 3,
+               first_unread_seq: 40,
+               last_unread_seq: 42
+             } =
+               Repo.get_by(ChannelReadState,
+                 channel_id: workspace.default_channel_id,
+                 user_id: member_scope.user.id
+               )
+
+      assert has_element?(view, "#channel-unread-divider[data-unread-divider-seq='40']")
+      refute has_element?(view, "#selected-channel-unread-actions")
+
+      assert Chat.list_unread_counts(member_scope, workspace.id) ==
+               {:ok, %{workspace.default_channel_id => 3}}
+    end
+
+    test "skips to latest by clearing unread and replacing the message window", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      messages =
+        for index <- 1..80 do
+          insert_message!(
+            workspace.default_channel_id,
+            owner_scope.user.id,
+            "general update #{index}",
+            DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+          )
+        end
+
+      oldest_unread_message = Enum.at(messages, 9)
+      latest_message = List.last(messages)
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(member_scope, workspace.default_channel_id, 10, 12)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#channel-unread-divider[data-unread-divider-seq='10']")
+      refute has_element?(view, "#selected-channel-unread-actions")
+
+      assert has_element?(
+               view,
+               "#skip-to-latest[aria-label='Skip to latest and mark unread messages read']"
+             )
+
+      assert has_element?(
+               view,
+               "#message-#{oldest_unread_message.id}-content",
+               "general update 10"
+             )
+
+      refute has_element?(view, "#message-#{latest_message.id}-content")
+
+      view
+      |> element("#skip-to-latest")
+      |> render_click()
+
+      refute has_element?(view, "#selected-channel-unread-actions")
+      refute has_element?(view, "#message-#{oldest_unread_message.id}-content")
+      assert has_element?(view, "#message-#{latest_message.id}-content", "general update 80")
+      assert Chat.list_unread_counts(member_scope, workspace.id) == {:ok, %{}}
+
+      assert %ChannelReadState{last_viewed_anchor_seq: 80} =
+               Repo.get_by(ChannelReadState,
+                 channel_id: workspace.default_channel_id,
+                 user_id: member_scope.user.id
+               )
+    end
+
+    test "reopens a read channel around its last viewed anchor", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      messages =
+        for index <- 1..120 do
+          insert_message!(
+            channel_id,
+            scope.user.id,
+            "anchored update #{index}",
+            DateTime.add(~U[2026-06-19 11:00:00Z], index, :second)
+          )
+        end
+
+      anchored_message = Enum.at(messages, 19)
+      latest_message = List.last(messages)
+
+      Repo.get_by!(ChannelReadState, channel_id: channel_id, user_id: scope.user.id)
+      |> ChannelReadState.changeset(%{last_viewed_anchor_seq: 20})
+      |> Repo.update!()
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/channels/#{channel_id}")
+
+      assert has_element?(view, "#message-#{anchored_message.id}-content", "anchored update 20")
+      refute has_element?(view, "#message-#{latest_message.id}-content", "anchored update 120")
+      assert Chat.list_unread_counts(scope, workspace.id) == {:ok, %{}}
+    end
+
+    test "keeps selected-channel live messages out of an older landing window", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      messages =
+        for index <- 1..120 do
+          insert_message!(
+            channel_id,
+            owner_scope.user.id,
+            "older-window update #{index}",
+            DateTime.add(~U[2026-06-19 12:00:00Z], index, :second)
+          )
+        end
+
+      anchored_message = Enum.at(messages, 19)
+
+      Repo.get_by!(ChannelReadState, channel_id: channel_id, user_id: member_scope.user.id)
+      |> ChannelReadState.changeset(%{last_viewed_anchor_seq: 20})
+      |> Repo.update!()
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/channels/#{channel_id}")
+
+      assert has_element?(
+               view,
+               "#message-#{anchored_message.id}-content",
+               "older-window update 20"
+             )
+
+      assert {:ok, live_message} =
+               Chat.send_message(owner_scope, channel_id, %{"content" => "new distant latest"})
+
+      _ = :sys.get_state(view.pid)
+
+      refute has_element?(view, "#message-#{live_message.id}-content", "new distant latest")
+
+      refute_push_event(view, "scroll_channel_messages_to_bottom", %{
+        container_id: _container_id
+      })
+
+      assert Chat.list_unread_counts(member_scope, workspace.id) == {:ok, %{channel_id => 1}}
     end
 
     test "refreshes a sibling channel unread badge from a live workspace message event", %{
@@ -291,6 +823,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
           DateTime.add(now, index, :second)
         )
       end
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(member_scope, busy_channel.id, 1, 123)
 
       {:ok, view, _html} =
         live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
@@ -1003,6 +1538,11 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert has_element?(
                view,
+               "#message-#{first_message.id}[data-message-id='#{first_message.id}'][data-message-seq='#{first_message.seq}'][data-visible-read-observe='true']"
+             )
+
+      assert has_element?(
+               view,
                "#message-#{second_message.id}-body #message-#{second_message.id}-reaction-0[data-current-user-reacted='true']",
                "👀 1"
              )
@@ -1160,7 +1700,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(viewer_view, "#channel-messages[phx-hook='ChannelMessages']")
       assert has_element?(viewer_view, "#message-composer-form")
       assert has_element?(viewer_view, "#message-composer-shell")
-      assert has_element?(viewer_view, "#message-composer-submit")
+      refute has_element?(viewer_view, "#message-composer-submit")
       assert has_element?(viewer_view, "#message-#{first_message.id}[data-message-row='full']")
       assert has_element?(viewer_view, "#message-#{first_message.id}-avatar")
       assert has_element?(viewer_view, "#message-#{first_message.id}-header")
@@ -1375,7 +1915,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert has_element?(view, "#message-composer-panel #message-composer-form")
       assert has_element?(view, "#message-composer-shell #message_content")
-      assert has_element?(view, "#message-composer-submit")
+      refute has_element?(view, "#message-composer-submit")
     end
 
     test "starts a full message row when the speaker changes", %{
@@ -1734,7 +2274,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert "message-#{existing_message.id}" in message_ids
     end
 
-    test "marks selected-channel live messages read without duplicating timeline entries", %{
+    test "keeps selected-channel live messages unread without duplicating timeline entries", %{
       conn: conn,
       scope: member_scope
     } do
@@ -1763,7 +2303,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert has_element?(receiver_view, "#message-#{message.id}-content", "read while open")
       refute has_element?(receiver_view, "#channel-#{workspace.default_channel_id}-unread-badge")
-      assert Chat.list_unread_counts(member_scope, workspace.id) == {:ok, %{}}
+
+      assert Chat.list_unread_counts(member_scope, workspace.id) ==
+               {:ok, %{workspace.default_channel_id => 1}}
 
       message_ids =
         receiver_view
@@ -2108,13 +2650,13 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
              )
     end
 
-    test "shows load older when the initial message page is full", %{
+    test "renders scroll-edge history controls without the old manual load button", %{
       conn: conn,
       scope: scope
     } do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
 
-      for index <- 1..50 do
+      for index <- 1..51 do
         insert_message!(
           workspace.default_channel_id,
           scope.user.id,
@@ -2126,10 +2668,16 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       {:ok, view, _html} =
         live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
 
-      assert has_element?(view, "#load-older-messages", "Load older")
+      assert has_element?(view, "#channel-messages[phx-hook='ChannelMessages']")
+      assert has_element?(view, "#older-messages-loading")
+      assert has_element?(view, "#newer-messages-loading")
+      refute has_element?(view, "#load-older-messages")
     end
 
-    test "hides load older for empty and short channels", %{conn: conn, scope: scope} do
+    test "renders scroll-edge history controls for empty and short channels", %{
+      conn: conn,
+      scope: scope
+    } do
       {:ok, empty_workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
 
       {:ok, empty_view, _html} =
@@ -2139,6 +2687,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
         )
 
       refute has_element?(empty_view, "#load-older-messages")
+      assert has_element?(empty_view, "#older-messages-loading")
+      assert has_element?(empty_view, "#newer-messages-loading")
 
       {:ok, short_workspace} = Workspaces.create_workspace(scope, %{name: "Workshop"})
 
@@ -2158,9 +2708,11 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
         )
 
       refute has_element?(short_view, "#load-older-messages")
+      assert has_element?(short_view, "#older-messages-loading")
+      assert has_element?(short_view, "#newer-messages-loading")
     end
 
-    test "loads older messages above the current stream without duplicating the cursor", %{
+    test "top-edge loading prepends older messages without duplicating the cursor", %{
       conn: conn,
       scope: scope
     } do
@@ -2185,9 +2737,11 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-#{recent_cursor.id}[data-message-row='full']")
       refute has_element?(view, "#message-#{hd(messages).id}")
 
-      view
-      |> element("#load-older-messages")
-      |> render_click()
+      render_hook(view, "load_older_messages", %{
+        "container_id" => "channel-messages",
+        "scroll_height" => 1_600,
+        "scroll_top" => 320
+      })
 
       message_ids =
         view
@@ -2206,9 +2760,231 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-#{recent_cursor.id}[data-message-row='compact']")
       refute has_element?(view, "#load-older-messages")
 
+      assert_push_event(view, "preserve_channel_messages_scroll", %{
+        container_id: "channel-messages",
+        previous_scroll_height: 1600,
+        previous_scroll_top: 320
+      })
+
       refute_push_event(view, "scroll_channel_messages_to_bottom", %{
         container_id: _container_id
       })
+    end
+
+    test "top-edge loading trims newer rendered messages when the window exceeds the cap", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      messages =
+        for index <- 1..350 do
+          insert_message!(
+            workspace.default_channel_id,
+            scope.user.id,
+            "bounded message #{index}",
+            DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+          )
+        end
+
+      Repo.get_by!(ChannelReadState,
+        channel_id: workspace.default_channel_id,
+        user_id: scope.user.id
+      )
+      |> ChannelReadState.changeset(%{last_viewed_anchor_seq: 275})
+      |> Repo.update!()
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#message-#{Enum.at(messages, 259).id}-content")
+      assert has_element?(view, "#message-#{Enum.at(messages, 309).id}-content")
+      refute has_element?(view, "#message-#{Enum.at(messages, 209).id}-content")
+
+      for page <- 1..5 do
+        render_hook(view, "load_older_messages", %{
+          "container_id" => "channel-messages",
+          "scroll_height" => 1_600 + page,
+          "scroll_top" => 320
+        })
+      end
+
+      message_ids = rendered_message_ids(view)
+
+      assert length(message_ids) == 300
+      assert List.first(message_ids) == "message-#{Enum.at(messages, 9).id}"
+      assert List.last(message_ids) == "message-#{Enum.at(messages, 308).id}"
+      assert has_element?(view, "#message-#{Enum.at(messages, 9).id}-content")
+      refute has_element?(view, "#message-#{Enum.at(messages, 309).id}-content")
+
+      trimmed_message = Enum.at(messages, 309)
+      trimmed_message_id = trimmed_message.id
+      trimmed_row_id = "message-#{trimmed_message.id}"
+
+      assert_push_event(view, "remove_channel_message_rows", %{
+        container_id: "channel-messages",
+        message_ids: [^trimmed_message_id],
+        row_ids: [^trimmed_row_id]
+      })
+
+      {:ok, _reaction} = Chat.toggle_reaction(scope, trimmed_message.id, "👍")
+
+      refute has_element?(view, "#message-#{trimmed_message.id}-content")
+
+      assert_push_event(view, "preserve_channel_messages_scroll", %{
+        container_id: "channel-messages",
+        previous_scroll_height: 1601,
+        previous_scroll_top: 320
+      })
+    end
+
+    test "bottom-edge loading continues from the visible boundary after newer rows were trimmed",
+         %{
+           conn: conn,
+           scope: scope
+         } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      messages =
+        for index <- 1..350 do
+          insert_message!(
+            workspace.default_channel_id,
+            scope.user.id,
+            "continued message #{index}",
+            DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+          )
+        end
+
+      Repo.get_by!(ChannelReadState,
+        channel_id: workspace.default_channel_id,
+        user_id: scope.user.id
+      )
+      |> ChannelReadState.changeset(%{last_viewed_anchor_seq: 275})
+      |> Repo.update!()
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      for page <- 1..5 do
+        render_hook(view, "load_older_messages", %{
+          "container_id" => "channel-messages",
+          "scroll_height" => 1_600 + page,
+          "scroll_top" => 320
+        })
+      end
+
+      assert List.last(rendered_message_ids(view)) == "message-#{Enum.at(messages, 308).id}"
+      refute has_element?(view, "#message-#{Enum.at(messages, 349).id}-content")
+
+      render_hook(view, "load_newer_messages", %{"container_id" => "channel-messages"})
+
+      message_ids = rendered_message_ids(view)
+
+      assert length(message_ids) == 300
+      assert List.first(message_ids) == "message-#{Enum.at(messages, 50).id}"
+      assert List.last(message_ids) == "message-#{Enum.at(messages, 349).id}"
+      assert has_element?(view, "#message-#{Enum.at(messages, 349).id}-content")
+      refute has_element?(view, "#message-#{Enum.at(messages, 9).id}-content")
+    end
+
+    test "bottom-edge loading appends newer messages in sequence order", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      messages =
+        for index <- 1..120 do
+          insert_message!(
+            workspace.default_channel_id,
+            scope.user.id,
+            "paged message #{index}",
+            DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+          )
+        end
+
+      Repo.get_by!(ChannelReadState,
+        channel_id: workspace.default_channel_id,
+        user_id: scope.user.id
+      )
+      |> ChannelReadState.changeset(%{last_viewed_anchor_seq: 20})
+      |> Repo.update!()
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(
+               view,
+               "#message-#{Enum.at(messages, 19).id}-content",
+               "paged message 20"
+             )
+
+      refute has_element?(view, "#message-#{List.last(messages).id}-content", "paged message 120")
+
+      render_hook(view, "load_newer_messages", %{"container_id" => "channel-messages"})
+
+      message_ids = rendered_message_ids(view)
+
+      assert Enum.slice(message_ids, 0, 5) ==
+               messages
+               |> Enum.slice(4, 5)
+               |> Enum.map(&"message-#{&1.id}")
+
+      assert Enum.slice(message_ids, -5, 5) ==
+               messages
+               |> Enum.slice(100, 5)
+               |> Enum.map(&"message-#{&1.id}")
+
+      assert has_element?(
+               view,
+               "#message-#{Enum.at(messages, 104).id}-content",
+               "paged message 105"
+             )
+
+      refute has_element?(view, "#message-#{List.last(messages).id}-content", "paged message 120")
+    end
+
+    test "bottom-edge loading trims older rendered messages when the window exceeds the cap", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      messages =
+        for index <- 1..350 do
+          insert_message!(
+            workspace.default_channel_id,
+            scope.user.id,
+            "forward bounded message #{index}",
+            DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+          )
+        end
+
+      Repo.get_by!(ChannelReadState,
+        channel_id: workspace.default_channel_id,
+        user_id: scope.user.id
+      )
+      |> ChannelReadState.changeset(%{last_viewed_anchor_seq: 40})
+      |> Repo.update!()
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#message-#{Enum.at(messages, 24).id}-content")
+      assert has_element?(view, "#message-#{Enum.at(messages, 74).id}-content")
+      refute has_element?(view, "#message-#{Enum.at(messages, 324).id}-content")
+
+      for _page <- 1..5 do
+        render_hook(view, "load_newer_messages", %{"container_id" => "channel-messages"})
+      end
+
+      message_ids = rendered_message_ids(view)
+
+      assert length(message_ids) == 300
+      assert List.first(message_ids) == "message-#{Enum.at(messages, 25).id}"
+      assert List.last(message_ids) == "message-#{Enum.at(messages, 324).id}"
+      refute has_element?(view, "#message-#{Enum.at(messages, 24).id}-content")
+      assert has_element?(view, "#message-#{Enum.at(messages, 324).id}-content")
     end
 
     test "shows and opens the workspace create action from a selected channel", %{
@@ -2352,7 +3128,17 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute has_element?(view, "#channel-#{sibling_channel.id}-unread-badge")
 
       inserted_at = DateTime.add(DateTime.utc_now(:second), 5, :second)
-      insert_message!(sibling_channel.id, owner_scope.user.id, "ops update", inserted_at)
+
+      message =
+        insert_message!(sibling_channel.id, owner_scope.user.id, "ops update", inserted_at)
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(
+                 member_scope,
+                 sibling_channel.id,
+                 message.seq,
+                 message.seq
+               )
 
       view
       |> element("#channel-#{sibling_channel.id}-actions")
@@ -2363,6 +3149,117 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
                "#channel-#{sibling_channel.id}-unread-badge[aria-label='1 unread message in ops']",
                "1"
              )
+    end
+
+    test "shows mark as read in an unread channel action menu", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      {_owner_scope, workspace, sibling_channel} =
+        workspace_with_sibling_unread!(member_scope)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      view
+      |> element("#channel-#{sibling_channel.id}-actions")
+      |> render_click()
+
+      assert has_element?(view, "#channel-#{sibling_channel.id}-mark-read", "Mark as read")
+    end
+
+    test "hides mark as read in a quiet channel action menu", %{conn: conn, scope: scope} do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, quiet_channel} = Workspaces.create_channel(scope, workspace.id, %{name: "quiet"})
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      view
+      |> element("#channel-#{quiet_channel.id}-actions")
+      |> render_click()
+
+      refute has_element?(view, "#channel-#{quiet_channel.id}-mark-read")
+    end
+
+    test "marks a non-selected sidebar channel read without navigating", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      {_owner_scope, workspace, sibling_channel} =
+        workspace_with_sibling_unread!(member_scope)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#channel-#{workspace.default_channel_id}[aria-current='page']")
+      assert has_element?(view, "#channel-#{sibling_channel.id}-unread-badge", "1")
+
+      view
+      |> element("#channel-#{sibling_channel.id}-actions")
+      |> render_click()
+
+      view
+      |> element("#channel-#{sibling_channel.id}-mark-read")
+      |> render_click()
+
+      assert has_element?(view, "#channel-#{workspace.default_channel_id}[aria-current='page']")
+      refute has_element?(view, "#channel-#{sibling_channel.id}-unread-badge")
+      assert Chat.list_unread_counts(member_scope, workspace.id) == {:ok, %{}}
+    end
+
+    test "marks the selected sidebar channel read without changing the message window", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      for index <- 1..80 do
+        insert_message!(
+          workspace.default_channel_id,
+          owner_scope.user.id,
+          "general update #{index}",
+          DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+        )
+      end
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(member_scope, workspace.default_channel_id, 10, 12)
+
+      send(
+        view.pid,
+        {:workspace_message_created,
+         %{workspace_id: workspace.id, channel_id: workspace.default_channel_id}}
+      )
+
+      assert has_element?(view, "#selected-channel-unread-actions")
+      refute has_element?(view, "#channel-#{workspace.default_channel_id}-unread-badge")
+      message_ids_before = rendered_message_ids(view)
+
+      view
+      |> element("#channel-#{workspace.default_channel_id}-actions")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#channel-#{workspace.default_channel_id}-mark-read",
+               "Mark as read"
+             )
+
+      view
+      |> element("#channel-#{workspace.default_channel_id}-mark-read")
+      |> render_click()
+
+      refute has_element?(view, "#selected-channel-unread-actions")
+      refute has_element?(view, "#channel-unread-divider")
+      assert rendered_message_ids(view) == message_ids_before
+      assert Chat.list_unread_counts(member_scope, workspace.id) == {:ok, %{}}
     end
 
     test "opens the channel action menu from a context menu event", %{
@@ -2408,7 +3305,17 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute has_element?(view, "#channel-#{sibling_channel.id}-unread-badge")
 
       inserted_at = DateTime.add(DateTime.utc_now(:second), 5, :second)
-      insert_message!(sibling_channel.id, owner_scope.user.id, "ops update", inserted_at)
+
+      message =
+        insert_message!(sibling_channel.id, owner_scope.user.id, "ops update", inserted_at)
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(
+                 member_scope,
+                 sibling_channel.id,
+                 message.seq,
+                 message.seq
+               )
 
       render_hook(view, "open_context_menu", %{
         "type" => "channel",
@@ -2740,7 +3647,15 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute has_element?(view, "#channel-#{unread_channel.id}-unread-badge")
 
       inserted_at = DateTime.add(DateTime.utc_now(:second), 5, :second)
-      insert_message!(unread_channel.id, owner_scope.user.id, "ops update", inserted_at)
+      message = insert_message!(unread_channel.id, owner_scope.user.id, "ops update", inserted_at)
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(
+                 member_scope,
+                 unread_channel.id,
+                 message.seq,
+                 message.seq
+               )
 
       view
       |> element("#channel-#{renamed_channel.id}-rename")
@@ -2825,7 +3740,15 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute has_element?(view, "#channel-#{unread_channel.id}-unread-badge")
 
       inserted_at = DateTime.add(DateTime.utc_now(:second), 5, :second)
-      insert_message!(unread_channel.id, owner_scope.user.id, "ops update", inserted_at)
+      message = insert_message!(unread_channel.id, owner_scope.user.id, "ops update", inserted_at)
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(
+                 member_scope,
+                 unread_channel.id,
+                 message.seq,
+                 message.seq
+               )
 
       view
       |> element("#channel-#{deleted_channel.id}-delete")
@@ -3242,14 +4165,44 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
     {owner_scope, workspace, sibling_channel}
   end
 
+  defp rendered_message_ids(view) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> then(& &1["#channel-messages > article"])
+    |> LazyHTML.attribute("id")
+  end
+
   defp insert_message!(channel_id, user_id, content, inserted_at) do
-    Repo.insert!(%Message{
-      channel_id: channel_id,
-      user_id: user_id,
-      content: content,
-      inserted_at: inserted_at,
-      updated_at: inserted_at
-    })
+    {:ok, message} =
+      Repo.transaction(fn ->
+        channel =
+          Repo.one!(
+            from channel in Channel,
+              where: channel.id == ^channel_id,
+              lock: "FOR UPDATE"
+          )
+
+        seq = channel.last_message_seq + 1
+
+        message =
+          Repo.insert!(%Message{
+            channel_id: channel_id,
+            user_id: user_id,
+            content: content,
+            seq: seq,
+            inserted_at: inserted_at,
+            updated_at: inserted_at
+          })
+
+        channel
+        |> Ecto.Changeset.change(last_message_seq: seq)
+        |> Repo.update!()
+
+        message
+      end)
+
+    message
   end
 
   defp start_live_view_process do

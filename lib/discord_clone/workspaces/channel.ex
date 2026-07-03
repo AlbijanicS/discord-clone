@@ -4,11 +4,14 @@ defmodule DiscordClone.Workspaces.Channel do
 
   schema "channels" do
     field :name, :string
+    field :last_message_seq, :integer, default: 0
 
     belongs_to :workspace, DiscordClone.Workspaces.Workspace
 
     has_many :messages, DiscordClone.Chat.Message
     has_many :channel_reads, DiscordClone.Chat.ChannelRead
+    has_many :channel_read_states, DiscordClone.Chat.ChannelReadState
+    has_many :channel_unread_spans, DiscordClone.Chat.ChannelUnreadSpan
 
     timestamps(type: :utc_datetime)
   end

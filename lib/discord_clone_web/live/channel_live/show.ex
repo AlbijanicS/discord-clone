@@ -8,7 +8,6 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   alias DiscordCloneWeb.WorkspaceLive.Presence
   alias DiscordCloneWeb.WorkspaceLive.Shell
 
-  @message_page_size 50
   @reaction_palette [
     {"👍", "React with 👍 to message"},
     {"❤️", "React with ❤️ to message"},
@@ -16,6 +15,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     {"🎉", "React with 🎉 to message"},
     {"👀", "React with 👀 to message"}
   ]
+
+  @rendered_message_limit 300
 
   @impl true
   def mount(%{"workspace_id" => workspace_id, "channel_id" => channel_id}, _session, socket) do
@@ -26,9 +27,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
          {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id),
          {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id),
-         :ok <- mark_selected_channel_read(socket, channel.id),
+         {:ok, message_window} <- open_channel_message_window(socket, channel.id),
          {:ok, channel_unread_counts} <- load_channel_unread_counts(socket, workspace.id),
-         {:ok, messages} <- load_recent_messages(socket, channel.id),
+         {:ok, selected_channel_read_summary} <-
+           load_channel_read_summary(socket, workspace.id, channel.id),
+         messages = message_window.messages,
          {:ok, reaction_summaries} <- load_reaction_summaries(socket, messages),
          {:ok, channel_runtime_monitor_ref} <- monitor_channel_runtime(socket, channel.id),
          :ok <- subscribe_to_channel_messages(socket, channel.id),
@@ -48,7 +51,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:message_form, message_form())
         |> assign(:oldest_message, List.first(messages))
         |> assign(:latest_message, List.last(messages))
-        |> assign(:has_older_messages?, length(messages) == @message_page_size)
+        |> assign(:message_window_meta, message_window.meta)
+        |> assign(:has_older_messages?, message_window.meta.has_older?)
+        |> assign(:loading_older_messages?, false)
+        |> assign(:loading_newer_messages?, false)
         |> assign(:workspace_action_menu_id, nil)
         |> assign(:renaming_workspace_id, nil)
         |> assign(:workspace_rename_form, nil)
@@ -59,6 +65,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:typing_user_ids, MapSet.new())
         |> assign(:channel_runtime_monitor_ref, channel_runtime_monitor_ref)
         |> assign(:channel_unread_counts, channel_unread_counts)
+        |> assign(:selected_channel_read_summary, selected_channel_read_summary)
+        |> assign(:unread_divider_seq, unread_divider_seq(selected_channel_read_summary))
         |> assign(:reaction_summaries, reaction_summaries)
         |> assign(:message_rows_by_id, message_rows_by_id(message_rows))
         |> stream_configure(:messages, dom_id: &"message-#{&1.id}")
@@ -109,27 +117,91 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
           aria-label={"Messages in #{@selected_channel.name}"}
         >
           <div
-            :if={@has_older_messages?}
-            class="px-6 py-3 text-center shadow-[0_1px_0_rgb(255_255_255/0.04)]"
+            :if={
+              sticky_unread_actions?(
+                @channel_unread_counts,
+                @selected_channel,
+                @unread_divider_seq,
+                @message_rows_by_id
+              )
+            }
+            id="selected-channel-unread-actions"
+            class="flex flex-wrap items-center justify-center gap-2 border-b border-base-300/60 bg-base-200/55 px-5 py-2.5 text-sm"
           >
             <button
-              id="load-older-messages"
+              id="jump-to-oldest-unread"
               type="button"
-              phx-click="load_older_messages"
-              class="rounded bg-base-200/80 px-4 py-2 text-sm font-semibold text-base-content/70 shadow-sm transition hover:-translate-y-0.5 hover:bg-base-200 hover:text-base-content focus:outline-none focus:ring-2 focus:ring-primary/20"
+              phx-click="jump_to_oldest_unread"
+              class="rounded bg-base-100 px-3 py-1.5 font-semibold text-base-content/80 shadow-sm ring-1 ring-base-300 transition hover:-translate-y-0.5 hover:text-base-content focus:outline-none focus:ring-2 focus:ring-primary/25"
             >
-              Load older
+              Jump to oldest unread
+            </button>
+            <button
+              id="mark-channel-read"
+              type="button"
+              phx-click="mark_channel_read"
+              class="rounded bg-base-100 px-3 py-1.5 font-semibold text-base-content/80 shadow-sm ring-1 ring-base-300 transition hover:-translate-y-0.5 hover:text-base-content focus:outline-none focus:ring-2 focus:ring-primary/25"
+            >
+              Mark as read
+            </button>
+            <button
+              id="skip-to-latest"
+              type="button"
+              phx-click="skip_to_latest"
+              aria-label="Skip to latest and mark unread messages read"
+              class="rounded bg-primary px-3 py-1.5 font-semibold text-primary-content shadow-sm transition hover:-translate-y-0.5 hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary/25"
+            >
+              Skip to latest
+            </button>
+          </div>
+          <div
+            :if={
+              skip_to_latest_action?(@message_window_meta) and
+                not sticky_unread_actions?(
+                  @channel_unread_counts,
+                  @selected_channel,
+                  @unread_divider_seq,
+                  @message_rows_by_id
+                )
+            }
+            id="selected-channel-latest-actions"
+            class="flex justify-center border-b border-base-300/60 bg-base-100/90 px-5 py-2.5 text-sm"
+          >
+            <button
+              id="skip-to-latest"
+              type="button"
+              phx-click="skip_to_latest"
+              aria-label="Skip to latest and mark unread messages read"
+              class="rounded bg-primary px-3 py-1.5 font-semibold text-primary-content shadow-sm transition hover:-translate-y-0.5 hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary/25"
+            >
+              Skip to latest
             </button>
           </div>
           <div
             id="channel-messages"
             phx-update="stream"
             phx-hook="ChannelMessages"
+            data-has-older-messages={to_string(@has_older_messages?)}
+            data-has-newer-messages={to_string(@message_window_meta.has_newer?)}
+            data-loading-older={to_string(@loading_older_messages?)}
+            data-loading-newer={to_string(@loading_newer_messages?)}
             class="min-h-0 flex-1 scroll-pb-6 overflow-y-auto px-5 py-6"
           >
             <div
+              id="older-messages-loading"
+              data-loading={to_string(@loading_older_messages?)}
+              aria-live="polite"
+              class={[
+                "py-2 text-center text-xs font-semibold uppercase tracking-wide text-base-content/45",
+                !@loading_older_messages? && "sr-only"
+              ]}
+            >
+              Loading older messages
+            </div>
+            <div
+              :if={is_nil(@oldest_message)}
               id="channel-empty-state"
-              class="hidden only:flex h-full items-center justify-center text-center"
+              class="flex h-full items-center justify-center text-center"
             >
               <div>
                 <p class="text-lg font-semibold">No messages yet</p>
@@ -142,12 +214,31 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               :for={{dom_id, row} <- @streams.messages}
               id={dom_id}
               data-message-row={row_kind(row)}
+              data-message-id={row.message.id}
+              data-message-seq={row.message.seq}
+              data-visible-read-observe="true"
               data-hover-surface="message-row"
               class={[
                 "group relative grid w-full grid-cols-[2.75rem_minmax(0,1fr)] gap-x-3 rounded-md px-3 transition-colors duration-150 hover:bg-base-200/70 focus-within:bg-base-200/70",
                 if(row.row_kind == :compact, do: "py-0.5", else: "py-1.5")
               ]}
             >
+              <div
+                :if={row.message.seq == @unread_divider_seq}
+                id="channel-unread-divider"
+                data-unread-divider-seq={row.message.seq}
+                class="col-span-2 mb-2 flex items-center gap-3 text-xs font-semibold uppercase tracking-wide text-primary"
+              >
+                <span class="h-px flex-1 bg-primary/30"></span>
+                <span
+                  id="channel-unread-divider-marker"
+                  data-message-id={row.message.id}
+                  class="rounded bg-primary/10 px-2 py-1 ring-1 ring-primary/20"
+                >
+                  New messages
+                </span>
+                <span class="h-px flex-1 bg-primary/30"></span>
+              </div>
               <div
                 :if={row.row_kind == :full}
                 id={"#{dom_id}-avatar"}
@@ -223,6 +314,17 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                 <% end %>
               </div>
             </article>
+            <div
+              id="newer-messages-loading"
+              data-loading={to_string(@loading_newer_messages?)}
+              aria-live="polite"
+              class={[
+                "py-2 text-center text-xs font-semibold uppercase tracking-wide text-base-content/45",
+                !@loading_newer_messages? && "sr-only"
+              ]}
+            >
+              Loading newer messages
+            </div>
           </div>
           <div
             id="channel-typing-indicator"
@@ -248,7 +350,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               phx-change="message_typing"
               phx-submit="send_message"
               phx-hook="MessageComposer"
-              class="flex items-end gap-3"
+              class="flex items-end"
             >
               <div
                 id="message-composer-shell"
@@ -264,13 +366,6 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                   error_class="input-error border-0 ring-0"
                 />
               </div>
-              <button
-                id="message-composer-submit"
-                type="submit"
-                class="rounded-md bg-primary px-5 py-3 text-sm font-semibold text-primary-content shadow-sm transition hover:-translate-y-0.5 hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary/30"
-              >
-                Send
-              </button>
             </.form>
           </div>
         </section>
@@ -281,14 +376,28 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   @impl true
   def handle_info({:message_created, message}, socket) do
-    row = MessageRows.annotate_next(socket.assigns.latest_message, message)
+    if append_selected_channel_message?(socket) do
+      row = MessageRows.annotate_next(socket.assigns.latest_message, message)
 
-    {:noreply,
-     socket
-     |> assign(:latest_message, message)
-     |> put_message_row(row)
-     |> stream_insert(:messages, row)
-     |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})}
+      {:noreply,
+       socket
+       |> assign(:latest_message, message)
+       |> assign(
+         :message_window_meta,
+         latest_window_meta(socket.assigns.message_window_meta, message)
+       )
+       |> put_message_row(row)
+       |> stream_insert(:messages, row)
+       |> trim_rendered_message_window(:older)
+       |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})}
+    else
+      {:noreply,
+       assign(
+         socket,
+         :message_window_meta,
+         newer_available_meta(socket.assigns.message_window_meta, message)
+       )}
+    end
   end
 
   def handle_info({:workspace_message_created, %{workspace_id: workspace_id} = payload}, socket) do
@@ -382,22 +491,40 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
      |> assign(:channel_form, channel_form(workspace_id))}
   end
 
-  def handle_event("load_older_messages", _params, %{assigns: %{oldest_message: nil}} = socket) do
-    {:noreply, assign(socket, :has_older_messages?, false)}
+  def handle_event(
+        "load_older_messages",
+        _params,
+        %{assigns: %{loading_older_messages?: true}} = socket
+      ) do
+    {:noreply, socket}
   end
 
-  def handle_event("load_older_messages", _params, socket) do
-    case Chat.list_older_messages(
+  def handle_event("load_older_messages", _params, %{assigns: %{oldest_message: nil}} = socket) do
+    {:noreply,
+     socket
+     |> assign(:has_older_messages?, false)
+     |> assign(:loading_older_messages?, false)}
+  end
+
+  def handle_event("load_older_messages", params, socket) do
+    case Chat.load_older_message_window(
            socket.assigns.current_scope,
            socket.assigns.selected_channel.id,
-           socket.assigns.oldest_message
+           socket.assigns.oldest_message.seq
          ) do
-      {:ok, older_messages} ->
+      {:ok, %{messages: older_messages, meta: meta}} ->
         socket =
           older_messages
           |> prepend_older_message_rows(socket)
           |> assign(:oldest_message, List.first(older_messages) || socket.assigns.oldest_message)
-          |> assign(:has_older_messages?, length(older_messages) == @message_page_size)
+          |> assign(:loading_older_messages?, false)
+          |> assign(
+            :message_window_meta,
+            merge_older_window_meta(socket.assigns.message_window_meta, meta)
+          )
+          |> assign(:has_older_messages?, meta.has_older?)
+          |> trim_rendered_message_window(:newer)
+          |> preserve_scroll_after_older_load(params)
 
         {:noreply, socket}
 
@@ -407,6 +534,169 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          |> put_flash(:error, "Channel not found or you do not have access.")
          |> push_navigate(to: ~p"/workspaces")}
     end
+  end
+
+  def handle_event(
+        "load_newer_messages",
+        _params,
+        %{assigns: %{loading_newer_messages?: true}} = socket
+      ) do
+    {:noreply, socket}
+  end
+
+  def handle_event(
+        "load_newer_messages",
+        _params,
+        %{assigns: %{latest_message: nil}} = socket
+      ) do
+    {:noreply, assign(socket, :loading_newer_messages?, false)}
+  end
+
+  def handle_event("load_newer_messages", _params, socket) do
+    if socket.assigns.message_window_meta.has_newer? do
+      case Chat.load_newer_message_window(
+             socket.assigns.current_scope,
+             socket.assigns.selected_channel.id,
+             socket.assigns.latest_message.seq
+           ) do
+        {:ok, %{messages: newer_messages, meta: meta}} ->
+          socket =
+            newer_messages
+            |> append_newer_message_rows(socket)
+            |> assign(:latest_message, List.last(newer_messages) || socket.assigns.latest_message)
+            |> assign(:loading_newer_messages?, false)
+            |> assign(
+              :message_window_meta,
+              merge_newer_window_meta(socket.assigns.message_window_meta, meta)
+            )
+            |> trim_rendered_message_window(:older)
+
+          {:noreply, socket}
+
+        {:error, _reason} ->
+          {:noreply,
+           socket
+           |> put_flash(:error, "Channel not found or you do not have access.")
+           |> push_navigate(to: ~p"/workspaces")}
+      end
+    else
+      {:noreply, assign(socket, :loading_newer_messages?, false)}
+    end
+  end
+
+  def handle_event("jump_to_oldest_unread", _params, socket) do
+    case Chat.jump_to_oldest_unread(
+           socket.assigns.current_scope,
+           socket.assigns.selected_channel.id
+         ) do
+      {:ok, message_window} ->
+        {:noreply, replace_message_window(socket, message_window)}
+
+      {:error, :no_unread_messages} ->
+        {:noreply, refresh_channel_sidebar(socket, socket.assigns.selected_workspace.id)}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Channel not found or you do not have access.")
+         |> push_navigate(to: ~p"/workspaces")}
+    end
+  end
+
+  def handle_event("mark_channel_read", _params, socket) do
+    case Chat.mark_channel_read(socket.assigns.current_scope, socket.assigns.selected_channel.id) do
+      :ok ->
+        {:noreply,
+         socket
+         |> clear_selected_channel_unread_ui()
+         |> refresh_channel_sidebar(socket.assigns.selected_workspace.id)}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Channel not found or you do not have access.")
+         |> push_navigate(to: ~p"/workspaces")}
+    end
+  end
+
+  def handle_event("mark_sidebar_channel_read", %{"channel_id" => channel_id}, socket) do
+    channel_id = to_integer(channel_id)
+
+    case Chat.mark_channel_read(socket.assigns.current_scope, channel_id) do
+      :ok ->
+        socket =
+          socket
+          |> assign(:channel_action_menu_id, nil)
+          |> assign(:context_menu_position, nil)
+          |> maybe_clear_selected_channel_unread_ui(channel_id)
+          |> refresh_channel_sidebar(socket.assigns.selected_workspace.id)
+
+        {:noreply, socket}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Channel not found or you do not have access.")
+         |> push_navigate(to: ~p"/workspaces")}
+    end
+  end
+
+  def handle_event("skip_to_latest", _params, socket) do
+    case Chat.jump_to_latest(socket.assigns.current_scope, socket.assigns.selected_channel.id) do
+      {:ok, message_window} ->
+        socket =
+          socket
+          |> replace_message_window(message_window)
+          |> refresh_channel_sidebar(socket.assigns.selected_workspace.id)
+          |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})
+
+        {:noreply, socket}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Channel not found or you do not have access.")
+         |> push_navigate(to: ~p"/workspaces")}
+    end
+  end
+
+  def handle_event("visible_read_observed", %{"ranges" => ranges}, socket) when is_list(ranges) do
+    ranges = parse_visible_read_ranges(ranges)
+
+    socket =
+      if valid_visible_read_ranges?(socket, ranges) do
+        apply_visible_read_ranges(socket, ranges)
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("visible_read_observed", _params, socket) do
+    {:noreply, socket}
+  end
+
+  def handle_event("scroll_anchor_observed", %{"seq" => seq}, socket) do
+    socket =
+      with {:ok, seq} <- parse_integer(seq),
+           true <- rendered_message_seq?(socket, seq),
+           {:ok, _read_state} <-
+             Chat.persist_channel_anchor(
+               socket.assigns.current_scope,
+               socket.assigns.selected_channel.id,
+               seq
+             ) do
+        socket
+      else
+        _ignored -> socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("scroll_anchor_observed", _params, socket) do
+    {:noreply, socket}
   end
 
   def handle_event("send_message", %{"message" => message_params}, socket) do
@@ -425,7 +715,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          |> put_message_row(row)
          |> push_event("clear_message_composer", %{input_id: "message_content"})
          |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})
-         |> stream_insert(:messages, row)}
+         |> stream_insert(:messages, row)
+         |> trim_rendered_message_window(:older)}
 
       {:error, :invalid_message, changeset} ->
         {:noreply,
@@ -855,6 +1146,232 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     |> stream_insert(:messages, boundary_row)
   end
 
+  defp append_newer_message_rows([], socket), do: socket
+
+  defp append_newer_message_rows(newer_messages, socket) do
+    {newer_rows, _previous_message} =
+      Enum.map_reduce(newer_messages, socket.assigns.latest_message, fn message,
+                                                                        previous_message ->
+        {MessageRows.annotate_next(previous_message, message), message}
+      end)
+
+    newer_rows
+    |> Enum.reduce(put_message_rows(socket, newer_rows), fn row, socket ->
+      stream_insert(socket, :messages, row)
+    end)
+  end
+
+  defp trim_rendered_message_window(socket, trim_side) do
+    rows = visible_message_rows(socket)
+    overage = length(rows) - @rendered_message_limit
+
+    if overage > 0 do
+      {removed_rows, kept_rows} = split_trimmed_rows(rows, overage, trim_side)
+      removed_message_ids = Enum.map(removed_rows, & &1.message.id)
+
+      socket
+      |> delete_message_rows(removed_rows)
+      |> prune_message_state(removed_message_ids)
+      |> assign_visible_boundaries(kept_rows, trim_side)
+      |> push_removed_message_rows(removed_rows)
+    else
+      socket
+    end
+  end
+
+  defp visible_message_rows(socket) do
+    socket.assigns.message_rows_by_id
+    |> Map.values()
+    |> Enum.sort_by(& &1.message.seq)
+  end
+
+  defp parse_visible_read_ranges(ranges) do
+    Enum.reduce_while(ranges, [], fn
+      %{"from_seq" => from_seq, "to_seq" => to_seq}, parsed_ranges ->
+        case {parse_integer(from_seq), parse_integer(to_seq)} do
+          {{:ok, from_seq}, {:ok, to_seq}} ->
+            {:cont, [{from_seq, to_seq} | parsed_ranges]}
+
+          _invalid ->
+            {:halt, :invalid}
+        end
+
+      _invalid, _parsed_ranges ->
+        {:halt, :invalid}
+    end)
+    |> case do
+      :invalid -> :invalid
+      parsed_ranges -> Enum.reverse(parsed_ranges)
+    end
+  end
+
+  defp valid_visible_read_ranges?(_socket, :invalid), do: false
+  defp valid_visible_read_ranges?(_socket, []), do: false
+
+  defp valid_visible_read_ranges?(socket, ranges) do
+    rendered_seqs =
+      socket
+      |> visible_message_rows()
+      |> MapSet.new(& &1.message.seq)
+
+    ranges_ordered?(ranges) and
+      Enum.all?(ranges, fn {from_seq, to_seq} ->
+        from_seq >= 1 and from_seq <= to_seq and to_seq - from_seq + 1 <= 50 and
+          Enum.all?(from_seq..to_seq, &MapSet.member?(rendered_seqs, &1))
+      end)
+  end
+
+  defp rendered_message_seq?(socket, seq) when is_integer(seq) do
+    socket
+    |> visible_message_rows()
+    |> Enum.any?(&(&1.message.seq == seq))
+  end
+
+  defp ranges_ordered?(ranges) do
+    ranges
+    |> Enum.reduce_while(nil, fn {from_seq, to_seq}, previous_to_seq ->
+      if is_nil(previous_to_seq) or from_seq > previous_to_seq do
+        {:cont, to_seq}
+      else
+        {:halt, false}
+      end
+    end)
+    |> then(&(&1 != false))
+  end
+
+  defp apply_visible_read_ranges(socket, ranges) do
+    changed? =
+      Enum.reduce(ranges, false, fn {from_seq, to_seq}, changed? ->
+        case Chat.subtract_visible_read_range(
+               socket.assigns.current_scope,
+               socket.assigns.selected_channel.id,
+               from_seq,
+               to_seq
+             ) do
+          {:ok, _read_state} -> true
+          {:error, _reason} -> changed?
+        end
+      end)
+
+    if changed? do
+      socket
+      |> clear_selected_channel_unread_ui_if_read()
+      |> refresh_channel_sidebar(socket.assigns.selected_workspace.id)
+    else
+      socket
+    end
+  end
+
+  defp split_trimmed_rows(rows, overage, :newer) do
+    Enum.split(rows, length(rows) - overage)
+    |> then(fn {kept_rows, removed_rows} -> {removed_rows, kept_rows} end)
+  end
+
+  defp split_trimmed_rows(rows, overage, :older) do
+    Enum.split(rows, overage)
+  end
+
+  defp delete_message_rows(socket, removed_rows) do
+    Enum.reduce(removed_rows, socket, fn row, socket ->
+      stream_delete(socket, :messages, row)
+    end)
+  end
+
+  defp prune_message_state(socket, message_ids) do
+    socket
+    |> assign(:message_rows_by_id, Map.drop(socket.assigns.message_rows_by_id, message_ids))
+    |> assign(:reaction_summaries, Map.drop(socket.assigns.reaction_summaries, message_ids))
+  end
+
+  defp assign_visible_boundaries(socket, [] = _kept_rows, _trim_side) do
+    socket
+    |> assign(:oldest_message, nil)
+    |> assign(:latest_message, nil)
+    |> assign(:has_older_messages?, false)
+  end
+
+  defp assign_visible_boundaries(socket, kept_rows, trim_side) do
+    oldest_message = kept_rows |> List.first() |> Map.fetch!(:message)
+    latest_message = kept_rows |> List.last() |> Map.fetch!(:message)
+
+    socket
+    |> assign(:oldest_message, oldest_message)
+    |> assign(:latest_message, latest_message)
+    |> assign(
+      :message_window_meta,
+      trimmed_window_meta(
+        socket.assigns.message_window_meta,
+        oldest_message,
+        latest_message,
+        trim_side
+      )
+    )
+    |> assign(
+      :has_older_messages?,
+      trimmed_has_older?(socket.assigns.message_window_meta, trim_side)
+    )
+  end
+
+  defp trimmed_window_meta(meta, oldest_message, latest_message, trim_side) do
+    meta
+    |> Map.put(:oldest_seq, oldest_message.seq)
+    |> Map.put(:newest_seq, latest_message.seq)
+    |> Map.put(:has_older?, trimmed_has_older?(meta, trim_side))
+    |> Map.put(:has_newer?, trimmed_has_newer?(meta, trim_side))
+    |> Map.put(:at_latest?, trimmed_at_latest?(meta, latest_message, trim_side))
+    |> Map.put(:at_or_near_latest?, trimmed_at_or_near_latest?(meta, latest_message, trim_side))
+  end
+
+  defp trimmed_has_older?(_meta, :older), do: true
+  defp trimmed_has_older?(meta, :newer), do: meta.has_older?
+
+  defp trimmed_has_newer?(_meta, :newer), do: true
+  defp trimmed_has_newer?(meta, :older), do: meta.has_newer?
+
+  defp trimmed_at_latest?(_meta, _latest_message, :newer), do: false
+  defp trimmed_at_latest?(meta, latest_message, :older), do: latest_message.seq == meta.latest_seq
+
+  defp trimmed_at_or_near_latest?(_meta, _latest_message, :newer), do: false
+
+  defp trimmed_at_or_near_latest?(meta, latest_message, :older) do
+    meta.latest_seq - latest_message.seq <= 50
+  end
+
+  defp push_removed_message_rows(socket, []), do: socket
+
+  defp push_removed_message_rows(socket, removed_rows) do
+    push_event(socket, "remove_channel_message_rows", %{
+      container_id: "channel-messages",
+      message_ids: Enum.map(removed_rows, & &1.message.id),
+      row_ids: Enum.map(removed_rows, &"message-#{&1.message.id}")
+    })
+  end
+
+  defp replace_message_window(socket, %{messages: messages, meta: meta}) do
+    rows = MessageRows.annotate(messages)
+
+    socket
+    |> assign(:oldest_message, List.first(messages))
+    |> assign(:latest_message, List.last(messages))
+    |> assign(:message_window_meta, meta)
+    |> assign(:has_older_messages?, meta.has_older?)
+    |> assign(:loading_older_messages?, false)
+    |> assign(:loading_newer_messages?, false)
+    |> assign(:reaction_summaries, reaction_summaries_for_window(socket, messages))
+    |> assign(:message_rows_by_id, message_rows_by_id(rows))
+    |> recalculate_selected_channel_unread_ui()
+    |> stream(:messages, rows, reset: true)
+  end
+
+  defp reaction_summaries_for_window(socket, messages) do
+    message_ids = Enum.map(messages, & &1.id)
+
+    case Chat.list_reaction_summaries(socket.assigns.current_scope, message_ids) do
+      {:ok, reaction_summaries} -> reaction_summaries
+      {:error, _reason} -> %{}
+    end
+  end
+
   defp message_rows_by_id(rows) do
     Map.new(rows, fn row -> {row.message.id, row} end)
   end
@@ -872,6 +1389,65 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       :error -> socket
     end
   end
+
+  defp restream_visible_message_rows(socket) do
+    stream(socket, :messages, visible_message_rows(socket), reset: true)
+  end
+
+  defp append_selected_channel_message?(socket) do
+    socket.assigns.message_window_meta.at_or_near_latest?
+  end
+
+  defp latest_window_meta(meta, message) do
+    latest_seq = max(meta.latest_seq || 0, message.seq)
+
+    meta
+    |> Map.put(:newest_seq, message.seq)
+    |> Map.put(:latest_seq, latest_seq)
+    |> Map.put(:has_newer?, false)
+    |> Map.put(:at_latest?, true)
+    |> Map.put(:at_or_near_latest?, true)
+  end
+
+  defp newer_available_meta(meta, message) do
+    latest_seq = max(meta.latest_seq || 0, message.seq)
+
+    meta
+    |> Map.put(:latest_seq, latest_seq)
+    |> Map.put(:has_newer?, true)
+    |> Map.put(:at_latest?, false)
+    |> Map.put(:at_or_near_latest?, false)
+  end
+
+  defp merge_older_window_meta(current_meta, older_meta) do
+    current_meta
+    |> Map.put(:oldest_seq, older_meta.oldest_seq || current_meta.oldest_seq)
+    |> Map.put(:latest_seq, max(current_meta.latest_seq || 0, older_meta.latest_seq || 0))
+    |> Map.put(:has_older?, older_meta.has_older?)
+  end
+
+  defp merge_newer_window_meta(current_meta, newer_meta) do
+    current_meta
+    |> Map.put(:newest_seq, newer_meta.newest_seq || current_meta.newest_seq)
+    |> Map.put(:latest_seq, max(current_meta.latest_seq || 0, newer_meta.latest_seq || 0))
+    |> Map.put(:has_newer?, newer_meta.has_newer?)
+    |> Map.put(:at_latest?, newer_meta.at_latest?)
+    |> Map.put(:at_or_near_latest?, newer_meta.at_or_near_latest?)
+  end
+
+  defp preserve_scroll_after_older_load(socket, %{
+         "container_id" => container_id,
+         "scroll_height" => scroll_height,
+         "scroll_top" => scroll_top
+       }) do
+    push_event(socket, "preserve_channel_messages_scroll", %{
+      container_id: container_id,
+      previous_scroll_height: to_integer(scroll_height),
+      previous_scroll_top: to_integer(scroll_top)
+    })
+  end
+
+  defp preserve_scroll_after_older_load(socket, _params), do: socket
 
   defp subscribe_to_channel_messages(socket, channel_id) do
     if connected?(socket) do
@@ -927,12 +1503,35 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
-  defp load_recent_messages(socket, channel_id) do
+  defp open_channel_message_window(socket, channel_id) do
     if connected?(socket) do
-      Chat.list_recent_messages(socket.assigns.current_scope, channel_id)
+      with {:ok, %{landing: landing}} <-
+             Chat.open_channel(socket.assigns.current_scope, channel_id) do
+        load_landing_message_window(socket, channel_id, landing)
+      end
     else
-      {:ok, []}
+      {:ok,
+       %{
+         messages: [],
+         meta: %{
+           oldest_seq: nil,
+           newest_seq: nil,
+           latest_seq: 0,
+           has_older?: false,
+           has_newer?: false,
+           at_latest?: true,
+           at_or_near_latest?: true
+         }
+       }}
     end
+  end
+
+  defp load_landing_message_window(socket, channel_id, %{type: :latest}) do
+    Chat.load_latest_message_window(socket.assigns.current_scope, channel_id)
+  end
+
+  defp load_landing_message_window(socket, channel_id, %{type: :sequence, target_seq: target_seq}) do
+    Chat.load_message_window_around(socket.assigns.current_scope, channel_id, target_seq)
   end
 
   defp load_reaction_summaries(socket, messages) do
@@ -945,14 +1544,6 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
-  defp mark_selected_channel_read(socket, channel_id) do
-    if connected?(socket) do
-      Chat.mark_channel_read(socket.assigns.current_scope, channel_id)
-    else
-      :ok
-    end
-  end
-
   defp load_channel_unread_counts(socket, workspace_id) do
     if connected?(socket) do
       Chat.list_unread_counts(socket.assigns.current_scope, workspace_id)
@@ -961,13 +1552,78 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
+  defp load_channel_read_summary(socket, workspace_id, channel_id) do
+    if connected?(socket) do
+      with {:ok, summaries} <-
+             Chat.list_channel_read_summaries(socket.assigns.current_scope, workspace_id) do
+        {:ok, Enum.find(summaries, &(&1.channel_id == channel_id))}
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp unread_divider_seq(%{unread_count: unread_count, first_unread_seq: first_unread_seq})
+       when unread_count > 0 do
+    first_unread_seq
+  end
+
+  defp unread_divider_seq(_summary), do: nil
+
+  defp clear_selected_channel_unread_ui(socket) do
+    socket
+    |> assign(:selected_channel_read_summary, nil)
+    |> assign(:unread_divider_seq, nil)
+    |> restream_visible_message_rows()
+  end
+
+  defp maybe_clear_selected_channel_unread_ui(socket, channel_id) do
+    if socket.assigns.selected_channel.id == channel_id do
+      clear_selected_channel_unread_ui(socket)
+    else
+      socket
+    end
+  end
+
+  defp clear_selected_channel_unread_ui_if_read(socket) do
+    case load_channel_read_summary(
+           socket,
+           socket.assigns.selected_workspace.id,
+           socket.assigns.selected_channel.id
+         ) do
+      {:ok, nil} ->
+        clear_selected_channel_unread_ui(socket)
+
+      {:ok, %{unread_count: 0}} ->
+        clear_selected_channel_unread_ui(socket)
+
+      {:ok, _summary} ->
+        socket
+
+      {:error, _reason} ->
+        socket
+    end
+  end
+
+  defp recalculate_selected_channel_unread_ui(socket) do
+    case load_channel_read_summary(
+           socket,
+           socket.assigns.selected_workspace.id,
+           socket.assigns.selected_channel.id
+         ) do
+      {:ok, selected_channel_read_summary} ->
+        socket
+        |> assign(:selected_channel_read_summary, selected_channel_read_summary)
+        |> assign(:unread_divider_seq, unread_divider_seq(selected_channel_read_summary))
+
+      {:error, _reason} ->
+        socket
+    end
+  end
+
   defp refresh_channel_unread_counts_for_message(socket, %{channel_id: channel_id})
        when channel_id == socket.assigns.selected_channel.id do
-    with :ok <- Chat.mark_channel_read(socket.assigns.current_scope, channel_id) do
-      refresh_channel_sidebar(socket, socket.assigns.selected_workspace.id)
-    else
-      {:error, _reason} -> socket
-    end
+    refresh_channel_sidebar(socket, socket.assigns.selected_workspace.id)
   end
 
   defp refresh_channel_unread_counts_for_message(socket, _payload) do
@@ -1028,6 +1684,42 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
     stream(socket, :channels, channels, reset: true)
   end
+
+  defp selected_channel_unread_count(channel_unread_counts, selected_channel) do
+    Map.get(channel_unread_counts, selected_channel.id, 0)
+  end
+
+  defp sticky_unread_actions?(
+         channel_unread_counts,
+         selected_channel,
+         unread_divider_seq,
+         message_rows_by_id
+       ) do
+    selected_channel_unread_count(channel_unread_counts, selected_channel) > 0 and
+      not rendered_unread_divider?(unread_divider_seq, message_rows_by_id)
+  end
+
+  defp rendered_unread_divider?(nil, _message_rows_by_id), do: false
+
+  defp rendered_unread_divider?(unread_divider_seq, message_rows_by_id) do
+    Enum.any?(message_rows_by_id, fn {_message_id, row} ->
+      row.message.seq == unread_divider_seq
+    end)
+  end
+
+  defp skip_to_latest_action?(%{has_newer?: has_newer?}), do: has_newer?
+  defp skip_to_latest_action?(_meta), do: false
+
+  defp parse_integer(value) when is_integer(value), do: {:ok, value}
+
+  defp parse_integer(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {integer, ""} -> {:ok, integer}
+      _invalid -> :error
+    end
+  end
+
+  defp parse_integer(_value), do: :error
 
   defp to_integer(value) when is_integer(value), do: value
   defp to_integer(value) when is_binary(value), do: String.to_integer(value)

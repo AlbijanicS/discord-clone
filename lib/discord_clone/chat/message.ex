@@ -4,6 +4,7 @@ defmodule DiscordClone.Chat.Message do
 
   schema "messages" do
     field :content, :string
+    field :seq, :integer
 
     belongs_to :channel, DiscordClone.Workspaces.Channel
     belongs_to :user, DiscordClone.Accounts.User
@@ -21,6 +22,8 @@ defmodule DiscordClone.Chat.Message do
     |> validate_length(:content, min: 1, max: 4_000)
     |> foreign_key_constraint(:channel_id)
     |> foreign_key_constraint(:user_id)
+    |> check_constraint(:seq, name: :messages_seq_positive)
+    |> unique_constraint(:seq, name: :messages_channel_id_seq_index)
   end
 
   defp normalize_content(content) when is_binary(content), do: String.trim(content)

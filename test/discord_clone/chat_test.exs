@@ -3,7 +3,17 @@ defmodule DiscordClone.ChatTest do
 
   alias DiscordClone.Chat
   alias DiscordClone.Accounts.User
-  alias DiscordClone.Chat.{ChannelRead, ChannelServer, Message, MessageReaction, WorkspaceServer}
+
+  alias DiscordClone.Chat.{
+    ChannelRead,
+    ChannelReadState,
+    ChannelServer,
+    ChannelUnreadSpan,
+    Message,
+    MessageReaction,
+    WorkspaceServer
+  }
+
   alias DiscordClone.Workspaces
   alias DiscordClone.Workspaces.Channel
   alias DiscordClone.Workspaces.WorkspaceMembership
@@ -16,6 +26,764 @@ defmodule DiscordClone.ChatTest do
 
       assert %Ecto.Changeset{} = changeset
       assert Ecto.Changeset.get_field(changeset, :content) == "hello"
+    end
+  end
+
+  describe "channel read-state storage" do
+    test "keeps one consistent unread summary per channel and user" do
+      scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      read_state =
+        Repo.get_by!(ChannelReadState,
+          channel_id: workspace.default_channel_id,
+          user_id: scope.user.id
+        )
+
+      assert read_state.unread_count == 0
+      assert is_nil(read_state.first_unread_seq)
+      assert is_nil(read_state.last_unread_seq)
+
+      duplicate_changeset =
+        ChannelReadState.changeset(%ChannelReadState{}, %{
+          channel_id: workspace.default_channel_id,
+          user_id: scope.user.id,
+          unread_count: 0
+        })
+
+      assert {:error, changeset} = Repo.insert(duplicate_changeset)
+      assert %{channel_id: ["has already been taken"]} = errors_on(changeset)
+
+      assert {:error, changeset} =
+               %ChannelReadState{}
+               |> ChannelReadState.changeset(%{
+                 channel_id: workspace.default_channel_id,
+                 user_id: member_scope.user.id,
+                 unread_count: 0,
+                 first_unread_seq: 1,
+                 last_unread_seq: 1
+               })
+               |> Repo.insert()
+
+      assert %{unread_count: ["requires nil unread bounds when zero"]} = errors_on(changeset)
+    end
+
+    test "stores non-overlapping unread spans for a channel and user" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert {:ok, _span} =
+               %ChannelUnreadSpan{}
+               |> ChannelUnreadSpan.changeset(%{
+                 channel_id: workspace.default_channel_id,
+                 user_id: scope.user.id,
+                 from_seq: 2,
+                 to_seq: 4
+               })
+               |> Repo.insert()
+
+      assert {:ok, _span} =
+               %ChannelUnreadSpan{}
+               |> ChannelUnreadSpan.changeset(%{
+                 channel_id: workspace.default_channel_id,
+                 user_id: scope.user.id,
+                 from_seq: 5,
+                 to_seq: 7
+               })
+               |> Repo.insert()
+
+      assert {:error, changeset} =
+               %ChannelUnreadSpan{}
+               |> ChannelUnreadSpan.changeset(%{
+                 channel_id: workspace.default_channel_id,
+                 user_id: scope.user.id,
+                 from_seq: 4,
+                 to_seq: 6
+               })
+               |> Repo.insert()
+
+      assert %{from_seq: ["overlaps an existing unread span"]} = errors_on(changeset)
+
+      assert {:error, changeset} =
+               %ChannelUnreadSpan{}
+               |> ChannelUnreadSpan.changeset(%{
+                 channel_id: workspace.default_channel_id,
+                 user_id: scope.user.id,
+                 from_seq: 9,
+                 to_seq: 8
+               })
+               |> Repo.insert()
+
+      assert %{from_seq: ["must be less than or equal to to seq"]} = errors_on(changeset)
+    end
+
+    test "associates unread storage with users and channels and cleans it up" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      Repo.insert!(
+        ChannelUnreadSpan.changeset(%ChannelUnreadSpan{}, %{
+          channel_id: workspace.default_channel_id,
+          user_id: scope.user.id,
+          from_seq: 3,
+          to_seq: 4
+        })
+      )
+
+      assert :channel_read_states in Channel.__schema__(:associations)
+      assert :channel_unread_spans in Channel.__schema__(:associations)
+      assert :channel_read_states in User.__schema__(:associations)
+      assert :channel_unread_spans in User.__schema__(:associations)
+
+      Repo.delete!(Repo.get!(Channel, workspace.default_channel_id))
+
+      refute Repo.get_by(ChannelReadState, channel_id: workspace.default_channel_id)
+      refute Repo.get_by(ChannelUnreadSpan, channel_id: workspace.default_channel_id)
+
+      {:ok, channel} = Workspaces.create_channel(scope, workspace.id, %{name: "release"})
+      member_scope = user_scope_fixture()
+      add_workspace_member!(workspace, member_scope)
+
+      Repo.insert!(
+        ChannelReadState.changeset(%ChannelReadState{}, %{
+          channel_id: channel.id,
+          user_id: member_scope.user.id,
+          unread_count: 1,
+          first_unread_seq: 1,
+          last_unread_seq: 1
+        })
+      )
+
+      Repo.insert!(
+        ChannelUnreadSpan.changeset(%ChannelUnreadSpan{}, %{
+          channel_id: channel.id,
+          user_id: member_scope.user.id,
+          from_seq: 1,
+          to_seq: 1
+        })
+      )
+
+      Repo.delete!(Repo.get!(User, member_scope.user.id))
+
+      refute Repo.get_by(ChannelReadState, user_id: member_scope.user.id)
+      refute Repo.get_by(ChannelUnreadSpan, user_id: member_scope.user.id)
+    end
+  end
+
+  describe "backfill_unread_ranges_from_channel_reads/1" do
+    test "backfills unread read state and spans from cursor reads" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, other_scope)
+
+      cursor_message =
+        insert_message!(
+          workspace.default_channel_id,
+          other_scope.user.id,
+          "already read",
+          ~U[2026-06-19 10:00:00Z]
+        )
+
+      first_unread =
+        insert_message!(
+          workspace.default_channel_id,
+          other_scope.user.id,
+          "please review",
+          ~U[2026-06-19 10:01:00Z]
+        )
+
+      last_unread =
+        insert_message!(
+          workspace.default_channel_id,
+          other_scope.user.id,
+          "one more thing",
+          ~U[2026-06-19 10:02:00Z]
+        )
+
+      put_channel_read!(workspace.default_channel_id, scope.user.id, cursor_message.id)
+
+      assert :ok = Chat.backfill_unread_ranges_from_channel_reads(workspace.id)
+
+      assert %ChannelReadState{} =
+               read_state =
+               Repo.get_by(ChannelReadState,
+                 channel_id: workspace.default_channel_id,
+                 user_id: scope.user.id
+               )
+
+      assert read_state.unread_count == 2
+      assert read_state.first_unread_seq == first_unread.seq
+      assert read_state.last_unread_seq == last_unread.seq
+
+      assert [
+               %ChannelUnreadSpan{
+                 from_seq: from_seq,
+                 to_seq: to_seq
+               }
+             ] =
+               Repo.all(
+                 from span in ChannelUnreadSpan,
+                   where:
+                     span.channel_id == ^workspace.default_channel_id and
+                       span.user_id == ^scope.user.id
+               )
+
+      assert {from_seq, to_seq} == {first_unread.seq, last_unread.seq}
+    end
+
+    test "creates zero-unread read states for cursor-after-latest and empty channels" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, empty_channel} = Workspaces.create_channel(scope, workspace.id, %{name: "empty"})
+      add_workspace_member!(workspace, other_scope)
+
+      latest_message =
+        insert_message!(
+          workspace.default_channel_id,
+          other_scope.user.id,
+          "already read",
+          ~U[2026-06-19 10:00:00Z]
+        )
+
+      put_channel_read!(workspace.default_channel_id, scope.user.id, latest_message.id)
+      put_channel_read!(empty_channel.id, scope.user.id, nil)
+
+      assert :ok = Chat.backfill_unread_ranges_from_channel_reads(workspace.id)
+
+      read_states =
+        Repo.all(
+          from read_state in ChannelReadState,
+            where: read_state.user_id == ^scope.user.id,
+            order_by: [asc: read_state.channel_id],
+            select:
+              {read_state.channel_id, read_state.unread_count, read_state.first_unread_seq,
+               read_state.last_unread_seq}
+        )
+
+      assert {workspace.default_channel_id, 0, nil, nil} in read_states
+      assert {empty_channel.id, 0, nil, nil} in read_states
+
+      refute Repo.exists?(
+               from span in ChannelUnreadSpan,
+                 where: span.user_id == ^scope.user.id
+             )
+    end
+
+    test "excludes own messages and includes nil-author messages after the cursor" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, other_scope)
+
+      cursor_message =
+        insert_message!(
+          workspace.default_channel_id,
+          other_scope.user.id,
+          "read",
+          ~U[2026-06-19 10:00:00Z]
+        )
+
+      first_unread =
+        insert_message!(
+          workspace.default_channel_id,
+          other_scope.user.id,
+          "from someone else",
+          ~U[2026-06-19 10:01:00Z]
+        )
+
+      own_message =
+        insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "my reply",
+          ~U[2026-06-19 10:02:00Z]
+        )
+
+      nil_author_message =
+        insert_message!(
+          workspace.default_channel_id,
+          nil,
+          "deleted author",
+          ~U[2026-06-19 10:03:00Z]
+        )
+
+      latest_unread =
+        insert_message!(
+          workspace.default_channel_id,
+          other_scope.user.id,
+          "still unread",
+          ~U[2026-06-19 10:04:00Z]
+        )
+
+      put_channel_read!(workspace.default_channel_id, scope.user.id, cursor_message.id)
+
+      assert :ok = Chat.backfill_unread_ranges_from_channel_reads(workspace.id)
+
+      assert %ChannelReadState{} =
+               read_state =
+               Repo.get_by(ChannelReadState,
+                 channel_id: workspace.default_channel_id,
+                 user_id: scope.user.id
+               )
+
+      assert read_state.unread_count == 3
+      assert read_state.first_unread_seq == first_unread.seq
+      assert read_state.last_unread_seq == latest_unread.seq
+
+      spans =
+        Repo.all(
+          from span in ChannelUnreadSpan,
+            where:
+              span.channel_id == ^workspace.default_channel_id and
+                span.user_id == ^scope.user.id,
+            order_by: [asc: span.from_seq],
+            select: {span.from_seq, span.to_seq}
+        )
+
+      assert spans == [
+               {first_unread.seq, first_unread.seq},
+               {nil_author_message.seq, latest_unread.seq}
+             ]
+
+      refute own_message.seq in Enum.flat_map(spans, fn {from_seq, to_seq} ->
+               Enum.to_list(from_seq..to_seq)
+             end)
+    end
+
+    test "uses membership time for missing and nil cursor rows without counting pre-join history" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, release_channel} =
+        Workspaces.create_channel(owner_scope, workspace.id, %{name: "release"})
+
+      old_general =
+        insert_message!(
+          workspace.default_channel_id,
+          owner_scope.user.id,
+          "old general",
+          ~U[2026-06-19 09:59:00Z]
+        )
+
+      old_release =
+        insert_message!(
+          release_channel.id,
+          owner_scope.user.id,
+          "old release",
+          ~U[2026-06-19 09:59:30Z]
+        )
+
+      membership =
+        workspace
+        |> add_workspace_member!(member_scope)
+        |> Ecto.Changeset.change(
+          inserted_at: ~U[2026-06-19 10:00:00Z],
+          updated_at: ~U[2026-06-19 10:00:00Z]
+        )
+        |> Repo.update!()
+
+      new_general =
+        insert_message!(
+          workspace.default_channel_id,
+          owner_scope.user.id,
+          "new general",
+          ~U[2026-06-19 10:01:00Z]
+        )
+
+      new_release =
+        insert_message!(
+          release_channel.id,
+          owner_scope.user.id,
+          "new release",
+          ~U[2026-06-19 10:02:00Z]
+        )
+
+      put_channel_read!(release_channel.id, member_scope.user.id, nil)
+
+      assert membership.inserted_at == ~U[2026-06-19 10:00:00Z]
+      assert :ok = Chat.backfill_unread_ranges_from_channel_reads(workspace.id)
+
+      spans =
+        Repo.all(
+          from span in ChannelUnreadSpan,
+            where: span.user_id == ^member_scope.user.id,
+            order_by: [asc: span.channel_id],
+            select: {span.channel_id, span.from_seq, span.to_seq}
+        )
+
+      assert spans == [
+               {workspace.default_channel_id, new_general.seq, new_general.seq},
+               {release_channel.id, new_release.seq, new_release.seq}
+             ]
+
+      read_states =
+        Repo.all(
+          from read_state in ChannelReadState,
+            where: read_state.user_id == ^member_scope.user.id,
+            select:
+              {read_state.channel_id, read_state.unread_count, read_state.first_unread_seq,
+               read_state.last_unread_seq}
+        )
+        |> Map.new(fn {channel_id, unread_count, first_seq, last_seq} ->
+          {channel_id, {unread_count, first_seq, last_seq}}
+        end)
+
+      assert read_states[workspace.default_channel_id] == {1, new_general.seq, new_general.seq}
+      assert read_states[release_channel.id] == {1, new_release.seq, new_release.seq}
+
+      refute old_general.seq in Enum.map(spans, fn {_channel_id, from_seq, _to_seq} ->
+               from_seq
+             end)
+
+      refute old_release.seq in Enum.map(spans, fn {_channel_id, from_seq, _to_seq} ->
+               from_seq
+             end)
+    end
+
+    test "can be run repeatedly without duplicating migrated read states or spans" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, other_scope)
+
+      cursor_message =
+        insert_message!(
+          workspace.default_channel_id,
+          other_scope.user.id,
+          "read",
+          ~U[2026-06-19 10:00:00Z]
+        )
+
+      unread_message =
+        insert_message!(
+          workspace.default_channel_id,
+          other_scope.user.id,
+          "unread",
+          ~U[2026-06-19 10:01:00Z]
+        )
+
+      put_channel_read!(workspace.default_channel_id, scope.user.id, cursor_message.id)
+
+      assert :ok = Chat.backfill_unread_ranges_from_channel_reads(workspace.id)
+      assert :ok = Chat.backfill_unread_ranges_from_channel_reads(workspace.id)
+
+      assert Repo.aggregate(
+               from(read_state in ChannelReadState,
+                 where:
+                   read_state.channel_id == ^workspace.default_channel_id and
+                     read_state.user_id == ^scope.user.id
+               ),
+               :count
+             ) == 1
+
+      assert [
+               %ChannelUnreadSpan{from_seq: from_seq, to_seq: to_seq}
+             ] =
+               Repo.all(
+                 from span in ChannelUnreadSpan,
+                   where:
+                     span.channel_id == ^workspace.default_channel_id and
+                       span.user_id == ^scope.user.id
+               )
+
+      assert {from_seq, to_seq} == {unread_message.seq, unread_message.seq}
+    end
+  end
+
+  describe "unread range workflows" do
+    test "adds an unread range and updates the read-state summary" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert {:ok, read_state} =
+               Chat.add_channel_unread_range(scope, workspace.default_channel_id, 2, 4)
+
+      assert read_state.unread_count == 3
+      assert read_state.first_unread_seq == 2
+      assert read_state.last_unread_seq == 4
+
+      assert [{2, 4}] = unread_spans(workspace.default_channel_id, scope.user.id)
+    end
+
+    test "merges adjacent and overlapping unread ranges" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(scope, workspace.default_channel_id, 2, 4)
+
+      assert {:ok, read_state} =
+               Chat.add_channel_unread_range(scope, workspace.default_channel_id, 4, 7)
+
+      assert read_state.unread_count == 6
+      assert read_state.first_unread_seq == 2
+      assert read_state.last_unread_seq == 7
+      assert [{2, 7}] = unread_spans(workspace.default_channel_id, scope.user.id)
+
+      assert {:ok, read_state} =
+               Chat.add_channel_unread_range(scope, workspace.default_channel_id, 8, 9)
+
+      assert read_state.unread_count == 8
+      assert read_state.first_unread_seq == 2
+      assert read_state.last_unread_seq == 9
+      assert [{2, 9}] = unread_spans(workspace.default_channel_id, scope.user.id)
+    end
+
+    test "subtracts an exact visible-read range and clears the summary" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, other_scope)
+      insert_messages!(workspace.default_channel_id, other_scope.user.id, 5)
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(scope, workspace.default_channel_id, 2, 4)
+
+      assert {:ok, read_state} =
+               Chat.subtract_visible_read_range(scope, workspace.default_channel_id, 2, 4)
+
+      assert read_state.unread_count == 0
+      assert is_nil(read_state.first_unread_seq)
+      assert is_nil(read_state.last_unread_seq)
+      assert [] = unread_spans(workspace.default_channel_id, scope.user.id)
+    end
+
+    test "subtracts from unread range edges and splits the middle" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, other_scope)
+      insert_messages!(workspace.default_channel_id, other_scope.user.id, 10)
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(scope, workspace.default_channel_id, 2, 9)
+
+      assert {:ok, read_state} =
+               Chat.subtract_visible_read_range(scope, workspace.default_channel_id, 2, 3)
+
+      assert read_state.unread_count == 6
+      assert read_state.first_unread_seq == 4
+      assert read_state.last_unread_seq == 9
+      assert [{4, 9}] = unread_spans(workspace.default_channel_id, scope.user.id)
+
+      assert {:ok, read_state} =
+               Chat.subtract_visible_read_range(scope, workspace.default_channel_id, 8, 9)
+
+      assert read_state.unread_count == 4
+      assert read_state.first_unread_seq == 4
+      assert read_state.last_unread_seq == 7
+      assert [{4, 7}] = unread_spans(workspace.default_channel_id, scope.user.id)
+
+      assert {:ok, read_state} =
+               Chat.subtract_visible_read_range(scope, workspace.default_channel_id, 5, 6)
+
+      assert read_state.unread_count == 2
+      assert read_state.first_unread_seq == 4
+      assert read_state.last_unread_seq == 7
+      assert [{4, 4}, {7, 7}] = unread_spans(workspace.default_channel_id, scope.user.id)
+    end
+
+    test "clears all unread ranges for a channel" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(scope, workspace.default_channel_id, 2, 4)
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(scope, workspace.default_channel_id, 8, 10)
+
+      assert {:ok, read_state} = Chat.clear_channel_unread(scope, workspace.default_channel_id)
+
+      assert read_state.unread_count == 0
+      assert is_nil(read_state.first_unread_seq)
+      assert is_nil(read_state.last_unread_seq)
+      assert [] = unread_spans(workspace.default_channel_id, scope.user.id)
+    end
+
+    test "broadcasts read-state changes but not duplicate visible-read no-ops" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, other_scope)
+      insert_messages!(workspace.default_channel_id, other_scope.user.id, 5)
+
+      assert :ok = Chat.subscribe_to_channel_read_state(scope, workspace.default_channel_id)
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(scope, workspace.default_channel_id, 2, 4)
+
+      assert_receive {:channel_read_state_changed,
+                      %{
+                        workspace_id: workspace_id,
+                        channel_id: channel_id,
+                        unread_count: 3,
+                        first_unread_seq: 2,
+                        last_unread_seq: 4
+                      }}
+
+      assert workspace_id == workspace.id
+      assert channel_id == workspace.default_channel_id
+
+      assert {:ok, _read_state} =
+               Chat.subtract_visible_read_range(scope, workspace.default_channel_id, 2, 3)
+
+      assert_receive {:channel_read_state_changed,
+                      %{
+                        workspace_id: workspace_id,
+                        channel_id: channel_id,
+                        unread_count: 1,
+                        first_unread_seq: 4,
+                        last_unread_seq: 4
+                      }}
+
+      assert workspace_id == workspace.id
+      assert channel_id == workspace.default_channel_id
+
+      [span_before_duplicate] = unread_span_records(workspace.default_channel_id, scope.user.id)
+
+      assert {:ok, _read_state} =
+               Chat.subtract_visible_read_range(scope, workspace.default_channel_id, 2, 3)
+
+      assert [^span_before_duplicate] =
+               unread_span_records(workspace.default_channel_id, scope.user.id)
+
+      refute_receive {:channel_read_state_changed, _payload}
+    end
+
+    test "publishes read-state changes only to the changed user's private topic" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, other_scope)
+      channel_id = workspace.default_channel_id
+
+      assert :ok = Chat.subscribe_to_channel_read_state(scope, channel_id)
+      assert :ok = Chat.subscribe_to_channel_read_state(other_scope, channel_id)
+
+      assert {:ok, _read_state} = Chat.add_channel_unread_range(scope, channel_id, 2, 4)
+
+      assert_receive {:channel_read_state_changed,
+                      %{
+                        workspace_id: workspace_id,
+                        channel_id: ^channel_id,
+                        unread_count: 3,
+                        first_unread_seq: 2,
+                        last_unread_seq: 4
+                      }}
+
+      assert workspace_id == workspace.id
+      refute_receive {:channel_read_state_changed, _payload}
+    end
+
+    test "validates access for unread range workflows" do
+      scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert Chat.add_channel_unread_range(nil, workspace.default_channel_id, 1, 1) ==
+               {:error, :unauthenticated}
+
+      assert Chat.subtract_visible_read_range(
+               %DiscordClone.Accounts.Scope{},
+               workspace.default_channel_id,
+               1,
+               1
+             ) ==
+               {:error, :unauthenticated}
+
+      assert Chat.clear_channel_unread(nil, workspace.default_channel_id) ==
+               {:error, :unauthenticated}
+
+      assert Chat.subscribe_to_channel_read_state(nil, workspace.default_channel_id) ==
+               {:error, :unauthenticated}
+
+      assert Chat.add_channel_unread_range(non_member_scope, workspace.default_channel_id, 1, 1) ==
+               {:error, :not_found}
+
+      assert Chat.subtract_visible_read_range(
+               non_member_scope,
+               workspace.default_channel_id,
+               1,
+               1
+             ) ==
+               {:error, :not_found}
+
+      assert Chat.clear_channel_unread(non_member_scope, workspace.default_channel_id) ==
+               {:error, :not_found}
+
+      assert Chat.subscribe_to_channel_read_state(non_member_scope, workspace.default_channel_id) ==
+               {:error, :not_found}
+    end
+
+    test "rejects invalid visible-read ranges" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, other_scope)
+      insert_messages!(workspace.default_channel_id, other_scope.user.id, 60)
+
+      assert Chat.subtract_visible_read_range(scope, workspace.default_channel_id, 5, 4) ==
+               {:error, :invalid_range}
+
+      assert Chat.subtract_visible_read_range(scope, workspace.default_channel_id, 0, 1) ==
+               {:error, :invalid_range}
+
+      assert Chat.subtract_visible_read_range(scope, workspace.default_channel_id, 60, 61) ==
+               {:error, :invalid_range}
+
+      assert Chat.subtract_visible_read_range(scope, workspace.default_channel_id, 1, 51) ==
+               {:error, :range_too_large}
+
+      assert %ChannelReadState{unread_count: 0} =
+               Repo.get_by(ChannelReadState,
+                 channel_id: workspace.default_channel_id,
+                 user_id: scope.user.id
+               )
+    end
+
+    test "rejects invalid added unread ranges" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert Chat.add_channel_unread_range(scope, workspace.default_channel_id, 0, 1) ==
+               {:error, :invalid_range}
+
+      assert Chat.add_channel_unread_range(scope, workspace.default_channel_id, 4, 3) ==
+               {:error, :invalid_range}
+
+      assert %ChannelReadState{unread_count: 0} =
+               Repo.get_by(ChannelReadState,
+                 channel_id: workspace.default_channel_id,
+                 user_id: scope.user.id
+               )
+    end
+
+    test "creates a missing read-state row for valid no-op visible reads" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, other_scope)
+      insert_messages!(workspace.default_channel_id, other_scope.user.id, 3)
+
+      assert {:ok, read_state} =
+               Chat.subtract_visible_read_range(scope, workspace.default_channel_id, 1, 1)
+
+      assert read_state.unread_count == 0
+      assert is_nil(read_state.first_unread_seq)
+      assert is_nil(read_state.last_unread_seq)
+      assert [] = unread_spans(workspace.default_channel_id, scope.user.id)
+
+      assert %ChannelReadState{unread_count: 0} =
+               Repo.get_by(ChannelReadState,
+                 channel_id: workspace.default_channel_id,
+                 user_id: scope.user.id
+               )
     end
   end
 
@@ -147,6 +915,52 @@ defmodule DiscordClone.ChatTest do
       refute last_read_message_id == release_message.id
     end
 
+    test "does not reset existing unread range state" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, release_channel} =
+        Workspaces.create_channel(owner_scope, workspace.id, %{name: "release"})
+
+      add_workspace_member!(workspace, member_scope)
+
+      Repo.insert!(
+        ChannelReadState.changeset(%ChannelReadState{}, %{
+          channel_id: release_channel.id,
+          user_id: member_scope.user.id,
+          unread_count: 2,
+          first_unread_seq: 3,
+          last_unread_seq: 4,
+          last_viewed_anchor_seq: 2
+        })
+      )
+
+      Repo.insert!(
+        ChannelUnreadSpan.changeset(%ChannelUnreadSpan{}, %{
+          channel_id: release_channel.id,
+          user_id: member_scope.user.id,
+          from_seq: 3,
+          to_seq: 4
+        })
+      )
+
+      assert :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      assert %ChannelReadState{
+               unread_count: 2,
+               first_unread_seq: 3,
+               last_unread_seq: 4,
+               last_viewed_anchor_seq: 2
+             } =
+               Repo.get_by(ChannelReadState,
+                 channel_id: release_channel.id,
+                 user_id: member_scope.user.id
+               )
+
+      assert unread_spans(release_channel.id, member_scope.user.id) == [{3, 4}]
+    end
+
     test "removes read rows when a channel is deleted" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
@@ -213,51 +1027,50 @@ defmodule DiscordClone.ChatTest do
   end
 
   describe "list_unread_counts/2" do
-    test "counts newer messages from other users and ignores the current user's messages" do
+    test "lists workspace read-state summaries for the current user" do
       scope = user_scope_fixture()
       other_scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
       {:ok, release_channel} = Workspaces.create_channel(scope, workspace.id, %{name: "release"})
+      {:ok, quiet_channel} = Workspaces.create_channel(scope, workspace.id, %{name: "quiet"})
 
       add_workspace_member!(workspace, other_scope)
 
-      older_message =
-        insert_message!(
-          release_channel.id,
-          other_scope.user.id,
-          "already read",
-          ~U[2026-06-19 10:00:00Z]
-        )
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(scope, release_channel.id, 3, 5)
 
-      put_channel_read!(release_channel.id, scope.user.id, older_message.id)
+      assert {:ok, summaries} = Chat.list_channel_read_summaries(scope, workspace.id)
 
-      insert_message!(
-        release_channel.id,
-        other_scope.user.id,
-        "please review",
-        ~U[2026-06-19 10:01:00Z]
-      )
+      assert %{
+               workspace_id: workspace_id,
+               channel_id: channel_id,
+               unread_count: 3,
+               first_unread_seq: 3,
+               last_unread_seq: 5
+             } = Enum.find(summaries, &(&1.channel_id == release_channel.id))
 
-      insert_message!(
-        release_channel.id,
-        other_scope.user.id,
-        "one more thing",
-        ~U[2026-06-19 10:02:00Z]
-      )
+      assert workspace_id == workspace.id
+      assert channel_id == release_channel.id
 
-      insert_message!(
-        release_channel.id,
-        scope.user.id,
-        "my follow-up",
-        ~U[2026-06-19 10:03:00Z]
-      )
+      assert %{
+               workspace_id: workspace.id,
+               channel_id: quiet_channel.id,
+               unread_count: 0,
+               first_unread_seq: nil,
+               last_unread_seq: nil
+             } in summaries
 
-      insert_message!(
-        workspace.default_channel_id,
-        scope.user.id,
-        "quiet self note",
-        ~U[2026-06-19 10:04:00Z]
-      )
+      assert Enum.all?(summaries, &(&1.workspace_id == workspace.id))
+      assert Enum.all?(summaries, &Map.has_key?(&1, :first_unread_seq))
+    end
+
+    test "sources unread badge counts from read-state summaries" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, release_channel} = Workspaces.create_channel(scope, workspace.id, %{name: "release"})
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(scope, release_channel.id, 2, 3)
 
       assert {:ok, unread_counts} = Chat.list_unread_counts(scope, workspace.id)
       assert unread_counts == %{release_channel.id => 2}
@@ -269,8 +1082,12 @@ defmodule DiscordClone.ChatTest do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
 
       assert Chat.list_unread_counts(nil, workspace.id) == {:error, :unauthenticated}
+      assert Chat.list_channel_read_summaries(nil, workspace.id) == {:error, :unauthenticated}
 
       assert Chat.list_unread_counts(%DiscordClone.Accounts.Scope{}, workspace.id) ==
+               {:error, :unauthenticated}
+
+      assert Chat.list_channel_read_summaries(%DiscordClone.Accounts.Scope{}, workspace.id) ==
                {:error, :unauthenticated}
     end
 
@@ -287,120 +1104,235 @@ defmodule DiscordClone.ChatTest do
       )
 
       assert Chat.list_unread_counts(non_member_scope, workspace.id) == {:error, :not_found}
+
+      assert Chat.list_channel_read_summaries(non_member_scope, workspace.id) ==
+               {:error, :not_found}
     end
 
     test "counts only channels in the requested workspace" do
       scope = user_scope_fixture()
-      other_scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
       {:ok, other_workspace} = Workspaces.create_workspace(scope, %{name: "Library"})
 
-      add_workspace_member!(workspace, other_scope)
-      add_workspace_member!(other_workspace, other_scope)
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(scope, workspace.default_channel_id, 1, 1)
 
-      assert :ok = Chat.initialize_workspace_reads_for_user(scope.user.id, workspace.id)
-      assert :ok = Chat.initialize_workspace_reads_for_user(scope.user.id, other_workspace.id)
-
-      post_membership_time = DateTime.add(DateTime.utc_now(:second), 10, :second)
-
-      insert_message!(
-        workspace.default_channel_id,
-        other_scope.user.id,
-        "foundry update",
-        post_membership_time
-      )
-
-      other_workspace_message =
-        insert_message!(
-          other_workspace.default_channel_id,
-          other_scope.user.id,
-          "library update",
-          DateTime.add(post_membership_time, 1, :second)
-        )
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(scope, other_workspace.default_channel_id, 1, 1)
 
       assert {:ok, unread_counts} = Chat.list_unread_counts(scope, workspace.id)
       assert unread_counts == %{workspace.default_channel_id => 1}
       refute Map.has_key?(unread_counts, other_workspace.default_channel_id)
-      refute other_workspace_message.channel_id == workspace.default_channel_id
+    end
+  end
+
+  describe "open_channel/2" do
+    test "validates access and records the channel open time" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      assert Chat.open_channel(nil, channel_id) == {:error, :unauthenticated}
+
+      assert Chat.open_channel(%DiscordClone.Accounts.Scope{}, channel_id) ==
+               {:error, :unauthenticated}
+
+      assert Chat.open_channel(non_member_scope, channel_id) == {:error, :not_found}
+
+      before_open = DateTime.utc_now(:second)
+
+      assert {:ok, %{channel: %Channel{id: ^channel_id}, read_state: read_state}} =
+               Chat.open_channel(owner_scope, channel_id)
+
+      assert %ChannelReadState{last_opened_at: %DateTime{} = last_opened_at} = read_state
+      assert DateTime.compare(last_opened_at, before_open) in [:eq, :gt]
+
+      assert %ChannelReadState{last_opened_at: ^last_opened_at} =
+               Repo.get_by(ChannelReadState, channel_id: channel_id, user_id: owner_scope.user.id)
     end
 
-    test "counts unread messages whose author has been deleted" do
+    test "preserves unread state and does not update the old read cursor" do
       scope = user_scope_fixture()
       other_scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
       add_workspace_member!(workspace, other_scope)
+      [first_message | _messages] = insert_messages!(channel_id, other_scope.user.id, 5)
 
-      older_message =
-        insert_message!(
-          workspace.default_channel_id,
-          other_scope.user.id,
-          "read before author deletion",
-          ~U[2026-06-19 10:00:00Z]
-        )
+      put_channel_read!(channel_id, scope.user.id, first_message.id)
 
-      put_channel_read!(workspace.default_channel_id, scope.user.id, older_message.id)
+      assert {:ok, _read_state} = Chat.add_channel_unread_range(scope, channel_id, 2, 4)
 
-      deleted_author_message =
-        insert_message!(
-          workspace.default_channel_id,
-          other_scope.user.id,
-          "author will be deleted",
-          ~U[2026-06-19 10:01:00Z]
-        )
+      old_cursor_before =
+        Repo.get_by!(ChannelRead, channel_id: channel_id, user_id: scope.user.id)
 
-      other_user = Repo.get!(User, other_scope.user.id)
-      Repo.delete!(other_user)
+      spans_before = unread_spans(channel_id, scope.user.id)
 
-      assert Repo.get!(Message, deleted_author_message.id).user_id == nil
+      assert {:ok, %{read_state: read_state}} = Chat.open_channel(scope, channel_id)
 
-      assert Chat.list_unread_counts(scope, workspace.id) ==
-               {:ok, %{workspace.default_channel_id => 1}}
+      assert read_state.unread_count == 3
+      assert read_state.first_unread_seq == 2
+      assert read_state.last_unread_seq == 4
+      assert unread_spans(channel_id, scope.user.id) == spans_before
+      assert Chat.list_unread_counts(scope, workspace.id) == {:ok, %{channel_id => 3}}
+
+      assert %ChannelRead{} =
+               old_cursor_after =
+               Repo.get_by(ChannelRead, channel_id: channel_id, user_id: scope.user.id)
+
+      assert old_cursor_after.last_read_message_id == old_cursor_before.last_read_message_id
+      assert old_cursor_after.updated_at == old_cursor_before.updated_at
     end
 
-    test "falls back to membership time for missing and nil read cursors" do
+    test "lands at the first unread sequence for small unread backlogs" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      assert {:ok, _read_state} = Chat.add_channel_unread_range(scope, channel_id, 3, 5)
+
+      assert {:ok, %{landing: landing}} = Chat.open_channel(scope, channel_id)
+
+      assert landing == %{type: :sequence, reason: :first_unread, target_seq: 3}
+    end
+
+    test "lands near recent unread messages for large unread backlogs" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      assert {:ok, _read_state} = Chat.add_channel_unread_range(scope, channel_id, 1, 75)
+
+      assert {:ok, %{landing: landing}} = Chat.open_channel(scope, channel_id)
+
+      assert landing == %{type: :sequence, reason: :recent_unread, target_seq: 55}
+    end
+
+    test "lands at the last viewed anchor when there is no unread state" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      Repo.get_by!(ChannelReadState, channel_id: channel_id, user_id: scope.user.id)
+      |> ChannelReadState.changeset(%{last_viewed_anchor_seq: 12})
+      |> Repo.update!()
+
+      assert {:ok, %{landing: landing}} = Chat.open_channel(scope, channel_id)
+
+      assert landing == %{type: :sequence, reason: :last_viewed_anchor, target_seq: 12}
+    end
+
+    test "lands at latest when there is no unread state or anchor" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert {:ok, %{landing: landing}} = Chat.open_channel(scope, workspace.default_channel_id)
+
+      assert landing == %{type: :latest, reason: :latest}
+    end
+
+    test "uses unread landing before the last viewed anchor" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      Repo.get_by!(ChannelReadState, channel_id: channel_id, user_id: scope.user.id)
+      |> ChannelReadState.changeset(%{last_viewed_anchor_seq: 20})
+      |> Repo.update!()
+
+      assert {:ok, _read_state} = Chat.add_channel_unread_range(scope, channel_id, 4, 6)
+
+      assert {:ok, %{landing: landing}} = Chat.open_channel(scope, channel_id)
+
+      assert landing == %{type: :sequence, reason: :first_unread, target_seq: 4}
+    end
+  end
+
+  describe "persist_channel_anchor/3" do
+    test "stores a member's last viewed anchor sequence" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      messages = insert_messages!(workspace.default_channel_id, scope.user.id, 12)
+
+      assert {:ok, %ChannelReadState{last_viewed_anchor_seq: 7}} =
+               Chat.persist_channel_anchor(scope, workspace.default_channel_id, 7)
+
+      anchored_message = Enum.at(messages, 6)
+
+      assert %ChannelReadState{last_viewed_anchor_seq: 7} =
+               Repo.get_by(ChannelReadState,
+                 channel_id: workspace.default_channel_id,
+                 user_id: scope.user.id
+               )
+
+      assert anchored_message.seq == 7
+    end
+
+    test "validates access and channel sequence bounds" do
       owner_scope = user_scope_fixture()
-      member_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      insert_messages!(workspace.default_channel_id, owner_scope.user.id, 3)
 
-      {:ok, release_channel} =
-        Workspaces.create_channel(owner_scope, workspace.id, %{name: "release"})
+      assert Chat.persist_channel_anchor(nil, workspace.default_channel_id, 1) ==
+               {:error, :unauthenticated}
 
-      insert_message!(
-        workspace.default_channel_id,
-        owner_scope.user.id,
-        "old general history",
-        ~U[2026-06-19 10:00:00Z]
-      )
+      assert Chat.persist_channel_anchor(
+               %DiscordClone.Accounts.Scope{},
+               workspace.default_channel_id,
+               1
+             ) == {:error, :unauthenticated}
 
-      insert_message!(
-        release_channel.id,
-        owner_scope.user.id,
-        "old release history",
-        ~U[2026-06-19 10:01:00Z]
-      )
+      assert Chat.persist_channel_anchor(non_member_scope, workspace.default_channel_id, 1) ==
+               {:error, :not_found}
 
-      add_workspace_member!(workspace, member_scope)
+      assert Chat.persist_channel_anchor(owner_scope, workspace.default_channel_id, 0) ==
+               {:error, :invalid_sequence}
 
-      put_channel_read!(release_channel.id, member_scope.user.id, nil)
+      assert Chat.persist_channel_anchor(owner_scope, workspace.default_channel_id, 4) ==
+               {:error, :invalid_sequence}
 
-      post_membership_time = DateTime.add(DateTime.utc_now(:second), 10, :second)
+      assert Chat.persist_channel_anchor(owner_scope, workspace.default_channel_id, "2") ==
+               {:error, :invalid_sequence}
 
-      insert_message!(
-        workspace.default_channel_id,
-        owner_scope.user.id,
-        "new general update",
-        post_membership_time
-      )
+      assert %ChannelReadState{last_viewed_anchor_seq: nil} =
+               Repo.get_by(ChannelReadState,
+                 channel_id: workspace.default_channel_id,
+                 user_id: owner_scope.user.id
+               )
+    end
 
-      insert_message!(
-        release_channel.id,
-        owner_scope.user.id,
-        "new release update",
-        DateTime.add(post_membership_time, 1, :second)
-      )
+    test "does not modify unread spans, unread counts, or the old read cursor" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+      add_workspace_member!(workspace, other_scope)
+      [first_message | _messages] = insert_messages!(channel_id, other_scope.user.id, 8)
 
-      assert Chat.list_unread_counts(member_scope, workspace.id) ==
-               {:ok, %{workspace.default_channel_id => 1, release_channel.id => 1}}
+      put_channel_read!(channel_id, scope.user.id, first_message.id)
+
+      assert {:ok, _read_state} = Chat.add_channel_unread_range(scope, channel_id, 3, 5)
+
+      spans_before = unread_spans(channel_id, scope.user.id)
+      counts_before = Chat.list_unread_counts(scope, workspace.id)
+
+      old_cursor_before =
+        Repo.get_by!(ChannelRead, channel_id: channel_id, user_id: scope.user.id)
+
+      assert {:ok, %ChannelReadState{last_viewed_anchor_seq: 6}} =
+               Chat.persist_channel_anchor(scope, channel_id, 6)
+
+      assert unread_spans(channel_id, scope.user.id) == spans_before
+      assert Chat.list_unread_counts(scope, workspace.id) == counts_before
+
+      assert %ChannelRead{} =
+               old_cursor_after =
+               Repo.get_by(ChannelRead, channel_id: channel_id, user_id: scope.user.id)
+
+      assert old_cursor_after.last_read_message_id == old_cursor_before.last_read_message_id
+      assert old_cursor_after.updated_at == old_cursor_before.updated_at
     end
   end
 
@@ -429,6 +1361,8 @@ defmodule DiscordClone.ChatTest do
         "new release update",
         ~U[2026-06-19 10:01:00Z]
       )
+
+      assert {:ok, _read_state} = Chat.add_channel_unread_range(scope, release_channel.id, 2, 2)
 
       assert Chat.list_unread_counts(scope, workspace.id) == {:ok, %{release_channel.id => 1}}
 
@@ -568,6 +1502,8 @@ defmodule DiscordClone.ChatTest do
         "durable read state",
         DateTime.add(DateTime.utc_now(:second), 10, :second)
       )
+
+      assert {:ok, _read_state} = Chat.add_channel_unread_range(scope, channel_id, 1, 1)
 
       assert {:ok, %{^channel_id => 1}} = Chat.list_unread_counts(scope, workspace.id)
       assert :ok = Chat.mark_channel_read(scope, channel_id)
@@ -1386,6 +2322,291 @@ defmodule DiscordClone.ChatTest do
   end
 
   describe "list_recent_messages/2" do
+    test "jumps to the oldest unread message window without clearing unread state" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, other_scope)
+      messages = insert_messages!(workspace.default_channel_id, other_scope.user.id, 80)
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(scope, workspace.default_channel_id, 30, 34)
+
+      assert {:ok, %{messages: window_messages, meta: meta}} =
+               Chat.jump_to_oldest_unread(scope, workspace.default_channel_id)
+
+      assert Enum.map(window_messages, & &1.id) ==
+               messages |> Enum.slice(14, 51) |> Enum.map(& &1.id)
+
+      assert Enum.map(window_messages, & &1.seq) == Enum.to_list(15..65)
+
+      assert meta == %{
+               oldest_seq: 15,
+               newest_seq: 65,
+               latest_seq: 80,
+               has_older?: true,
+               has_newer?: true,
+               at_latest?: false,
+               at_or_near_latest?: true
+             }
+
+      assert Chat.list_unread_counts(scope, workspace.id) ==
+               {:ok, %{workspace.default_channel_id => 5}}
+
+      assert unread_spans(workspace.default_channel_id, scope.user.id) == [{30, 34}]
+    end
+
+    test "jumps to latest by clearing unread state and updating the viewed anchor" do
+      scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, other_scope)
+      messages = insert_messages!(workspace.default_channel_id, other_scope.user.id, 80)
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(scope, workspace.default_channel_id, 30, 34)
+
+      assert {:ok, %{messages: window_messages, meta: meta}} =
+               Chat.jump_to_latest(scope, workspace.default_channel_id)
+
+      assert Enum.map(window_messages, & &1.id) ==
+               messages |> Enum.drop(30) |> Enum.map(& &1.id)
+
+      assert Enum.map(window_messages, & &1.seq) == Enum.to_list(31..80)
+
+      assert meta == %{
+               oldest_seq: 31,
+               newest_seq: 80,
+               latest_seq: 80,
+               has_older?: true,
+               has_newer?: false,
+               at_latest?: true,
+               at_or_near_latest?: true
+             }
+
+      assert Chat.list_unread_counts(scope, workspace.id) == {:ok, %{}}
+      assert unread_spans(workspace.default_channel_id, scope.user.id) == []
+
+      assert %ChannelReadState{last_viewed_anchor_seq: 80} =
+               Repo.get_by(ChannelReadState,
+                 channel_id: workspace.default_channel_id,
+                 user_id: scope.user.id
+               )
+    end
+
+    test "requires authenticated workspace membership for explicit read actions" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      assert Chat.jump_to_oldest_unread(nil, workspace.default_channel_id) ==
+               {:error, :unauthenticated}
+
+      assert Chat.jump_to_latest(%DiscordClone.Accounts.Scope{}, workspace.default_channel_id) ==
+               {:error, :unauthenticated}
+
+      assert Chat.jump_to_oldest_unread(non_member_scope, workspace.default_channel_id) ==
+               {:error, :not_found}
+
+      assert Chat.jump_to_latest(non_member_scope, workspace.default_channel_id) ==
+               {:error, :not_found}
+    end
+
+    test "loads the latest sequence window oldest-to-newest with metadata" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, other_channel} = Workspaces.create_channel(scope, workspace.id, %{name: "off-topic"})
+
+      messages = insert_messages!(workspace.default_channel_id, scope.user.id, 55)
+
+      insert_message!(
+        other_channel.id,
+        scope.user.id,
+        "wrong channel",
+        ~U[2026-06-19 11:00:00Z]
+      )
+
+      assert {:ok, %{messages: window_messages, meta: meta}} =
+               Chat.load_latest_message_window(scope, workspace.default_channel_id)
+
+      assert Enum.map(window_messages, & &1.id) ==
+               messages |> Enum.drop(5) |> Enum.map(& &1.id)
+
+      assert Enum.map(window_messages, & &1.seq) == Enum.to_list(6..55)
+      assert Enum.all?(window_messages, &Ecto.assoc_loaded?(&1.user))
+
+      assert meta == %{
+               oldest_seq: 6,
+               newest_seq: 55,
+               latest_seq: 55,
+               has_older?: true,
+               has_newer?: false,
+               at_latest?: true,
+               at_or_near_latest?: true
+             }
+    end
+
+    test "loads a targeted sequence window with a biased before and after split" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      messages = insert_messages!(workspace.default_channel_id, scope.user.id, 100)
+
+      assert {:ok, %{messages: window_messages, meta: meta}} =
+               Chat.load_message_window_around(scope, workspace.default_channel_id, 40)
+
+      assert Enum.map(window_messages, & &1.id) ==
+               messages |> Enum.slice(24, 51) |> Enum.map(& &1.id)
+
+      assert Enum.map(window_messages, & &1.seq) == Enum.to_list(25..75)
+
+      assert meta == %{
+               oldest_seq: 25,
+               newest_seq: 75,
+               latest_seq: 100,
+               has_older?: true,
+               has_newer?: true,
+               at_latest?: false,
+               at_or_near_latest?: true
+             }
+    end
+
+    test "loads older sequence history before the current oldest sequence" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      messages = insert_messages!(workspace.default_channel_id, scope.user.id, 80)
+
+      assert {:ok, %{messages: window_messages, meta: meta}} =
+               Chat.load_older_message_window(scope, workspace.default_channel_id, 26)
+
+      assert Enum.map(window_messages, & &1.id) ==
+               messages |> Enum.take(25) |> Enum.map(& &1.id)
+
+      assert Enum.map(window_messages, & &1.seq) == Enum.to_list(1..25)
+
+      assert meta == %{
+               oldest_seq: 1,
+               newest_seq: 25,
+               latest_seq: 80,
+               has_older?: false,
+               has_newer?: true,
+               at_latest?: false,
+               at_or_near_latest?: false
+             }
+    end
+
+    test "loads newer sequence history after the current newest sequence" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      messages = insert_messages!(workspace.default_channel_id, scope.user.id, 80)
+
+      assert {:ok, %{messages: window_messages, meta: meta}} =
+               Chat.load_newer_message_window(scope, workspace.default_channel_id, 25)
+
+      assert Enum.map(window_messages, & &1.id) ==
+               messages |> Enum.slice(25, 50) |> Enum.map(& &1.id)
+
+      assert Enum.map(window_messages, & &1.seq) == Enum.to_list(26..75)
+
+      assert meta == %{
+               oldest_seq: 26,
+               newest_seq: 75,
+               latest_seq: 80,
+               has_older?: true,
+               has_newer?: true,
+               at_latest?: false,
+               at_or_near_latest?: true
+             }
+    end
+
+    test "loads an empty latest sequence window with useful metadata" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, empty_channel} = Workspaces.create_channel(scope, workspace.id, %{name: "empty"})
+
+      assert {:ok, %{messages: [], meta: meta}} =
+               Chat.load_latest_message_window(scope, empty_channel.id)
+
+      assert meta == %{
+               oldest_seq: nil,
+               newest_seq: nil,
+               latest_seq: 0,
+               has_older?: false,
+               has_newer?: false,
+               at_latest?: true,
+               at_or_near_latest?: true
+             }
+    end
+
+    test "clamps targeted windows near the beginning and end of channel history" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      insert_messages!(workspace.default_channel_id, scope.user.id, 20)
+
+      assert {:ok, %{messages: first_window, meta: first_meta}} =
+               Chat.load_message_window_around(scope, workspace.default_channel_id, 2)
+
+      assert Enum.map(first_window, & &1.seq) == Enum.to_list(1..20)
+
+      assert first_meta == %{
+               oldest_seq: 1,
+               newest_seq: 20,
+               latest_seq: 20,
+               has_older?: false,
+               has_newer?: false,
+               at_latest?: true,
+               at_or_near_latest?: true
+             }
+
+      assert {:ok, %{messages: last_window, meta: last_meta}} =
+               Chat.load_message_window_around(scope, workspace.default_channel_id, 19)
+
+      assert Enum.map(last_window, & &1.seq) == Enum.to_list(4..20)
+
+      assert last_meta == %{
+               oldest_seq: 4,
+               newest_seq: 20,
+               latest_seq: 20,
+               has_older?: true,
+               has_newer?: false,
+               at_latest?: true,
+               at_or_near_latest?: true
+             }
+    end
+
+    test "requires authenticated workspace membership for sequence windows" do
+      owner_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      assert Chat.load_latest_message_window(nil, workspace.default_channel_id) ==
+               {:error, :unauthenticated}
+
+      assert Chat.load_message_window_around(
+               %DiscordClone.Accounts.Scope{},
+               workspace.default_channel_id,
+               1
+             ) ==
+               {:error, :unauthenticated}
+
+      assert Chat.load_older_message_window(nil, workspace.default_channel_id, 2) ==
+               {:error, :unauthenticated}
+
+      assert Chat.load_newer_message_window(nil, workspace.default_channel_id, 1) ==
+               {:error, :unauthenticated}
+
+      assert Chat.load_latest_message_window(non_member_scope, workspace.default_channel_id) ==
+               {:error, :not_found}
+
+      assert Chat.load_message_window_around(non_member_scope, workspace.default_channel_id, 1) ==
+               {:error, :not_found}
+
+      assert Chat.load_older_message_window(non_member_scope, workspace.default_channel_id, 2) ==
+               {:error, :not_found}
+
+      assert Chat.load_newer_message_window(non_member_scope, workspace.default_channel_id, 1) ==
+               {:error, :not_found}
+    end
+
     test "loads the latest channel messages oldest-to-newest with authors preloaded" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
@@ -1675,6 +2896,250 @@ defmodule DiscordClone.ChatTest do
       assert Repo.get!(Message, message.id).content == "hello channel"
     end
 
+    test "assigns increasing sequence numbers in the selected channel" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      assert {:ok, first_message} =
+               Chat.send_message(scope, channel_id, %{"content" => "first sequenced"})
+
+      assert {:ok, second_message} =
+               Chat.send_message(scope, channel_id, %{"content" => "second sequenced"})
+
+      assert first_message.seq == 1
+      assert second_message.seq == 2
+      assert Repo.get!(Channel, channel_id).last_message_seq == 2
+    end
+
+    test "creates unread state for channel recipients when a message is sent" do
+      sender_scope = user_scope_fixture()
+      recipient_scope = user_scope_fixture()
+      second_recipient_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(sender_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, recipient_scope)
+      add_workspace_member!(workspace, second_recipient_scope)
+      channel_id = workspace.default_channel_id
+
+      assert {:ok, message} =
+               Chat.send_message(sender_scope, channel_id, %{"content" => "hello recipient"})
+
+      for recipient_scope <- [recipient_scope, second_recipient_scope] do
+        assert %ChannelReadState{} =
+                 recipient_read_state =
+                 Repo.get_by(ChannelReadState,
+                   channel_id: channel_id,
+                   user_id: recipient_scope.user.id
+                 )
+
+        assert recipient_read_state.unread_count == 1
+        assert recipient_read_state.first_unread_seq == message.seq
+        assert recipient_read_state.last_unread_seq == message.seq
+        assert [{message.seq, message.seq}] == unread_spans(channel_id, recipient_scope.user.id)
+      end
+
+      refute Repo.get_by(ChannelUnreadSpan, channel_id: channel_id, user_id: sender_scope.user.id)
+    end
+
+    test "does not clear the sender's older unread spans when sending" do
+      sender_scope = user_scope_fixture()
+      recipient_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(sender_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, recipient_scope)
+      channel_id = workspace.default_channel_id
+
+      insert_messages!(channel_id, recipient_scope.user.id, 3)
+      assert {:ok, _read_state} = Chat.add_channel_unread_range(sender_scope, channel_id, 1, 3)
+
+      assert {:ok, message} =
+               Chat.send_message(sender_scope, channel_id, %{
+                 "content" => "reply without clearing"
+               })
+
+      assert unread_spans(channel_id, sender_scope.user.id) == [{1, 3}]
+
+      assert %ChannelReadState{} =
+               sender_read_state =
+               Repo.get_by(ChannelReadState,
+                 channel_id: channel_id,
+                 user_id: sender_scope.user.id
+               )
+
+      assert sender_read_state.unread_count == 3
+      assert sender_read_state.first_unread_seq == 1
+      assert sender_read_state.last_unread_seq == 3
+      refute {message.seq, message.seq} in unread_spans(channel_id, sender_scope.user.id)
+    end
+
+    test "merges sent messages into adjacent recipient unread spans" do
+      sender_scope = user_scope_fixture()
+      recipient_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(sender_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, recipient_scope)
+      channel_id = workspace.default_channel_id
+
+      insert_messages!(channel_id, sender_scope.user.id, 2)
+      assert {:ok, _read_state} = Chat.add_channel_unread_range(recipient_scope, channel_id, 1, 2)
+
+      assert {:ok, message} =
+               Chat.send_message(sender_scope, channel_id, %{"content" => "third unread"})
+
+      assert message.seq == 3
+      assert unread_spans(channel_id, recipient_scope.user.id) == [{1, 3}]
+
+      assert %ChannelReadState{} =
+               recipient_read_state =
+               Repo.get_by(ChannelReadState,
+                 channel_id: channel_id,
+                 user_id: recipient_scope.user.id
+               )
+
+      assert recipient_read_state.unread_count == 3
+      assert recipient_read_state.first_unread_seq == 1
+      assert recipient_read_state.last_unread_seq == 3
+    end
+
+    test "broadcasts recipient read-state changes before shared message refreshes" do
+      sender_scope = user_scope_fixture()
+      recipient_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(sender_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, recipient_scope)
+      channel_id = workspace.default_channel_id
+
+      assert :ok = Chat.subscribe_to_channel_read_state(recipient_scope, channel_id)
+      assert :ok = Chat.subscribe_to_workspace_messages(recipient_scope, workspace.id)
+
+      assert {:ok, message} =
+               Chat.send_message(sender_scope, channel_id, %{
+                 "content" => "broadcast after fanout"
+               })
+
+      assert_receive {:channel_read_state_changed,
+                      %{
+                        workspace_id: workspace_id,
+                        channel_id: ^channel_id,
+                        unread_count: 1,
+                        first_unread_seq: first_unread_seq,
+                        last_unread_seq: last_unread_seq
+                      }}
+
+      assert workspace_id == workspace.id
+      assert first_unread_seq == message.seq
+      assert last_unread_seq == message.seq
+
+      assert_receive {:workspace_message_created, payload}
+
+      assert payload == %{
+               workspace_id: workspace.id,
+               channel_id: channel_id,
+               message_id: message.id,
+               user_id: sender_scope.user.id
+             }
+    end
+
+    test "keeps sequence numbers isolated per channel" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, release_channel} = Workspaces.create_channel(scope, workspace.id, %{name: "release"})
+
+      assert {:ok, general_message} =
+               Chat.send_message(scope, workspace.default_channel_id, %{
+                 "content" => "general first"
+               })
+
+      assert {:ok, release_message} =
+               Chat.send_message(scope, release_channel.id, %{"content" => "release first"})
+
+      assert general_message.seq == 1
+      assert release_message.seq == 1
+      assert Repo.get!(Channel, workspace.default_channel_id).last_message_seq == 1
+      assert Repo.get!(Channel, release_channel.id).last_message_seq == 1
+    end
+
+    test "assigns unique contiguous sequences for concurrent sends in the same channel" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      messages =
+        1..12
+        |> Task.async_stream(
+          fn index ->
+            assert {:ok, message} =
+                     Chat.send_message(scope, channel_id, %{
+                       "content" => "concurrent #{index}"
+                     })
+
+            message
+          end,
+          max_concurrency: 12,
+          timeout: :infinity
+        )
+        |> Enum.map(fn {:ok, message} -> message end)
+
+      assert messages |> Enum.map(& &1.seq) |> Enum.sort() == Enum.to_list(1..12)
+      assert Repo.get!(Channel, channel_id).last_message_seq == 12
+
+      persisted_sequences =
+        Message
+        |> where([message], message.channel_id == ^channel_id)
+        |> order_by([message], asc: message.seq)
+        |> select([message], message.seq)
+        |> Repo.all()
+
+      assert persisted_sequences == Enum.to_list(1..12)
+    end
+
+    test "rejects duplicate sequence numbers in the same channel" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      assert {:ok, message} =
+               Chat.send_message(scope, channel_id, %{"content" => "already sequenced"})
+
+      duplicate_changeset =
+        %Message{}
+        |> Message.changeset(%{
+          "channel_id" => channel_id,
+          "user_id" => scope.user.id,
+          "content" => "duplicate sequence"
+        })
+        |> Ecto.Changeset.put_change(:seq, message.seq)
+
+      assert {:error, changeset} = Repo.insert(duplicate_changeset)
+      assert %{seq: ["has already been taken"]} = errors_on(changeset)
+    end
+
+    test "rejects invalid sequence boundaries" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      message_changeset =
+        %Message{}
+        |> Message.changeset(%{
+          "channel_id" => channel_id,
+          "user_id" => scope.user.id,
+          "content" => "invalid sequence"
+        })
+        |> Ecto.Changeset.put_change(:seq, 0)
+
+      assert {:error, changeset} = Repo.insert(message_changeset)
+      assert %{seq: ["is invalid"]} = errors_on(changeset)
+
+      channel_changeset =
+        Channel
+        |> Repo.get!(channel_id)
+        |> Ecto.Changeset.change(last_message_seq: -1)
+        |> Ecto.Changeset.check_constraint(:last_message_seq,
+          name: :channels_last_message_seq_non_negative
+        )
+
+      assert {:error, changeset} = Repo.update(channel_changeset)
+      assert %{last_message_seq: ["is invalid"]} = errors_on(changeset)
+    end
+
     test "advances the sender read cursor to the sent message" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
@@ -1898,13 +3363,46 @@ defmodule DiscordClone.ChatTest do
   end
 
   defp insert_message!(channel_id, user_id, content, inserted_at) do
-    Repo.insert!(%Message{
-      channel_id: channel_id,
-      user_id: user_id,
-      content: content,
-      inserted_at: inserted_at,
-      updated_at: inserted_at
-    })
+    {:ok, message} =
+      Repo.transaction(fn ->
+        channel =
+          Repo.one!(
+            from channel in Channel,
+              where: channel.id == ^channel_id,
+              lock: "FOR UPDATE"
+          )
+
+        seq = channel.last_message_seq + 1
+
+        message =
+          Repo.insert!(%Message{
+            channel_id: channel_id,
+            user_id: user_id,
+            content: content,
+            seq: seq,
+            inserted_at: inserted_at,
+            updated_at: inserted_at
+          })
+
+        channel
+        |> Ecto.Changeset.change(last_message_seq: seq)
+        |> Repo.update!()
+
+        message
+      end)
+
+    message
+  end
+
+  defp insert_messages!(channel_id, user_id, count) do
+    for index <- 1..count do
+      insert_message!(
+        channel_id,
+        user_id,
+        "message #{index}",
+        DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+      )
+    end
   end
 
   defp now, do: DateTime.utc_now(:second)
@@ -1933,6 +3431,23 @@ defmodule DiscordClone.ChatTest do
         |> Ecto.Changeset.change(last_read_message_id: last_read_message_id)
         |> Repo.update!()
     end
+  end
+
+  defp unread_spans(channel_id, user_id) do
+    Repo.all(
+      from span in ChannelUnreadSpan,
+        where: span.channel_id == ^channel_id and span.user_id == ^user_id,
+        order_by: [asc: span.from_seq],
+        select: {span.from_seq, span.to_seq}
+    )
+  end
+
+  defp unread_span_records(channel_id, user_id) do
+    Repo.all(
+      from span in ChannelUnreadSpan,
+        where: span.channel_id == ^channel_id and span.user_id == ^user_id,
+        order_by: [asc: span.from_seq]
+    )
   end
 
   defp add_workspace_member!(workspace, scope) do
