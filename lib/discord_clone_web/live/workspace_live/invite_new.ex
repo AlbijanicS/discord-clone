@@ -1,6 +1,7 @@
 defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
   use DiscordCloneWeb, :live_view
 
+  alias DiscordClone.Chat
   alias DiscordClone.Chat.WorkspacePresence, as: PresenceEvents
   alias DiscordClone.Workspaces
   alias DiscordCloneWeb.WorkspaceLive.Presence
@@ -13,7 +14,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
          :ok <- authorize_invite_screen(socket.assigns.current_scope, workspace),
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
          {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id),
-         {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id) do
+         {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id),
+         {:ok, channel_unread_counts} <- load_channel_unread_counts(socket, workspace.id),
+         :ok <- subscribe_to_channel_read_states(socket, channels) do
       socket =
         socket
         |> assign(:selected_workspace, workspace)
@@ -27,6 +30,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
         |> assign(:context_menu_position, nil)
         |> assign(:invite_form, invite_form())
         |> assign(:invite_url, nil)
+        |> assign(:channel_unread_counts, channel_unread_counts)
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
         |> Presence.prepare_workspace(workspace.id, members)
@@ -69,12 +73,21 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
         invite_url={@invite_url}
         main_state={:invite}
         online_user_ids={@online_user_ids}
+        channel_unread_counts={@channel_unread_counts}
       />
     </Layouts.app>
     """
   end
 
   @impl true
+  def handle_info({:channel_read_state_changed, %{workspace_id: workspace_id}}, socket) do
+    if socket.assigns.selected_workspace.id == workspace_id do
+      {:noreply, refresh_channel_sidebar(socket, workspace_id)}
+    else
+      {:noreply, socket}
+    end
+  end
+
   def handle_info(event, socket) do
     case PresenceEvents.to_presence_event(event) do
       {:ok, :user_joined, payload} -> {:noreply, Presence.user_joined(socket, payload)}
@@ -197,6 +210,42 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
 
   defp invite_url(invite) do
     DiscordCloneWeb.Endpoint.url() <> "/invites/#{invite.code}"
+  end
+
+  defp load_channel_unread_counts(socket, workspace_id) do
+    if connected?(socket) do
+      Chat.list_unread_counts(socket.assigns.current_scope, workspace_id)
+    else
+      {:ok, %{}}
+    end
+  end
+
+  defp subscribe_to_channel_read_states(socket, channels) do
+    if connected?(socket) do
+      Enum.reduce_while(channels, :ok, fn channel, :ok ->
+        case Chat.subscribe_to_channel_read_state(socket.assigns.current_scope, channel.id) do
+          :ok -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+    else
+      :ok
+    end
+  end
+
+  defp refresh_channel_sidebar(socket, workspace_id) do
+    {:ok, channels} = Workspaces.list_channels(socket.assigns.current_scope, workspace_id)
+
+    socket =
+      case Chat.list_unread_counts(socket.assigns.current_scope, workspace_id) do
+        {:ok, channel_unread_counts} ->
+          assign(socket, :channel_unread_counts, channel_unread_counts)
+
+        {:error, _reason} ->
+          socket
+      end
+
+    stream(socket, :channels, channels, reset: true)
   end
 
   defp authorize_invite_screen(current_scope, workspace) do

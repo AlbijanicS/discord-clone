@@ -26,7 +26,7 @@ defmodule DiscordClone.Chat do
   alias DiscordClone.Repo
   alias DiscordClone.Workspaces.{Channel, WorkspaceMembership}
 
-  @recent_message_limit 50
+  @recent_message_limit 100
   @message_page_size 50
   @small_unread_landing_limit 50
   @large_unread_landing_backtrack div(@message_page_size, 2) - 5
@@ -325,10 +325,7 @@ defmodule DiscordClone.Chat do
 
   def mark_channel_read(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
-      latest_message_id = latest_message_id_for_channel(channel_id)
-
-      with {:ok, _channel_read} <- upsert_channel_read(user_id, channel_id, latest_message_id),
-           {:ok, _read_state} <-
+      with {:ok, _read_state} <-
              mutate_channel_unread_spans(user_id, channel, fn _spans -> [] end) do
         :ok
       end
@@ -644,8 +641,7 @@ defmodule DiscordClone.Chat do
            {:ok, _channel} <-
              locked_channel
              |> Ecto.Changeset.change(last_message_seq: next_seq)
-             |> Repo.update(),
-           {:ok, _channel_read} <- upsert_channel_read(user_id, channel_id, message.id) do
+             |> Repo.update() do
         read_state_changes = apply_message_unread_fanout!(channel, user_id, next_seq)
         {message, read_state_changes}
       else
@@ -1118,14 +1114,6 @@ defmodule DiscordClone.Chat do
         channel_id: message.channel_id,
         last_read_message_id: max(message.id)
       }
-  end
-
-  defp latest_message_id_for_channel(channel_id) do
-    Repo.one(
-      from message in Message,
-        where: message.channel_id == ^channel_id,
-        select: max(message.id)
-    )
   end
 
   defp backfill_channel_read_state!(read_state_row) do

@@ -1,6 +1,17 @@
 # Unread Counts With Channel Reads PRD
 
-Status: ready-for-agent
+Status: superseded by `docs/unread_ranges_prd.md`
+
+> This v1 cursor-read PRD is retained for historical context only. The active
+> unread model is the range-based design in `docs/unread_ranges_prd.md`: unread
+> spans are the canonical source of truth, read states are summary rows for
+> sidebar counts and landing decisions, and `channel_reads` cursor rows are only
+> compatibility/backfill input. The route placement decision is unchanged: the
+> Channel LiveViews remain in the existing `:browser` pipeline and existing
+> `live_session :require_authenticated_user`. Chat unread workflows keep the
+> same privacy shape: unauthenticated scopes return
+> `{:error, :unauthenticated}`, while logged-in non-members receive
+> `{:error, :not_found}`.
 
 This PRD comes from a `grill-me` design session for the first Phase 10 feature.
 The project is using a docs-first fallback for now, so this document is the

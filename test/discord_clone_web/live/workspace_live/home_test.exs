@@ -189,6 +189,158 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
              )
     end
 
+    test "syncs sidebar read state across same-user channel sessions", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      {_owner_scope, workspace, sibling_channel} =
+        workspace_with_sibling_unread!(member_scope)
+
+      path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+      other_conn = build_conn() |> log_in_user(member_scope.user)
+
+      {:ok, reading_view, _html} = live(conn, path)
+      {:ok, synced_view, _html} = live(other_conn, path)
+
+      assert has_element?(reading_view, "#channel-#{sibling_channel.id}-unread-badge", "1")
+      assert has_element?(synced_view, "#channel-#{sibling_channel.id}-unread-badge", "1")
+
+      reading_view
+      |> element("#channel-#{sibling_channel.id}-actions")
+      |> render_click()
+
+      reading_view
+      |> element("#channel-#{sibling_channel.id}-mark-read")
+      |> render_click()
+
+      refute has_element?(reading_view, "#channel-#{sibling_channel.id}-unread-badge")
+      refute has_element?(synced_view, "#channel-#{sibling_channel.id}-unread-badge")
+    end
+
+    test "keeps private read-state events isolated between different users", %{
+      conn: unread_conn,
+      scope: unread_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      other_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      other_conn = build_conn() |> log_in_user(other_scope.user)
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, sibling_channel} =
+        Workspaces.create_channel(owner_scope, workspace.id, %{name: "ops"})
+
+      add_workspace_member!(workspace, unread_scope)
+      add_workspace_member!(workspace, other_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(unread_scope.user.id, workspace.id)
+      :ok = Chat.initialize_workspace_reads_for_user(other_scope.user.id, workspace.id)
+
+      {:ok, _message} =
+        Chat.send_message(owner_scope, sibling_channel.id, %{content: "ops update"})
+
+      path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+      {:ok, unread_view, _html} = live(unread_conn, path)
+      {:ok, other_view, _html} = live(other_conn, path)
+
+      assert has_element?(unread_view, "#channel-#{sibling_channel.id}-unread-badge", "1")
+      assert has_element?(other_view, "#channel-#{sibling_channel.id}-unread-badge", "1")
+
+      other_view
+      |> element("#channel-#{sibling_channel.id}-actions")
+      |> render_click()
+
+      other_view
+      |> element("#channel-#{sibling_channel.id}-mark-read")
+      |> render_click()
+
+      assert has_element?(unread_view, "#channel-#{sibling_channel.id}-unread-badge", "1")
+      refute has_element?(other_view, "#channel-#{sibling_channel.id}-unread-badge")
+    end
+
+    test "clears selected-channel unread UI across same-user channel sessions", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      for index <- 1..80 do
+        insert_message!(
+          workspace.default_channel_id,
+          owner_scope.user.id,
+          "general update #{index}",
+          DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+        )
+      end
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(member_scope, workspace.default_channel_id, 10, 12)
+
+      path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+      other_conn = build_conn() |> log_in_user(member_scope.user)
+
+      {:ok, reading_view, _html} = live(conn, path)
+      {:ok, synced_view, _html} = live(other_conn, path)
+
+      assert has_element?(reading_view, "#channel-unread-divider[data-unread-divider-seq='10']")
+      assert has_element?(synced_view, "#channel-unread-divider[data-unread-divider-seq='10']")
+
+      reading_view
+      |> element("#channel-#{workspace.default_channel_id}-actions")
+      |> render_click()
+
+      reading_view
+      |> element("#channel-#{workspace.default_channel_id}-mark-read")
+      |> render_click()
+
+      refute has_element?(reading_view, "#selected-channel-unread-actions")
+      refute has_element?(reading_view, "#channel-unread-divider")
+      refute has_element?(synced_view, "#selected-channel-unread-actions")
+      refute has_element?(synced_view, "#channel-unread-divider")
+    end
+
+    test "recalculates selected-channel unread UI across same-user channel sessions", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      add_workspace_member!(workspace, member_scope)
+      :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
+
+      for index <- 1..80 do
+        insert_message!(
+          workspace.default_channel_id,
+          owner_scope.user.id,
+          "general update #{index}",
+          DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+        )
+      end
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(member_scope, workspace.default_channel_id, 10, 12)
+
+      path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+      other_conn = build_conn() |> log_in_user(member_scope.user)
+
+      {:ok, reading_view, _html} = live(conn, path)
+      {:ok, synced_view, _html} = live(other_conn, path)
+
+      assert has_element?(reading_view, "#channel-unread-divider[data-unread-divider-seq='10']")
+      assert has_element?(synced_view, "#channel-unread-divider[data-unread-divider-seq='10']")
+
+      render_hook(reading_view, "visible_read_observed", %{
+        "ranges" => [%{"from_seq" => 10, "to_seq" => 10}]
+      })
+
+      assert has_element?(reading_view, "#channel-unread-divider[data-unread-divider-seq='10']")
+      assert has_element?(synced_view, "#channel-unread-divider[data-unread-divider-seq='11']")
+    end
+
     test "starts disconnected channel render with no unread badges", %{
       conn: conn,
       scope: member_scope
@@ -2108,6 +2260,27 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-#{message.id}-author", scope.user.username)
     end
 
+    test "ignores blank message submits without showing composer errors", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      view
+      |> form("#message-composer-form", message: %{content: "   "})
+      |> render_submit()
+
+      assert Repo.aggregate(Message, :count) == 0
+      assert has_element?(view, "#message-composer-form")
+      refute has_element?(view, "#message_content.input-error")
+      refute has_element?(view, "#message-composer-form", "can't be blank")
+      refute_push_event(view, "clear_message_composer", %{input_id: _input_id})
+      refute_push_event(view, "scroll_channel_messages_to_bottom", %{container_id: _container_id})
+    end
+
     test "groups a sent live message with the current newest same-author message", %{
       conn: conn,
       scope: scope
@@ -2738,6 +2911,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute has_element?(view, "#message-#{hd(messages).id}")
 
       render_hook(view, "load_older_messages", %{
+        "anchor_offset_top" => 112.5,
+        "anchor_row_id" => "message-#{recent_cursor.id}",
         "container_id" => "channel-messages",
         "scroll_height" => 1_600,
         "scroll_top" => 320
@@ -2760,7 +2935,11 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-#{recent_cursor.id}[data-message-row='compact']")
       refute has_element?(view, "#load-older-messages")
 
+      recent_cursor_row_id = "message-#{recent_cursor.id}"
+
       assert_push_event(view, "preserve_channel_messages_scroll", %{
+        anchor_offset_top: 112.5,
+        anchor_row_id: ^recent_cursor_row_id,
         container_id: "channel-messages",
         previous_scroll_height: 1600,
         previous_scroll_top: 320
@@ -2768,6 +2947,42 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       refute_push_event(view, "scroll_channel_messages_to_bottom", %{
         container_id: _container_id
+      })
+    end
+
+    test "top-edge loading accepts fractional browser scroll offsets", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      messages =
+        for index <- 1..55 do
+          insert_message!(
+            workspace.default_channel_id,
+            scope.user.id,
+            "fractional message #{index}",
+            DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+          )
+        end
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      refute has_element?(view, "#message-#{hd(messages).id}")
+
+      render_hook(view, "load_older_messages", %{
+        "container_id" => "channel-messages",
+        "scroll_height" => 5_425,
+        "scroll_top" => 64.5
+      })
+
+      assert has_element?(view, "#message-#{hd(messages).id}")
+
+      assert_push_event(view, "preserve_channel_messages_scroll", %{
+        container_id: "channel-messages",
+        previous_scroll_height: 5425,
+        previous_scroll_top: 64.5
       })
     end
 
@@ -2836,6 +3051,52 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
         previous_scroll_height: 1601,
         previous_scroll_top: 320
       })
+    end
+
+    test "top-edge loading prunes reaction summaries for trimmed messages", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      messages =
+        for index <- 1..350 do
+          insert_message!(
+            workspace.default_channel_id,
+            scope.user.id,
+            "reaction bounded message #{index}",
+            DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+          )
+        end
+
+      Repo.get_by!(ChannelReadState,
+        channel_id: workspace.default_channel_id,
+        user_id: scope.user.id
+      )
+      |> ChannelReadState.changeset(%{last_viewed_anchor_seq: 275})
+      |> Repo.update!()
+
+      trimmed_message = Enum.at(messages, 309)
+      assert {:ok, _reaction} = Chat.toggle_reaction(scope, trimmed_message.id, "👍")
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#message-#{trimmed_message.id}-reaction-0", "👍 1")
+
+      for page <- 1..5 do
+        render_hook(view, "load_older_messages", %{
+          "container_id" => "channel-messages",
+          "scroll_height" => 1_600 + page,
+          "scroll_top" => 320
+        })
+      end
+
+      refute has_element?(view, "#message-#{trimmed_message.id}")
+      assert {:ok, _deleted_reaction} = Chat.toggle_reaction(scope, trimmed_message.id, "👍")
+
+      refute has_element?(view, "#message-#{trimmed_message.id}")
+      refute has_element?(view, "#message-#{trimmed_message.id}-reaction-0")
     end
 
     test "bottom-edge loading continues from the visible boundary after newer rows were trimmed",
@@ -2942,6 +3203,53 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
              )
 
       refute has_element?(view, "#message-#{List.last(messages).id}-content", "paged message 120")
+    end
+
+    test "bottom-edge loading accepts fractional browser scroll offsets", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      messages =
+        for index <- 1..120 do
+          insert_message!(
+            workspace.default_channel_id,
+            scope.user.id,
+            "fractional newer message #{index}",
+            DateTime.add(~U[2026-06-19 10:00:00Z], index, :second)
+          )
+        end
+
+      Repo.get_by!(ChannelReadState,
+        channel_id: workspace.default_channel_id,
+        user_id: scope.user.id
+      )
+      |> ChannelReadState.changeset(%{last_viewed_anchor_seq: 20})
+      |> Repo.update!()
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      refute has_element?(view, "#message-#{List.last(messages).id}-content")
+
+      render_hook(view, "load_newer_messages", %{
+        "anchor_offset_top" => 96.25,
+        "anchor_row_id" => "message-#{Enum.at(messages, 19).id}",
+        "container_id" => "channel-messages",
+        "scroll_top" => 64.5
+      })
+
+      assert has_element?(view, "#message-#{Enum.at(messages, 104).id}-content")
+
+      anchor_row_id = "message-#{Enum.at(messages, 19).id}"
+
+      assert_push_event(view, "restore_channel_messages_scroll", %{
+        anchor_offset_top: 96.25,
+        anchor_row_id: ^anchor_row_id,
+        container_id: "channel-messages",
+        previous_scroll_top: 64.5
+      })
     end
 
     test "bottom-edge loading trims older rendered messages when the window exceeds the cap", %{
@@ -3919,6 +4227,39 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute has_element?(view, "#channel-#{workspace.default_channel_id}[aria-current='page']")
       assert has_element?(view, "#workspace-invite-create-form")
       assert Repo.aggregate(WorkspaceInvite, :count) == 0
+    end
+
+    test "syncs sidebar read state across invite and channel sessions", %{
+      conn: invite_conn,
+      scope: member_scope
+    } do
+      {_owner_scope, workspace, sibling_channel} =
+        workspace_with_sibling_unread!(member_scope)
+
+      workspace = set_invite_policy!(workspace, "members_can_invite")
+      channel_conn = build_conn() |> log_in_user(member_scope.user)
+
+      {:ok, invite_view, _html} = live(invite_conn, ~p"/workspaces/#{workspace.id}/invites/new")
+
+      {:ok, channel_view, _html} =
+        live(
+          channel_conn,
+          ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+        )
+
+      assert has_element?(invite_view, "#channel-#{sibling_channel.id}-unread-badge", "1")
+      assert has_element?(channel_view, "#channel-#{sibling_channel.id}-unread-badge", "1")
+
+      channel_view
+      |> element("#channel-#{sibling_channel.id}-actions")
+      |> render_click()
+
+      channel_view
+      |> element("#channel-#{sibling_channel.id}-mark-read")
+      |> render_click()
+
+      refute has_element?(invite_view, "#channel-#{sibling_channel.id}-unread-badge")
+      refute has_element?(channel_view, "#channel-#{sibling_channel.id}-unread-badge")
     end
 
     test "renders durable workspace members in the invite shell", %{

@@ -17,39 +17,49 @@ observable UI outcomes, then run the project precommit alias.
 
 ## Acceptance criteria
 
-- [ ] Chat tests cover sequence assignment, span merge/subtract, visible-read
+- [x] Chat tests cover sequence assignment, span merge/subtract, visible-read
       validation, send fanout, read actions, landing decisions, and
       sequence-window loading.
-- [ ] Workspaces tests cover read-state initialization and cleanup for
+- [x] Workspaces tests cover read-state initialization and cleanup for
       Workspace creation, invite acceptance, Channel creation, and leaving a
       Workspace.
-- [ ] Channel LiveView tests cover unread-preserving open, small and large
+- [x] Channel LiveView tests cover unread-preserving open, small and large
       unread landings, automatic pagination, read actions, divider behavior,
       sticky actions, sidebar mark-read, and cross-session sync.
-- [ ] Channel LiveView tests cover selected-Channel incoming Messages while the
+- [x] Channel LiveView tests cover selected-Channel incoming Messages while the
       User is at latest and while the User is reading older history, proving no
       forced scroll or accidental read clear.
-- [ ] Channel LiveView and hook tests cover visible-read observation with
+- [x] Channel LiveView and hook tests cover visible-read observation with
       container-rooted visibility, tall Message rows, focus/visibility pauses,
       LiveView patch cleanup, and rendered-window validation.
-- [ ] Windowing tests prove the 300-Message cap prunes stream items and all
+- [x] Windowing tests prove the 300-Message cap prunes stream items and all
       per-Message assigns such as row metadata and reaction summaries.
-- [ ] Hook behavior is verified at the highest practical level available in
+- [x] Hook behavior is verified at the highest practical level available in
       the project, with small deterministic hooks and server event-contract
       tests where full browser coverage is not present.
-- [ ] Tests use stable DOM IDs with `element/2`, `has_element?/2`, and related
+- [x] Tests use stable DOM IDs with `element/2`, `has_element?/2`, and related
       LiveView helpers instead of raw HTML assertions.
-- [ ] Documentation reflects that unread spans are canonical and read states
+- [x] Documentation reflects that unread spans are canonical and read states
       are summary state.
-- [ ] Documentation captures the chosen Chat unread error semantics:
+- [x] Documentation captures the chosen Chat unread error semantics:
       unauthenticated scopes return `{:error, :unauthenticated}` and logged-in
       non-members return `{:error, :not_found}`.
-- [ ] Documentation preserves the unchanged route placement:
+- [x] Documentation preserves the unchanged route placement:
       `:browser` pipeline and `live_session :require_authenticated_user`.
-- [ ] Existing v1 cursor-unread docs are either clearly superseded or linked to
+- [x] Existing v1 cursor-unread docs are either clearly superseded or linked to
       the range PRD to avoid implementer confusion.
-- [ ] Focused Chat, Workspaces, and Channel LiveView tests pass.
-- [ ] `mix precommit` passes.
+- [x] Focused Chat, Workspaces, and Channel LiveView tests pass.
+- [x] `mix precommit` passes.
+
+## Final pass notes
+
+- Added LiveView regression coverage proving rendered-window trimming keeps
+  reaction-summary state pruned for removed Messages.
+- Marked the v1 cursor unread PRD and issue list as superseded by the
+  range-based unread PRD, while preserving the unchanged route placement and
+  Chat unread error semantics.
+- Verified focused Chat, Workspaces, and Channel LiveView tests, then ran
+  `mix precommit`.
 
 ## Blocked by
 

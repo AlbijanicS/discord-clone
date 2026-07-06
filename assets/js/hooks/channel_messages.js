@@ -7,7 +7,12 @@ const ChannelMessages = {
     this.visibleReadBatchSize = 50
     this.loadingOlder = false
     this.loadingNewer = false
+    this.suppressNextScrollLoad = false
+    this.suppressHistoryLoadingUntil = 0
     this.scrollAnchorTimer = null
+    this.applyScrollTargetTimer = null
+    this.applyScrollTargetRetryUntil = 0
+    this.pendingScrollTargetKey = null
     this.lastSentAnchorSeq = null
     this.observedMessageRowIds = new Set()
     this.observedMessageSeqs = new Set()
@@ -16,7 +21,17 @@ const ChannelMessages = {
     this.visibleReadFlushTimer = null
     this.visibleReadObserver = null
     this.handleScroll = () => {
-      requestAnimationFrame(() => this.maybeLoadHistory())
+      const suppressingProgrammaticScroll = Date.now() < this.suppressHistoryLoadingUntil
+
+      if (this.suppressNextScrollLoad && suppressingProgrammaticScroll) {
+        this.suppressNextScrollLoad = false
+      } else if (suppressingProgrammaticScroll) {
+        this.suppressNextScrollLoad = false
+      } else {
+        this.suppressNextScrollLoad = false
+        requestAnimationFrame(() => this.maybeLoadHistory())
+      }
+
       this.scheduleScrollAnchor()
     }
     this.handleVisibilityChange = () => this.handleActiveStateChanged()
@@ -40,6 +55,8 @@ const ChannelMessages = {
 
     this.handleEvent("preserve_channel_messages_scroll", ({
       container_id,
+      anchor_offset_top,
+      anchor_row_id,
       previous_scroll_height,
       previous_scroll_top,
     }) => {
@@ -50,8 +67,37 @@ const ChannelMessages = {
       }
 
       requestAnimationFrame(() => {
+        this.suppressProgrammaticHistoryLoading(700)
+
+        if (restoreScrollAnchor(container, anchor_row_id, anchor_offset_top)) {
+          return
+        }
+
         const addedHeight = container.scrollHeight - previous_scroll_height
         container.scrollTop = previous_scroll_top + Math.max(addedHeight, 0)
+      })
+    })
+
+    this.handleEvent("restore_channel_messages_scroll", ({
+      anchor_offset_top,
+      anchor_row_id,
+      container_id,
+      previous_scroll_top,
+    }) => {
+      const container = document.getElementById(container_id)
+
+      if (!container) {
+        return
+      }
+
+      requestAnimationFrame(() => {
+        this.suppressProgrammaticHistoryLoading(700)
+
+        if (restoreScrollAnchor(container, anchor_row_id, anchor_offset_top)) {
+          return
+        }
+
+        container.scrollTop = previous_scroll_top
       })
     })
 
@@ -61,6 +107,8 @@ const ChannelMessages = {
       this.scheduleScrollAnchor()
     })
 
+    this.suppressProgrammaticHistoryLoading(1000)
+    this.scheduleApplyScrollTarget()
     this.syncVisibleReadRows()
     this.scheduleScrollAnchor()
   },
@@ -68,6 +116,7 @@ const ChannelMessages = {
   updated() {
     this.cancelScrollAnchor()
     this.cancelVisibleReadTimers()
+    this.scheduleApplyScrollTarget()
     this.syncVisibleReadRows()
 
     if (this.el.dataset.loadingOlder !== "true") {
@@ -87,6 +136,7 @@ const ChannelMessages = {
     window.removeEventListener("focus", this.handleWindowFocus)
     window.removeEventListener("blur", this.handleWindowBlur)
     this.cancelScrollAnchor()
+    this.cancelApplyScrollTarget()
     this.cancelVisibleReadTimers()
     this.cancelVisibleReadFlush()
 
@@ -96,8 +146,40 @@ const ChannelMessages = {
   },
 
   maybeLoadHistory() {
+    if (Date.now() < this.suppressHistoryLoadingUntil) {
+      return
+    }
+
     this.maybeLoadOlder()
     this.maybeLoadNewer()
+  },
+
+  suppressProgrammaticHistoryLoading(durationMs = 750) {
+    this.suppressNextScrollLoad = true
+    this.suppressHistoryLoadingUntil = Date.now() + durationMs
+  },
+
+  scheduleApplyScrollTarget() {
+    if (this.applyScrollTargetTimer) {
+      return
+    }
+
+    this.applyScrollTargetTimer = window.setTimeout(() => {
+      this.applyScrollTargetTimer = null
+      requestAnimationFrame(() => this.applyScrollTarget())
+    }, 0)
+  },
+
+  retryApplyScrollTarget() {
+    if (Date.now() > this.applyScrollTargetRetryUntil) {
+      return
+    }
+
+    this.suppressProgrammaticHistoryLoading(250)
+    this.applyScrollTargetTimer = window.setTimeout(() => {
+      this.applyScrollTargetTimer = null
+      this.applyScrollTarget()
+    }, 50)
   },
 
   scheduleScrollAnchor() {
@@ -132,7 +214,9 @@ const ChannelMessages = {
     this.loadingOlder = true
 
     this.pushEvent("load_older_messages", {
+      ...scrollAnchorPayload(this.el),
       container_id: this.el.id,
+      client_height: this.el.clientHeight,
       scroll_height: this.el.scrollHeight,
       scroll_top: this.el.scrollTop,
     }, () => {
@@ -155,10 +239,59 @@ const ChannelMessages = {
     this.loadingNewer = true
 
     this.pushEvent("load_newer_messages", {
+      ...scrollAnchorPayload(this.el),
       container_id: this.el.id,
+      client_height: this.el.clientHeight,
+      scroll_height: this.el.scrollHeight,
+      scroll_top: this.el.scrollTop,
     }, () => {
       this.loadingNewer = false
     })
+  },
+
+  applyScrollTarget() {
+    const kind = this.el.dataset.scrollTargetKind
+    const seq = this.el.dataset.scrollTargetSeq || ""
+    const key = `${kind || "none"}:${seq}`
+
+    if (!kind || this.appliedScrollTargetKey === key) {
+      return
+    }
+
+    if (this.pendingScrollTargetKey !== key) {
+      this.pendingScrollTargetKey = key
+      this.applyScrollTargetRetryUntil = Date.now() + 2500
+    }
+
+    if (Date.now() > this.applyScrollTargetRetryUntil) {
+      this.appliedScrollTargetKey = key
+      return
+    }
+
+    if (kind === "latest") {
+      if (this.el.scrollHeight <= this.el.clientHeight) {
+        this.retryApplyScrollTarget()
+        return
+      }
+
+      this.suppressProgrammaticHistoryLoading()
+      scrollToBottom(this.el)
+      this.appliedScrollTargetKey = key
+      return
+    }
+
+    if (kind === "sequence" && seq !== "") {
+      const target = this.el.querySelector(`[data-message-seq="${seq}"]`)
+
+      if (!target || this.el.scrollHeight <= this.el.clientHeight) {
+        this.retryApplyScrollTarget()
+        return
+      }
+
+      this.suppressProgrammaticHistoryLoading()
+      scrollMessageRowToCenter(this.el, target)
+      this.appliedScrollTargetKey = key
+    }
   },
 
   syncVisibleReadRows() {
@@ -348,6 +481,15 @@ const ChannelMessages = {
     this.scrollAnchorTimer = null
   },
 
+  cancelApplyScrollTarget() {
+    if (!this.applyScrollTargetTimer) {
+      return
+    }
+
+    window.clearTimeout(this.applyScrollTargetTimer)
+    this.applyScrollTargetTimer = null
+  },
+
   cancelVisibleReadTimer(rowId) {
     const timer = this.visibleReadTimers.get(rowId)
 
@@ -376,6 +518,50 @@ function scrollToBottom(container) {
   container.scrollTop = container.scrollHeight
 }
 
+function scrollMessageRowToCenter(container, row) {
+  const containerRect = container.getBoundingClientRect()
+  const rowRect = row.getBoundingClientRect()
+  const containerCenter = containerRect.top + containerRect.height / 2
+  const rowCenter = rowRect.top + rowRect.height / 2
+
+  container.scrollTop += rowCenter - containerCenter
+}
+
+function scrollAnchorPayload(container) {
+  const row = centerMostVisibleMessageRow(container)
+
+  if (!row) {
+    return {}
+  }
+
+  const rowRect = row.getBoundingClientRect()
+  const containerRect = container.getBoundingClientRect()
+
+  return {
+    anchor_row_id: row.id,
+    anchor_offset_top: rowRect.top - containerRect.top,
+  }
+}
+
+function restoreScrollAnchor(container, rowId, previousOffsetTop) {
+  if (!rowId || !Number.isFinite(previousOffsetTop)) {
+    return false
+  }
+
+  const row = document.getElementById(rowId)
+
+  if (!row || !container.contains(row)) {
+    return false
+  }
+
+  const rowRect = row.getBoundingClientRect()
+  const containerRect = container.getBoundingClientRect()
+  const currentOffsetTop = rowRect.top - containerRect.top
+
+  container.scrollTop += currentOffsetTop - previousOffsetTop
+  return true
+}
+
 function parseMessageSeq(row) {
   const seq = Number.parseInt(row.dataset.messageSeq, 10)
 
@@ -383,10 +569,16 @@ function parseMessageSeq(row) {
 }
 
 function centerMostVisibleMessageSeq(container) {
+  const row = centerMostVisibleMessageRow(container)
+
+  return row ? parseMessageSeq(row) : null
+}
+
+function centerMostVisibleMessageRow(container) {
   const containerRect = container.getBoundingClientRect()
   const containerCenter = containerRect.top + containerRect.height / 2
   const rows = Array.from(container.querySelectorAll("[data-message-seq]"))
-  let bestSeq = null
+  let bestRow = null
   let bestDistance = Infinity
 
   rows.forEach(row => {
@@ -409,11 +601,11 @@ function centerMostVisibleMessageSeq(container) {
 
     if (distance < bestDistance) {
       bestDistance = distance
-      bestSeq = seq
+      bestRow = row
     }
   })
 
-  return bestSeq
+  return bestRow
 }
 
 function compactVisibleReadRanges(seqs, maxRangeSize) {

@@ -1371,7 +1371,7 @@ defmodule DiscordClone.ChatTest do
       assert Chat.list_unread_counts(scope, workspace.id) == {:ok, %{}}
     end
 
-    test "does not move an existing read cursor backward" do
+    test "leaves an existing old read cursor untouched" do
       scope = user_scope_fixture()
       other_scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
@@ -1399,38 +1399,51 @@ defmodule DiscordClone.ChatTest do
 
       put_channel_read!(release_channel.id, scope.user.id, later_general_message.id)
 
+      old_cursor_before =
+        Repo.get_by!(ChannelRead, channel_id: release_channel.id, user_id: scope.user.id)
+
       assert :ok = Chat.mark_channel_read(scope, release_channel.id)
 
       assert %ChannelRead{last_read_message_id: last_read_message_id} =
+               old_cursor_after =
                Repo.get_by(ChannelRead, channel_id: release_channel.id, user_id: scope.user.id)
 
       assert last_read_message_id == later_general_message.id
+      assert old_cursor_after.updated_at == old_cursor_before.updated_at
     end
 
-    test "creates a nil read cursor for an empty channel" do
+    test "marks an empty channel read without changing the old read cursor" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
       {:ok, empty_channel} = Workspaces.create_channel(scope, workspace.id, %{name: "empty"})
 
+      old_cursor_before =
+        Repo.get_by!(ChannelRead, channel_id: empty_channel.id, user_id: scope.user.id)
+
       assert :ok = Chat.mark_channel_read(scope, empty_channel.id)
 
       assert %ChannelRead{last_read_message_id: nil} =
+               old_cursor_after =
                Repo.get_by(ChannelRead, channel_id: empty_channel.id, user_id: scope.user.id)
+
+      assert old_cursor_after.updated_at == old_cursor_before.updated_at
     end
 
-    test "repairs a missing read row for a workspace member" do
+    test "clears unread state without recreating a missing old read cursor" do
       scope = user_scope_fixture()
       other_scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
       add_workspace_member!(workspace, other_scope)
 
-      latest_message =
-        insert_message!(
-          workspace.default_channel_id,
-          other_scope.user.id,
-          "latest update",
-          ~U[2026-06-19 10:00:00Z]
-        )
+      insert_message!(
+        workspace.default_channel_id,
+        other_scope.user.id,
+        "latest update",
+        ~U[2026-06-19 10:00:00Z]
+      )
+
+      assert {:ok, _read_state} =
+               Chat.add_channel_unread_range(scope, workspace.default_channel_id, 1, 1)
 
       Repo.delete_all(
         from read in ChannelRead,
@@ -1446,13 +1459,12 @@ defmodule DiscordClone.ChatTest do
 
       assert :ok = Chat.mark_channel_read(scope, workspace.default_channel_id)
 
-      assert %ChannelRead{last_read_message_id: last_read_message_id} =
-               Repo.get_by(ChannelRead,
-                 channel_id: workspace.default_channel_id,
-                 user_id: scope.user.id
-               )
+      assert Chat.list_unread_counts(scope, workspace.id) == {:ok, %{}}
 
-      assert last_read_message_id == latest_message.id
+      refute Repo.get_by(ChannelRead,
+               channel_id: workspace.default_channel_id,
+               user_id: scope.user.id
+             )
     end
 
     test "rejects anonymous scopes and logged-in users who are not workspace members" do
@@ -3140,36 +3152,47 @@ defmodule DiscordClone.ChatTest do
       assert %{last_message_seq: ["is invalid"]} = errors_on(changeset)
     end
 
-    test "advances the sender read cursor to the sent message" do
+    test "sends without recreating a missing old sender read cursor" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
       channel_id = workspace.default_channel_id
 
-      assert {:ok, sent_message} =
+      Repo.delete_all(
+        from read in ChannelRead,
+          where: read.channel_id == ^channel_id and read.user_id == ^scope.user.id
+      )
+
+      assert {:ok, _sent_message} =
                Chat.send_message(scope, channel_id, %{"content" => "bookmark this"})
 
-      assert %ChannelRead{last_read_message_id: last_read_message_id} =
-               Repo.get_by(ChannelRead, channel_id: channel_id, user_id: scope.user.id)
-
-      assert last_read_message_id == sent_message.id
+      assert Chat.list_unread_counts(scope, workspace.id) == {:ok, %{}}
+      refute Repo.get_by(ChannelRead, channel_id: channel_id, user_id: scope.user.id)
     end
 
-    test "advances the sender read cursor before broadcasting the sent message" do
+    test "does not advance an existing old sender read cursor when broadcasting the sent message" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
       channel_id = workspace.default_channel_id
 
-      subscriber = start_read_cursor_subscriber(scope, channel_id)
+      old_cursor_before =
+        Repo.get_by!(ChannelRead, channel_id: channel_id, user_id: scope.user.id)
+
+      subscriber = start_subscriber(scope, channel_id)
       assert_receive {:subscribed, ^subscriber}
 
       assert {:ok, sent_message} =
                Chat.send_message(scope, channel_id, %{"content" => "visible after cursor"})
 
-      assert_receive {:subscriber_read_cursor, ^subscriber, received_message,
-                      last_read_message_id}
+      assert_receive {:subscriber_received, ^subscriber, {:message_created, received_message}}
 
       assert received_message.id == sent_message.id
-      assert last_read_message_id == sent_message.id
+
+      assert %ChannelRead{} =
+               old_cursor_after =
+               Repo.get_by(ChannelRead, channel_id: channel_id, user_id: scope.user.id)
+
+      assert old_cursor_after.last_read_message_id == old_cursor_before.last_read_message_id
+      assert old_cursor_after.updated_at == old_cursor_before.updated_at
     end
 
     test "does not create self-unread counts when the sender refreshes counts" do
@@ -3501,27 +3524,6 @@ defmodule DiscordClone.ChatTest do
         {:message_created, message} ->
           assert {:ok, recent_messages} = Chat.list_recent_messages(scope, channel_id)
           send(parent, {:subscriber_recent_messages, self(), message, recent_messages})
-      after
-        1_000 -> send(parent, {:subscriber_timeout, self()})
-      end
-    end)
-  end
-
-  defp start_read_cursor_subscriber(scope, channel_id) do
-    parent = self()
-
-    spawn_link(fn ->
-      assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
-      send(parent, {:subscribed, self()})
-
-      receive do
-        {:message_created, message} ->
-          channel_read = Repo.get_by(ChannelRead, channel_id: channel_id, user_id: scope.user.id)
-
-          send(
-            parent,
-            {:subscriber_read_cursor, self(), message, channel_read.last_read_message_id}
-          )
       after
         1_000 -> send(parent, {:subscriber_timeout, self()})
       end

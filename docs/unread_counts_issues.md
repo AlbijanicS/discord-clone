@@ -1,5 +1,18 @@
 # Unread Counts Issues
 
+Status: superseded by `docs/unread_ranges_issues/README.md`.
+
+These v1 cursor-read issues are retained for historical context only. New unread
+work should follow `docs/unread_ranges_prd.md` and
+`docs/unread_ranges_issues/README.md`, where unread spans are canonical,
+read states are summary state, and `channel_reads` cursor rows are compatibility
+or backfill input rather than active runtime unread behavior. The route
+placement remains unchanged in the range design: Channel LiveViews stay in the
+existing `:browser` pipeline and existing `live_session :require_authenticated_user`.
+Chat unread workflows preserve the privacy semantics from the range PRD:
+unauthenticated scopes return `{:error, :unauthenticated}` and logged-in
+non-members receive `{:error, :not_found}`.
+
 This document breaks `docs/unread_counts_prd.md` into thin, independently
 grabbable tracer-bullet issues using the `to-issues` skill. The project is
 using a docs-first fallback for now, so these are not published to GitHub
