@@ -304,6 +304,20 @@ defmodule DiscordClone.Workspaces do
 
   def can_manage_roles?(_scope, _workspace), do: false
 
+  def available_member_actions(
+        %Scope{} = scope,
+        %Workspace{id: workspace_id} = workspace,
+        %WorkspaceMembership{workspace_id: workspace_id} = target_membership
+      ) do
+    case workspace_role(scope, workspace) do
+      @owner_role -> owner_member_actions(target_membership)
+      @admin_role -> admin_member_actions(target_membership)
+      _role -> []
+    end
+  end
+
+  def available_member_actions(_scope, _workspace, _target_membership), do: []
+
   def change_member_role(
         %Scope{user: %User{}} = scope,
         workspace_id,
@@ -821,6 +835,39 @@ defmodule DiscordClone.Workspaces do
       {:error, _reason} -> false
     end
   end
+
+  defp workspace_role(%Scope{user: %User{id: user_id}}, %Workspace{id: workspace_id}) do
+    case get_workspace_membership(workspace_id, user_id) do
+      {:ok, %WorkspaceMembership{role: role}} -> role
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp workspace_role(_scope, _workspace), do: nil
+
+  defp owner_member_actions(%WorkspaceMembership{role: @owner_role}), do: []
+
+  defp owner_member_actions(%WorkspaceMembership{role: @admin_role}) do
+    [:demote_to_member, :mute, :timeout, :kick, :ban]
+  end
+
+  defp owner_member_actions(%WorkspaceMembership{role: @member_role}) do
+    [:promote_to_admin, :mute, :timeout, :kick, :ban]
+  end
+
+  defp owner_member_actions(_target_membership), do: []
+
+  defp admin_member_actions(%WorkspaceMembership{role: @owner_role}), do: []
+
+  defp admin_member_actions(%WorkspaceMembership{role: @admin_role}) do
+    [:mute, :timeout]
+  end
+
+  defp admin_member_actions(%WorkspaceMembership{role: @member_role}) do
+    [:mute, :timeout, :kick, :ban]
+  end
+
+  defp admin_member_actions(_target_membership), do: []
 
   defp workspace_member?(workspace_id, user_id) do
     Repo.exists?(

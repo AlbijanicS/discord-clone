@@ -1131,6 +1131,151 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-composer-form")
     end
 
+    test "groups online members by role and offline members together", %{
+      conn: conn,
+      scope: owner_scope
+    } do
+      admin_scope =
+        %{username: "sidebar_admin"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      member_scope =
+        %{username: "sidebar_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      offline_scope =
+        %{username: "sidebar_offline"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+      add_workspace_member!(workspace, offline_scope, "member")
+
+      admin_live_view_pid = start_live_view_process()
+      member_live_view_pid = start_live_view_process()
+      assert :ok = Chat.join_workspace_presence(admin_scope, workspace.id, admin_live_view_pid)
+      assert :ok = Chat.join_workspace_presence(member_scope, workspace.id, member_live_view_pid)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#workspace-members-online-owner-section", "Owner")
+      assert has_element?(view, "#workspace-members-online-admin-section", "Admins")
+      assert has_element?(view, "#workspace-members-online-member-section", "Members")
+      assert has_element?(view, "#workspace-members-offline-section", "Offline")
+
+      assert has_element?(
+               view,
+               "#workspace-members-online-owner-section + #workspace-member-#{owner_scope.user.id}[data-presence-state='online']",
+               owner_scope.user.username
+             )
+
+      assert has_element?(
+               view,
+               "#workspace-members-online-admin-section ~ #workspace-member-#{admin_scope.user.id}[data-presence-state='online']",
+               "sidebar_admin"
+             )
+
+      assert has_element?(
+               view,
+               "#workspace-members-online-member-section ~ #workspace-member-#{member_scope.user.id}[data-presence-state='online']",
+               "sidebar_member"
+             )
+
+      assert has_element?(
+               view,
+               "#workspace-members-offline-section ~ #workspace-member-#{offline_scope.user.id}[data-presence-state='offline']",
+               "sidebar_offline"
+             )
+    end
+
+    test "shows member row actions to owners and hides them from regular members", %{
+      conn: owner_conn,
+      scope: owner_scope
+    } do
+      member_scope =
+        %{username: "sidebar_action_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope, "member")
+
+      {:ok, owner_view, _html} =
+        live(owner_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(owner_view, "#workspace-member-#{member_scope.user.id}-actions")
+
+      assert has_element?(
+               owner_view,
+               "#workspace-member-#{member_scope.user.id}-promote-to-admin"
+             )
+
+      assert has_element?(owner_view, "#workspace-member-#{member_scope.user.id}-mute")
+      assert has_element?(owner_view, "#workspace-member-#{member_scope.user.id}-timeout")
+      assert has_element?(owner_view, "#workspace-member-#{member_scope.user.id}-kick")
+      assert has_element?(owner_view, "#workspace-member-#{member_scope.user.id}-ban")
+
+      refute has_element?(owner_view, "#workspace-member-#{owner_scope.user.id}-actions")
+
+      member_conn = build_conn() |> log_in_user(member_scope.user)
+
+      {:ok, member_view, _html} =
+        live(
+          member_conn,
+          ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+        )
+
+      assert has_element?(member_view, "#workspace-member-#{owner_scope.user.id}")
+      refute has_element?(member_view, "#workspace-member-#{owner_scope.user.id}-actions")
+      refute has_element?(member_view, "#workspace-member-#{member_scope.user.id}-actions")
+    end
+
+    test "limits admin member row actions by target role", %{conn: conn, scope: admin_scope} do
+      owner_scope =
+        %{username: "sidebar_action_owner"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      peer_admin_scope =
+        %{username: "sidebar_action_admin"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      member_scope =
+        %{username: "sidebar_action_target"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, peer_admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      refute has_element?(view, "#workspace-member-#{owner_scope.user.id}-actions")
+
+      assert has_element?(view, "#workspace-member-#{peer_admin_scope.user.id}-actions")
+      assert has_element?(view, "#workspace-member-#{peer_admin_scope.user.id}-mute")
+      assert has_element?(view, "#workspace-member-#{peer_admin_scope.user.id}-timeout")
+      refute has_element?(view, "#workspace-member-#{peer_admin_scope.user.id}-kick")
+      refute has_element?(view, "#workspace-member-#{peer_admin_scope.user.id}-ban")
+      refute has_element?(view, "#workspace-member-#{peer_admin_scope.user.id}-demote-to-member")
+
+      assert has_element?(view, "#workspace-member-#{member_scope.user.id}-actions")
+      assert has_element?(view, "#workspace-member-#{member_scope.user.id}-mute")
+      assert has_element?(view, "#workspace-member-#{member_scope.user.id}-timeout")
+      assert has_element?(view, "#workspace-member-#{member_scope.user.id}-kick")
+      assert has_element?(view, "#workspace-member-#{member_scope.user.id}-ban")
+      refute has_element?(view, "#workspace-member-#{member_scope.user.id}-promote-to-admin")
+    end
+
     test "renders durable members offline after workspace presence runtime loss", %{
       conn: conn,
       scope: member_scope

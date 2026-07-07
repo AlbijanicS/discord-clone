@@ -581,46 +581,81 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
           phx-update="stream"
           class="min-h-0 flex-1 space-y-1 overflow-y-auto p-3"
         >
-          <div
-            :for={{dom_id, member} <- @member_stream}
-            id={dom_id}
-            data-presence-state={member_presence_state(@online_user_ids, member)}
-            class={[
-              "flex items-center gap-3 rounded px-2 py-2 text-sm transition hover:bg-base-300/80",
-              member_online?(@online_user_ids, member) && "text-base-content",
-              !member_online?(@online_user_ids, member) && "text-base-content/70"
-            ]}
-          >
-            <div class={[
-              "flex size-8 shrink-0 items-center justify-center rounded text-xs font-semibold",
-              member_online?(@online_user_ids, member) && "bg-primary/15 text-primary",
-              !member_online?(@online_user_ids, member) && "bg-base-300 text-base-content/70"
-            ]}>
-              {user_initial(member.user)}
+          <%= for {dom_id, item} <- @member_stream do %>
+            <div
+              :if={item.type == :section}
+              id={dom_id}
+              class="px-2 pb-1 pt-3 text-[0.6875rem] font-bold uppercase tracking-wide text-base-content/45 first:pt-0"
+            >
+              {item.label}
             </div>
-            <div class="min-w-0 flex-1">
-              <p class="truncate font-medium">{member.user.username}</p>
-              <p
-                data-member-status={member_presence_state(@online_user_ids, member)}
-                class={[
-                  "flex items-center gap-1.5 text-xs",
-                  member_online?(@online_user_ids, member) && "text-primary",
-                  !member_online?(@online_user_ids, member) && "text-base-content/45"
-                ]}
-              >
-                <span
+            <div
+              :if={item.type == :member}
+              id={dom_id}
+              data-presence-state={member_presence_state(@online_user_ids, item.member)}
+              class={[
+                "flex items-center gap-3 rounded px-2 py-2 text-sm transition hover:bg-base-300/80",
+                member_online?(@online_user_ids, item.member) && "text-base-content",
+                !member_online?(@online_user_ids, item.member) && "text-base-content/70"
+              ]}
+            >
+              <div class={[
+                "flex size-8 shrink-0 items-center justify-center rounded text-xs font-semibold",
+                member_online?(@online_user_ids, item.member) && "bg-primary/15 text-primary",
+                !member_online?(@online_user_ids, item.member) && "bg-base-300 text-base-content/70"
+              ]}>
+                {user_initial(item.member.user)}
+              </div>
+              <div class="min-w-0 flex-1">
+                <p class="truncate font-medium">{item.member.user.username}</p>
+                <p
+                  data-member-status={member_presence_state(@online_user_ids, item.member)}
                   class={[
-                    "size-2 rounded-full",
-                    member_online?(@online_user_ids, member) && "bg-primary",
-                    !member_online?(@online_user_ids, member) && "bg-base-content/30"
+                    "flex items-center gap-1.5 text-xs",
+                    member_online?(@online_user_ids, item.member) && "text-primary",
+                    !member_online?(@online_user_ids, item.member) && "text-base-content/45"
                   ]}
-                  aria-hidden="true"
                 >
-                </span>
-                {member_presence_label(@online_user_ids, member)}
-              </p>
+                  <span
+                    class={[
+                      "size-2 rounded-full",
+                      member_online?(@online_user_ids, item.member) && "bg-primary",
+                      !member_online?(@online_user_ids, item.member) && "bg-base-content/30"
+                    ]}
+                    aria-hidden="true"
+                  >
+                  </span>
+                  {member_presence_label(@online_user_ids, item.member)}
+                </p>
+              </div>
+              <% member_actions = member_actions(@current_scope, @selected_workspace, item.member) %>
+              <details
+                :if={member_actions != []}
+                id={"#{dom_id}-actions"}
+                class="relative shrink-0"
+              >
+                <summary
+                  class="btn btn-square btn-xs btn-ghost list-none transition hover:scale-105 [&::-webkit-details-marker]:hidden"
+                  aria-label={"Open #{item.member.user.username} member actions"}
+                >
+                  <.icon name="hero-ellipsis-horizontal" class="size-4" />
+                </summary>
+                <div class="absolute right-0 z-30 mt-1 w-40 rounded border border-base-300 bg-base-100 p-1 shadow-lg">
+                  <button
+                    :for={action <- member_actions}
+                    id={"#{dom_id}-#{member_action_id(action)}"}
+                    type="button"
+                    class={[
+                      "block w-full rounded px-3 py-2 text-left text-xs font-medium transition hover:bg-base-200",
+                      member_action_destructive?(action) && "text-error hover:bg-error/10"
+                    ]}
+                  >
+                    {member_action_label(action)}
+                  </button>
+                </div>
+              </details>
             </div>
-          </div>
+          <% end %>
         </div>
       </aside>
     </div>
@@ -690,6 +725,25 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   defp can_view_audit_log?(workspace, current_scope) do
     Workspaces.can_view_audit_log?(current_scope, workspace)
   end
+
+  defp member_actions(current_scope, workspace, member) do
+    Workspaces.available_member_actions(current_scope, workspace, member)
+  end
+
+  defp member_action_id(action) do
+    action
+    |> Atom.to_string()
+    |> String.replace("_", "-")
+  end
+
+  defp member_action_label(:promote_to_admin), do: "Promote to admin"
+  defp member_action_label(:demote_to_member), do: "Demote to member"
+  defp member_action_label(:mute), do: "Mute"
+  defp member_action_label(:timeout), do: "Timeout"
+  defp member_action_label(:kick), do: "Kick"
+  defp member_action_label(:ban), do: "Ban"
+
+  defp member_action_destructive?(action), do: action in [:kick, :ban]
 
   defp audit_event_title(%{event_type: "member_role_promoted"}), do: "Member promoted"
   defp audit_event_title(%{event_type: "member_role_demoted"}), do: "Admin demoted"

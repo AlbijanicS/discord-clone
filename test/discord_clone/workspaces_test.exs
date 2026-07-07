@@ -205,6 +205,66 @@ defmodule DiscordClone.WorkspacesTest do
       refute Workspaces.can_delete_channel?(member_scope, workspace)
       refute Workspaces.can_create_workspace_invite?(member_scope, workspace)
     end
+
+    test "derives member action availability by actor and target role" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Role Workspace"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+
+      owner_membership =
+        Repo.get_by!(WorkspaceMembership,
+          workspace_id: workspace.id,
+          user_id: owner_scope.user.id
+        )
+
+      admin_membership =
+        Repo.get_by!(WorkspaceMembership,
+          workspace_id: workspace.id,
+          user_id: admin_scope.user.id
+        )
+
+      member_membership =
+        Repo.get_by!(WorkspaceMembership,
+          workspace_id: workspace.id,
+          user_id: member_scope.user.id
+        )
+
+      assert Workspaces.available_member_actions(owner_scope, workspace, admin_membership) == [
+               :demote_to_member,
+               :mute,
+               :timeout,
+               :kick,
+               :ban
+             ]
+
+      assert Workspaces.available_member_actions(owner_scope, workspace, member_membership) == [
+               :promote_to_admin,
+               :mute,
+               :timeout,
+               :kick,
+               :ban
+             ]
+
+      assert Workspaces.available_member_actions(admin_scope, workspace, owner_membership) == []
+
+      assert Workspaces.available_member_actions(admin_scope, workspace, admin_membership) == [
+               :mute,
+               :timeout
+             ]
+
+      assert Workspaces.available_member_actions(admin_scope, workspace, member_membership) == [
+               :mute,
+               :timeout,
+               :kick,
+               :ban
+             ]
+
+      assert Workspaces.available_member_actions(member_scope, workspace, owner_membership) == []
+      assert Workspaces.available_member_actions(nil, workspace, member_membership) == []
+    end
   end
 
   describe "change_member_role/4" do

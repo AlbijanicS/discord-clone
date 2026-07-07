@@ -1,7 +1,9 @@
 defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
   use DiscordCloneWeb, :live_view
 
+  alias DiscordClone.Chat.WorkspacePresence, as: PresenceEvents
   alias DiscordClone.Workspaces
+  alias DiscordCloneWeb.WorkspaceLive.Presence
   alias DiscordCloneWeb.WorkspaceLive.Shell
 
   @impl true
@@ -27,7 +29,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
         |> assign(:audit_events, audit_events)
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
-        |> stream(:workspace_members, members)
+        |> Presence.prepare_workspace(workspace.id, members)
 
       {:ok, socket}
     else
@@ -65,9 +67,19 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
         current_scope={@current_scope}
         audit_events={@audit_events}
         main_state={:audit}
+        online_user_ids={@online_user_ids}
       />
     </Layouts.app>
     """
+  end
+
+  @impl true
+  def handle_info(event, socket) do
+    case PresenceEvents.to_presence_event(event) do
+      {:ok, :user_joined, payload} -> {:noreply, Presence.user_joined(socket, payload)}
+      {:ok, :user_left, payload} -> {:noreply, Presence.user_left(socket, payload)}
+      :error -> {:noreply, socket}
+    end
   end
 
   @impl true

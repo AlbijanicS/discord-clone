@@ -9,8 +9,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.Presence do
   def prepare_workspace(socket, workspace_id, members) do
     socket
     |> assign(:workspace_members, members)
-    |> stream_configure(:workspace_members, dom_id: &"workspace-member-#{&1.user.id}")
-    |> stream(:workspace_members, members)
+    |> stream_configure(:workspace_members, dom_id: &sidebar_item_dom_id/1)
+    |> stream(:workspace_members, sidebar_items(members, MapSet.new()))
     |> join_workspace(workspace_id)
   end
 
@@ -20,7 +20,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.Presence do
            :ok <- Chat.join_workspace_presence(socket.assigns.current_scope, workspace_id),
            {:ok, online_user_ids} <-
              Chat.list_online_workspace_user_ids(socket.assigns.current_scope, workspace_id) do
-        assign(socket, :online_user_ids, MapSet.new(online_user_ids))
+        socket
+        |> assign(:online_user_ids, MapSet.new(online_user_ids))
+        |> refresh_workspace_members()
       else
         {:error, _reason} -> assign(socket, :online_user_ids, MapSet.new())
       end
@@ -53,10 +55,66 @@ defmodule DiscordCloneWeb.WorkspaceLive.Presence do
     do: MapSet.delete(online_user_ids, user_id)
 
   defp refresh_workspace_members(%{assigns: %{workspace_members: members}} = socket) do
-    stream(socket, :workspace_members, members, reset: true)
+    online_user_ids = Map.get(socket.assigns, :online_user_ids, MapSet.new())
+
+    stream(socket, :workspace_members, sidebar_items(members, online_user_ids), reset: true)
   end
 
   defp refresh_workspace_members(socket), do: socket
+
+  defp sidebar_items(members, online_user_ids) do
+    [
+      section_item(
+        :online_owner,
+        "Owner",
+        online_members_by_role(members, online_user_ids, "owner")
+      ),
+      section_item(
+        :online_admin,
+        "Admins",
+        online_members_by_role(members, online_user_ids, "admin")
+      ),
+      section_item(
+        :online_member,
+        "Members",
+        online_members_by_role(members, online_user_ids, "member")
+      ),
+      section_item(:offline, "Offline", offline_members(members, online_user_ids))
+    ]
+    |> Enum.flat_map(fn
+      {_section, _label, []} ->
+        []
+
+      {section, label, section_members} ->
+        [%{type: :section, section: section, label: label}] ++
+          Enum.map(section_members, &%{type: :member, section: section, member: &1})
+    end)
+  end
+
+  defp section_item(section, label, members), do: {section, label, members}
+
+  defp online_members_by_role(members, online_user_ids, role) do
+    Enum.filter(members, fn member ->
+      member.role == role and MapSet.member?(online_user_ids, member.user.id)
+    end)
+  end
+
+  defp offline_members(members, online_user_ids) do
+    Enum.reject(members, fn member -> MapSet.member?(online_user_ids, member.user.id) end)
+  end
+
+  defp sidebar_item_dom_id(%{type: :section, section: section}) do
+    "workspace-members-#{section_dom_id(section)}-section"
+  end
+
+  defp sidebar_item_dom_id(%{type: :member, member: member}) do
+    "workspace-member-#{member.user.id}"
+  end
+
+  defp section_dom_id(:online_owner), do: "online-owner"
+  defp section_dom_id(:online_admin), do: "online-admin"
+  defp section_dom_id(:online_member), do: "online-member"
+  defp section_dom_id(:offline), do: "offline"
 
   defp selected_workspace_id(%{assigns: %{selected_workspace: %{id: workspace_id}}}) do
     workspace_id
