@@ -14,6 +14,7 @@ defmodule DiscordClone.Workspaces.Workspace do
     has_many :channels, DiscordClone.Workspaces.Channel
     has_many :memberships, DiscordClone.Workspaces.WorkspaceMembership
     has_many :invites, DiscordClone.Workspaces.WorkspaceInvite
+    has_many :audit_events, DiscordClone.Workspaces.WorkspaceAuditEvent
 
     timestamps(type: :utc_datetime)
   end

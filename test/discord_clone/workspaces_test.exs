@@ -10,7 +10,13 @@ defmodule DiscordClone.WorkspacesTest do
   }
 
   alias DiscordClone.Workspaces
-  alias DiscordClone.Workspaces.{Channel, WorkspaceInvite, WorkspaceMembership}
+
+  alias DiscordClone.Workspaces.{
+    Channel,
+    WorkspaceAuditEvent,
+    WorkspaceInvite,
+    WorkspaceMembership
+  }
 
   import DiscordClone.AccountsFixtures
   import DiscordClone.WorkspacesFixtures
@@ -198,6 +204,179 @@ defmodule DiscordClone.WorkspacesTest do
       refute Workspaces.can_rename_channel?(member_scope, workspace)
       refute Workspaces.can_delete_channel?(member_scope, workspace)
       refute Workspaces.can_create_workspace_invite?(member_scope, workspace)
+    end
+  end
+
+  describe "change_member_role/4" do
+    test "allows owners to promote members to admins" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Role Workspace"})
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert {:ok, membership} =
+               Workspaces.change_member_role(
+                 owner_scope,
+                 workspace.id,
+                 member_scope.user.id,
+                 "admin"
+               )
+
+      assert membership.role == "admin"
+
+      assert %WorkspaceMembership{role: "admin"} =
+               Repo.get_by(WorkspaceMembership,
+                 workspace_id: workspace.id,
+                 user_id: member_scope.user.id
+               )
+    end
+
+    test "allows owners to demote admins to members" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Role Workspace"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+
+      assert {:ok, membership} =
+               Workspaces.change_member_role(
+                 owner_scope,
+                 workspace.id,
+                 admin_scope.user.id,
+                 "member"
+               )
+
+      assert membership.role == "member"
+
+      assert %WorkspaceMembership{role: "member"} =
+               Repo.get_by(WorkspaceMembership,
+                 workspace_id: workspace.id,
+                 user_id: admin_scope.user.id
+               )
+    end
+
+    test "rejects admin and member role changes" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      target_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Role Workspace"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+      add_workspace_member!(workspace, target_scope, "member")
+
+      assert Workspaces.change_member_role(
+               admin_scope,
+               workspace.id,
+               target_scope.user.id,
+               "admin"
+             ) ==
+               {:error, :owner_required}
+
+      assert Workspaces.change_member_role(
+               member_scope,
+               workspace.id,
+               target_scope.user.id,
+               "admin"
+             ) ==
+               {:error, :owner_required}
+
+      assert Repo.get_by!(
+               WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: target_scope.user.id
+             ).role == "member"
+    end
+
+    test "rejects owner role changes" do
+      owner_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Role Workspace"})
+
+      assert Workspaces.change_member_role(
+               owner_scope,
+               workspace.id,
+               owner_scope.user.id,
+               "member"
+             ) ==
+               {:error, :owner_role_locked}
+
+      assert Repo.get_by!(
+               WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: owner_scope.user.id
+             ).role == "owner"
+    end
+
+    test "rejects unsupported role transitions" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Role Workspace"})
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert Workspaces.change_member_role(
+               owner_scope,
+               workspace.id,
+               member_scope.user.id,
+               "owner"
+             ) ==
+               {:error, :unsupported_role_transition}
+
+      assert Repo.get_by!(
+               WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: member_scope.user.id
+             ).role == "member"
+    end
+
+    test "role changes append audit events visible newest first to owners" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Role Workspace"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert {:ok, _membership} =
+               Workspaces.change_member_role(
+                 owner_scope,
+                 workspace.id,
+                 member_scope.user.id,
+                 "admin"
+               )
+
+      assert {:ok, _membership} =
+               Workspaces.change_member_role(
+                 owner_scope,
+                 workspace.id,
+                 admin_scope.user.id,
+                 "member"
+               )
+
+      assert {:ok, [demotion, promotion]} =
+               Workspaces.list_audit_events(owner_scope, workspace.id)
+
+      assert %WorkspaceAuditEvent{} = promotion
+      assert promotion.workspace_id == workspace.id
+      assert promotion.actor_user_id == owner_scope.user.id
+      assert promotion.target_user_id == member_scope.user.id
+      assert promotion.event_type == "member_role_promoted"
+      assert promotion.reason == nil
+      assert promotion.metadata == %{"from_role" => "member", "to_role" => "admin"}
+
+      assert demotion.target_user_id == admin_scope.user.id
+      assert demotion.event_type == "member_role_demoted"
+      assert demotion.metadata == %{"from_role" => "admin", "to_role" => "member"}
+    end
+
+    test "rejects audit event listing for admins and members" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Role Workspace"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert Workspaces.list_audit_events(admin_scope, workspace.id) == {:error, :owner_required}
+      assert Workspaces.list_audit_events(member_scope, workspace.id) == {:error, :owner_required}
     end
   end
 

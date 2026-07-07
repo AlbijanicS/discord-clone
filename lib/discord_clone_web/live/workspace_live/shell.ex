@@ -23,6 +23,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   attr :main_state, :atom, default: :no_workspace
   attr :invite_form, :any, default: nil
   attr :invite_url, :string, default: nil
+  attr :audit_events, :list, default: []
   attr :online_user_ids, :any, default: MapSet.new()
   attr :channel_unread_counts, :map, default: %{}
 
@@ -166,6 +167,15 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                     aria-label={"Create invite for #{@selected_workspace.name}"}
                   >
                     Invite
+                  </.link>
+                  <.link
+                    :if={can_view_audit_log?(@selected_workspace, @current_scope)}
+                    id={"workspace-#{@selected_workspace.id}-audit-log"}
+                    navigate={~p"/workspaces/#{@selected_workspace.id}/audit-log"}
+                    class="block w-full rounded px-3 py-2 text-left text-sm transition hover:bg-base-200"
+                    aria-label={"View audit log for #{@selected_workspace.name}"}
+                  >
+                    Audit log
                   </.link>
                   <button
                     :if={can_rename_workspace?(@selected_workspace, @current_scope)}
@@ -487,6 +497,62 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                 </div>
               </div>
             </section>
+          <% :audit -> %>
+            <section id="workspace-audit-log" class="mx-auto w-full max-w-5xl px-6 py-8">
+              <div class="flex flex-wrap items-end justify-between gap-4 border-b border-base-300 pb-5">
+                <div>
+                  <p class="text-xs font-semibold uppercase tracking-wide text-primary">
+                    Audit log
+                  </p>
+                  <h1 class="mt-2 text-2xl font-semibold tracking-tight">
+                    {@selected_workspace.name}
+                  </h1>
+                </div>
+                <.link
+                  navigate={~p"/workspaces/#{@selected_workspace.id}"}
+                  class="btn btn-sm btn-ghost"
+                >
+                  Back
+                </.link>
+              </div>
+
+              <div id="workspace-audit-events" class="mt-5 space-y-2">
+                <div
+                  :if={@audit_events == []}
+                  id="workspace-audit-empty-state"
+                  class="rounded border border-base-300 bg-base-200/60 p-5 text-sm text-base-content/60"
+                >
+                  No audit events yet.
+                </div>
+                <article
+                  :for={event <- @audit_events}
+                  id={"workspace-audit-event-#{event.id}"}
+                  class="rounded border border-base-300 bg-base-100 p-4 shadow-sm transition hover:border-primary/30"
+                >
+                  <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div class="min-w-0">
+                      <p class="font-semibold">{audit_event_title(event)}</p>
+                      <p class="mt-1 text-sm text-base-content/60">
+                        {audit_event_detail(event)}
+                      </p>
+                    </div>
+                    <time
+                      datetime={DateTime.to_iso8601(event.inserted_at)}
+                      class="shrink-0 text-xs font-medium text-base-content/45"
+                    >
+                      {audit_event_time(event.inserted_at)}
+                    </time>
+                  </div>
+                  <p
+                    :if={event.reason}
+                    id={"workspace-audit-event-#{event.id}-reason"}
+                    class="mt-3 rounded bg-base-200 px-3 py-2 text-sm text-base-content/70"
+                  >
+                    {event.reason}
+                  </p>
+                </article>
+              </div>
+            </section>
           <% :no_workspace -> %>
             <div class="flex h-full items-center justify-center text-center">
               <div>
@@ -620,6 +686,31 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   defp can_create_workspace_invite?(workspace, current_scope) do
     Workspaces.can_create_workspace_invite?(current_scope, workspace)
   end
+
+  defp can_view_audit_log?(workspace, current_scope) do
+    Workspaces.can_view_audit_log?(current_scope, workspace)
+  end
+
+  defp audit_event_title(%{event_type: "member_role_promoted"}), do: "Member promoted"
+  defp audit_event_title(%{event_type: "member_role_demoted"}), do: "Admin demoted"
+  defp audit_event_title(event), do: event.event_type
+
+  defp audit_event_detail(event) do
+    actor = audit_user_name(event.actor_user)
+    target = audit_user_name(event.target_user)
+
+    case event.event_type do
+      "member_role_promoted" -> "#{actor} promoted #{target} to admin"
+      "member_role_demoted" -> "#{actor} demoted #{target} to member"
+      _event_type -> "#{actor} changed #{target}"
+    end
+  end
+
+  defp audit_user_name(%{username: username}) when is_binary(username), do: username
+  defp audit_user_name(_user), do: "Unknown user"
+
+  defp audit_event_time(%DateTime{} = datetime),
+    do: Calendar.strftime(datetime, "%b %-d, %Y %H:%M")
 
   defp workspace_shell_class(true),
     do:

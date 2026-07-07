@@ -57,6 +57,7 @@ defmodule DiscordCloneWeb.Router do
       on_mount: [{DiscordCloneWeb.UserAuth, :require_authenticated}] do
       live "/workspaces", WorkspaceLive.Home, :index
       live "/workspaces/:workspace_id", WorkspaceLive.Entry, :show
+      live "/workspaces/:workspace_id/audit-log", WorkspaceLive.AuditLog, :index
       live "/workspaces/:workspace_id/invites/new", WorkspaceLive.InviteNew, :new
       live "/workspaces/:workspace_id/channels/:channel_id", ChannelLive.Show, :show
       live "/users/settings", UserLive.Settings, :edit

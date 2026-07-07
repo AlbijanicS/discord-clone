@@ -4479,6 +4479,77 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
     end
   end
 
+  describe "/workspaces/:workspace_id/audit-log" do
+    setup :register_and_log_in_user
+
+    test "lists newest audit events for owners", %{conn: conn, scope: owner_scope} do
+      admin_scope =
+        DiscordClone.AccountsFixtures.user_fixture(%{username: "admin_user"})
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      member_scope =
+        DiscordClone.AccountsFixtures.user_fixture(%{username: "member_user"})
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert {:ok, _membership} =
+               Workspaces.change_member_role(
+                 owner_scope,
+                 workspace.id,
+                 member_scope.user.id,
+                 "admin"
+               )
+
+      assert {:ok, _membership} =
+               Workspaces.change_member_role(
+                 owner_scope,
+                 workspace.id,
+                 admin_scope.user.id,
+                 "member"
+               )
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/audit-log")
+
+      assert has_element?(view, "#workspace-audit-log")
+      assert has_element?(view, "#workspace-audit-events")
+      assert has_element?(view, "#workspace-audit-events article:first-child", "admin_user")
+      assert has_element?(view, "#workspace-audit-events article:first-child", "demoted")
+      assert has_element?(view, "#workspace-audit-events article:last-child", "member_user")
+      assert has_element?(view, "#workspace-audit-events article:last-child", "promoted")
+    end
+
+    test "redirects admins and members away from the audit log", %{
+      conn: owner_conn,
+      scope: owner_scope
+    } do
+      admin_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      member_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+
+      admin_conn = build_conn() |> log_in_user(admin_scope.user)
+      member_conn = build_conn() |> log_in_user(member_scope.user)
+
+      assert {:error, {:redirect, %{to: admin_path, flash: admin_flash}}} =
+               live(admin_conn, ~p"/workspaces/#{workspace.id}/audit-log")
+
+      assert admin_path == ~p"/workspaces/#{workspace.id}"
+      assert admin_flash["error"] =~ "Only workspace owners can view the audit log"
+
+      assert {:error, {:redirect, %{to: member_path, flash: member_flash}}} =
+               live(member_conn, ~p"/workspaces/#{workspace.id}/audit-log")
+
+      assert member_path == ~p"/workspaces/#{workspace.id}"
+      assert member_flash["error"] =~ "Only workspace owners can view the audit log"
+
+      {:ok, _view, _html} = live(owner_conn, ~p"/workspaces/#{workspace.id}/audit-log")
+    end
+  end
+
   defp add_workspace_member!(workspace, scope, role \\ "member") do
     %WorkspaceMembership{}
     |> WorkspaceMembership.changeset(%{

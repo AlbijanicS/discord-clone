@@ -16,7 +16,14 @@ defmodule DiscordClone.Workspaces do
   alias DiscordClone.Accounts.{Scope, User}
   alias DiscordClone.Chat
   alias DiscordClone.Repo
-  alias DiscordClone.Workspaces.{Channel, Workspace, WorkspaceInvite, WorkspaceMembership}
+
+  alias DiscordClone.Workspaces.{
+    Channel,
+    Workspace,
+    WorkspaceAuditEvent,
+    WorkspaceInvite,
+    WorkspaceMembership
+  }
 
   @owner_role "owner"
   @admin_role "admin"
@@ -286,6 +293,55 @@ defmodule DiscordClone.Workspaces do
     do: has_workspace_role?(scope, workspace, [@owner_role, @admin_role])
 
   def can_create_workspace_invite?(_scope, _workspace), do: false
+
+  def can_view_audit_log?(%Scope{} = scope, %Workspace{} = workspace),
+    do: has_workspace_role?(scope, workspace, [@owner_role])
+
+  def can_view_audit_log?(_scope, _workspace), do: false
+
+  def can_manage_roles?(%Scope{} = scope, %Workspace{} = workspace),
+    do: has_workspace_role?(scope, workspace, [@owner_role])
+
+  def can_manage_roles?(_scope, _workspace), do: false
+
+  def change_member_role(
+        %Scope{user: %User{}} = scope,
+        workspace_id,
+        target_user_id,
+        role
+      )
+      when is_binary(role) do
+    with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
+         :ok <- authorize_manage_roles(scope, workspace),
+         {:ok, membership} <- get_workspace_membership(workspace.id, target_user_id),
+         :ok <- reject_owner_role_change(membership),
+         :ok <- authorize_role_transition(membership.role, role) do
+      change_member_role_with_audit(scope, membership, role)
+    end
+  end
+
+  def change_member_role(%Scope{user: %User{}}, _workspace_id, _target_user_id, _role),
+    do: {:error, :invalid_attrs}
+
+  def change_member_role(_scope, _workspace_id, _target_user_id, _role),
+    do: {:error, :unauthenticated}
+
+  def list_audit_events(%Scope{user: %User{}} = scope, workspace_id) do
+    with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
+         :ok <- authorize_view_audit_events(scope, workspace) do
+      audit_events =
+        Repo.all(
+          from audit_event in WorkspaceAuditEvent,
+            where: audit_event.workspace_id == ^workspace.id,
+            order_by: [desc: audit_event.inserted_at, desc: audit_event.id],
+            preload: [:actor_user, :target_user]
+        )
+
+      {:ok, audit_events}
+    end
+  end
+
+  def list_audit_events(_scope, _workspace_id), do: {:error, :unauthenticated}
 
   def preview_workspace_invite(%Scope{user: %User{} = user}, code) when is_binary(code) do
     with {:ok, invite} <- get_invite_by_code(code),
@@ -666,6 +722,51 @@ defmodule DiscordClone.Workspaces do
     if can_delete_workspace?(scope, workspace), do: :ok, else: {:error, :owner_required}
   end
 
+  defp authorize_manage_roles(scope, workspace) do
+    if can_manage_roles?(scope, workspace), do: :ok, else: {:error, :owner_required}
+  end
+
+  defp authorize_view_audit_events(scope, workspace) do
+    if can_view_audit_log?(scope, workspace), do: :ok, else: {:error, :owner_required}
+  end
+
+  defp change_member_role_with_audit(
+         %Scope{user: %User{id: actor_user_id}},
+         %WorkspaceMembership{} = membership,
+         role
+       ) do
+    from_role = membership.role
+
+    Multi.new()
+    |> Multi.update(:membership, WorkspaceMembership.role_changeset(membership, %{role: role}))
+    |> Multi.insert(:audit_event, fn %{membership: updated_membership} ->
+      WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
+        workspace_id: updated_membership.workspace_id,
+        actor_user_id: actor_user_id,
+        target_user_id: updated_membership.user_id,
+        event_type: role_change_event_type(from_role, updated_membership.role),
+        metadata: %{"from_role" => from_role, "to_role" => updated_membership.role}
+      })
+    end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{membership: membership}} ->
+        {:ok, membership}
+
+      {:error, :membership, changeset, _changes_so_far} ->
+        {:error, :invalid_role, changeset}
+
+      {:error, :audit_event, changeset, _changes_so_far} ->
+        {:error, :invalid_audit_event, changeset}
+    end
+  end
+
+  defp role_change_event_type("member", "admin"), do: "member_role_promoted"
+  defp role_change_event_type("admin", "member"), do: "member_role_demoted"
+
+  defp role_change_event_type(from_role, to_role),
+    do: "member_role_changed:#{from_role}:#{to_role}"
+
   defp create_channel_with_reads(%Workspace{} = workspace, attrs) do
     Multi.new()
     |> Multi.insert(
@@ -704,6 +805,15 @@ defmodule DiscordClone.Workspaces do
     do: {:error, :owner_must_delete}
 
   defp reject_owner_leave(_membership), do: :ok
+
+  defp reject_owner_role_change(%WorkspaceMembership{role: @owner_role}),
+    do: {:error, :owner_role_locked}
+
+  defp reject_owner_role_change(_membership), do: :ok
+
+  defp authorize_role_transition("member", "admin"), do: :ok
+  defp authorize_role_transition("admin", "member"), do: :ok
+  defp authorize_role_transition(_from_role, _to_role), do: {:error, :unsupported_role_transition}
 
   defp has_workspace_role?(%Scope{user: %User{id: user_id}}, %Workspace{id: workspace_id}, roles) do
     case get_workspace_membership(workspace_id, user_id) do

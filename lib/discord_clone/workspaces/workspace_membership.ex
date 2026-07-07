@@ -23,5 +23,12 @@ defmodule DiscordClone.Workspaces.WorkspaceMembership do
     |> unique_constraint([:workspace_id, :user_id])
   end
 
+  def role_changeset(membership, attrs) do
+    membership
+    |> cast(attrs, [:role])
+    |> validate_required([:role])
+    |> validate_inclusion(:role, @roles)
+  end
+
   def roles, do: @roles
 end
