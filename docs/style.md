@@ -11,6 +11,8 @@ as the spine of the project, not as a quick feature pass.
 - Prefer boring, idiomatic Elixir over clever abstractions.
 - Make state ownership explicit.
 - Keep every step easy to explain against the project's docs and learning goals.
+- Prefer established Phoenix, OTP, Ecto, and well-maintained ecosystem
+  capabilities over custom infrastructure when they fit the problem.
 - Do not jump ahead from process foundation into presence, typing, rate limits,
   or UI polish until the current slice is proved.
 - Run focused tests first, then `mix precommit` after implementation changes.
@@ -18,6 +20,43 @@ as the spine of the project, not as a quick feature pass.
 The goal is not to build a production Discord clone. The goal is to understand
 why OTP exists, when processes should own state, and how Phoenix, PubSub,
 Postgres, and supervised processes fit together.
+
+## Implementation Standard Going Forward
+
+Future features should use the best available production-shaped option before
+building custom project-specific infrastructure.
+
+Decision order:
+
+1. Use official Phoenix/Ecto/LiveView/OTP features when they fit.
+2. Use a proven, actively maintained library when the framework does not cover
+   the problem directly.
+3. Build custom infrastructure only when the project has a clear learning goal,
+   product requirement, or integration constraint that the existing options do
+   not satisfy.
+
+Examples:
+
+- Prefer Phoenix Presence for future presence-style features instead of
+  expanding the current hand-rolled presence runtime.
+- Prefer Phoenix Channels when a feature needs channel/socket semantics beyond
+  LiveView events and PubSub subscriptions.
+- Prefer LiveView uploads and Phoenix-supported upload patterns for file and
+  image upload flows.
+- Document any deliberate custom implementation with the reason it is better
+  for this project than the available framework or library option.
+
+## Near-Term Product Direction
+
+The next product slices should be planned in this order:
+
+1. Simple role-based permissions with `owner`, `admin`, and `user` roles.
+2. File and image uploads in messages.
+3. Voice-channel simulation before any real audio implementation.
+
+The permissions slice should come first because channel read/send/manage
+capabilities will shape uploads, voice channels, private channels, unread
+fanout, and future moderation behavior.
 
 ## Architectural Boundaries
 
@@ -194,4 +233,3 @@ Before finishing an OTP/in-memory slice, check:
 - Did the change avoid unnecessary dependencies?
 - Did focused tests pass?
 - Did `mix precommit` pass after implementation changes?
-

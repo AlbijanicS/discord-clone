@@ -2,7 +2,7 @@ defmodule DiscordClone.Workspaces.WorkspaceMembership do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @roles ~w(owner member)
+  @roles ~w(owner admin member)
 
   schema "workspace_memberships" do
     field :role, :string, default: "member"

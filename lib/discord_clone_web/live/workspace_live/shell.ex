@@ -168,6 +168,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                     Invite
                   </.link>
                   <button
+                    :if={can_rename_workspace?(@selected_workspace, @current_scope)}
                     id={"workspace-#{@selected_workspace.id}-rename"}
                     type="button"
                     class="block w-full rounded px-3 py-2 text-left text-sm transition hover:bg-base-200"
@@ -177,7 +178,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                     Rename
                   </button>
                   <button
-                    :if={workspace_owner?(@selected_workspace, @current_scope)}
+                    :if={can_delete_workspace?(@selected_workspace, @current_scope)}
                     id={"workspace-#{@selected_workspace.id}-delete"}
                     type="button"
                     class="block w-full rounded px-3 py-2 text-left text-sm text-error transition hover:bg-error/10"
@@ -188,7 +189,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                     Delete workspace
                   </button>
                   <button
-                    :if={!workspace_owner?(@selected_workspace, @current_scope)}
+                    :if={!can_delete_workspace?(@selected_workspace, @current_scope)}
                     id={"workspace-#{@selected_workspace.id}-leave"}
                     type="button"
                     class="block w-full rounded px-3 py-2 text-left text-sm text-error transition hover:bg-error/10"
@@ -205,7 +206,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                   Channels
                 </p>
                 <button
-                  :if={@channel_form && !@show_channel_form?}
+                  :if={
+                    @channel_form && !@show_channel_form? &&
+                      can_create_channel?(@selected_workspace, @current_scope)
+                  }
                   id="channel-create-toggle"
                   type="button"
                   class="btn btn-square btn-xs btn-ghost transition hover:scale-105"
@@ -305,6 +309,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                       Mark as read
                     </button>
                     <button
+                      :if={can_rename_channel?(@selected_workspace, @current_scope)}
                       id={"channel-#{channel.id}-rename"}
                       type="button"
                       class="block w-full rounded px-3 py-2 text-left text-sm transition hover:bg-base-200"
@@ -314,7 +319,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                       Rename
                     </button>
                     <button
-                      :if={@selected_workspace.default_channel_id != channel.id}
+                      :if={
+                        @selected_workspace.default_channel_id != channel.id &&
+                          can_delete_channel?(@selected_workspace, @current_scope)
+                      }
                       id={"channel-#{channel.id}-delete"}
                       type="button"
                       class="block w-full rounded px-3 py-2 text-left text-sm text-error transition hover:bg-error/10"
@@ -330,7 +338,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
             </div>
 
             <.form
-              :if={@channel_form && @show_channel_form?}
+              :if={
+                @channel_form && @show_channel_form? &&
+                  can_create_channel?(@selected_workspace, @current_scope)
+              }
               for={@channel_form}
               id="channel-create-form"
               phx-submit="create_channel"
@@ -586,8 +597,24 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
     if selected_channel?(channel, selected_channel), do: "page"
   end
 
-  defp workspace_owner?(workspace, current_scope) do
-    current_scope && current_scope.user && workspace.owner_id == current_scope.user.id
+  defp can_rename_workspace?(workspace, current_scope) do
+    Workspaces.can_rename_workspace?(current_scope, workspace)
+  end
+
+  defp can_delete_workspace?(workspace, current_scope) do
+    Workspaces.can_delete_workspace?(current_scope, workspace)
+  end
+
+  defp can_create_channel?(workspace, current_scope) do
+    Workspaces.can_create_channel?(current_scope, workspace)
+  end
+
+  defp can_rename_channel?(workspace, current_scope) do
+    Workspaces.can_rename_channel?(current_scope, workspace)
+  end
+
+  defp can_delete_channel?(workspace, current_scope) do
+    Workspaces.can_delete_channel?(current_scope, workspace)
   end
 
   defp can_create_workspace_invite?(workspace, current_scope) do

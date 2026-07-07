@@ -3942,7 +3942,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       {:ok, renamed_channel} =
         Workspaces.create_channel(owner_scope, workspace.id, %{name: "planning"})
 
-      add_workspace_member!(workspace, member_scope)
+      add_workspace_member!(workspace, member_scope, "admin")
       :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
 
       {:ok, view, _html} =
@@ -4035,7 +4035,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       {:ok, deleted_channel} =
         Workspaces.create_channel(owner_scope, workspace.id, %{name: "planning"})
 
-      add_workspace_member!(workspace, member_scope)
+      add_workspace_member!(workspace, member_scope, "owner")
       :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
 
       {:ok, view, _html} =
@@ -4192,14 +4192,13 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute has_element?(view, "#workspace-#{workspace.id}-invite-new")
     end
 
-    test "shows the invite action to members in members-can-invite workspaces", %{
+    test "shows the invite action to admins", %{
       conn: conn,
-      scope: member_scope
+      scope: admin_scope
     } do
       owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
-      workspace = set_invite_policy!(workspace, "members_can_invite")
-      add_workspace_member!(workspace, member_scope)
+      add_workspace_member!(workspace, admin_scope, "admin")
 
       {:ok, view, _html} =
         live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
@@ -4231,13 +4230,12 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
     test "syncs sidebar read state across invite and channel sessions", %{
       conn: invite_conn,
-      scope: member_scope
+      scope: admin_scope
     } do
       {_owner_scope, workspace, sibling_channel} =
-        workspace_with_sibling_unread!(member_scope)
+        workspace_with_sibling_unread!(admin_scope, "admin")
 
-      workspace = set_invite_policy!(workspace, "members_can_invite")
-      channel_conn = build_conn() |> log_in_user(member_scope.user)
+      channel_conn = build_conn() |> log_in_user(admin_scope.user)
 
       {:ok, invite_view, _html} = live(invite_conn, ~p"/workspaces/#{workspace.id}/invites/new")
 
@@ -4264,7 +4262,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
     test "renders durable workspace members in the invite shell", %{
       conn: conn,
-      scope: member_scope
+      scope: admin_scope
     } do
       owner_scope =
         %{username: "invite_owner"}
@@ -4272,8 +4270,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
         |> DiscordClone.AccountsFixtures.user_scope_fixture()
 
       {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
-      workspace = set_invite_policy!(workspace, "members_can_invite")
-      add_workspace_member!(workspace, member_scope)
+      add_workspace_member!(workspace, admin_scope, "admin")
 
       {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/invites/new")
 
@@ -4287,8 +4284,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert has_element?(
                view,
-               "#workspace-member-#{member_scope.user.id}",
-               member_scope.user.username
+               "#workspace-member-#{admin_scope.user.id}",
+               admin_scope.user.username
              )
 
       assert has_element?(view, "#workspace-invite-create-form")
@@ -4296,7 +4293,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
     test "marks the current member online after entering an invite surface", %{
       conn: conn,
-      scope: member_scope
+      scope: admin_scope
     } do
       owner_scope =
         %{username: "invite_presence_owner"}
@@ -4304,20 +4301,19 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
         |> DiscordClone.AccountsFixtures.user_scope_fixture()
 
       {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
-      workspace = set_invite_policy!(workspace, "members_can_invite")
-      add_workspace_member!(workspace, member_scope)
+      add_workspace_member!(workspace, admin_scope, "admin")
 
       {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/invites/new")
 
       assert has_element?(
                view,
-               "#workspace-member-#{member_scope.user.id}[data-presence-state='online']",
-               member_scope.user.username
+               "#workspace-member-#{admin_scope.user.id}[data-presence-state='online']",
+               admin_scope.user.username
              )
 
       assert has_element?(
                view,
-               "#workspace-member-#{member_scope.user.id} [data-member-status='online']",
+               "#workspace-member-#{admin_scope.user.id} [data-member-status='online']",
                "Online"
              )
 
@@ -4338,7 +4334,6 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
         |> DiscordClone.AccountsFixtures.user_scope_fixture()
 
       {:ok, workspace} = Workspaces.create_workspace(receiver_scope, %{name: "Foundry"})
-      workspace = set_invite_policy!(workspace, "members_can_invite")
       add_workspace_member!(workspace, sender_scope)
       sender_conn = build_conn() |> log_in_user(sender_scope.user)
 
@@ -4484,22 +4479,22 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
     end
   end
 
-  defp add_workspace_member!(workspace, scope) do
+  defp add_workspace_member!(workspace, scope, role \\ "member") do
     %WorkspaceMembership{}
     |> WorkspaceMembership.changeset(%{
       workspace_id: workspace.id,
       user_id: scope.user.id,
-      role: "member"
+      role: role
     })
     |> Repo.insert!()
   end
 
-  defp workspace_with_sibling_unread!(member_scope) do
+  defp workspace_with_sibling_unread!(member_scope, role \\ "member") do
     owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
     {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
     {:ok, sibling_channel} = Workspaces.create_channel(owner_scope, workspace.id, %{name: "ops"})
 
-    add_workspace_member!(workspace, member_scope)
+    add_workspace_member!(workspace, member_scope, role)
     :ok = Chat.initialize_workspace_reads_for_user(member_scope.user.id, workspace.id)
     {:ok, _message} = Chat.send_message(owner_scope, sibling_channel.id, %{content: "ops update"})
 
@@ -4559,12 +4554,6 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
            end
          ]}
     })
-  end
-
-  defp set_invite_policy!(workspace, invite_policy) do
-    workspace
-    |> Ecto.Changeset.change(invite_policy: invite_policy)
-    |> Repo.update!()
   end
 
   defp workspace_member_row_ids(view, user_id) do

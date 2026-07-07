@@ -19,11 +19,10 @@ defmodule DiscordClone.Workspaces do
   alias DiscordClone.Workspaces.{Channel, Workspace, WorkspaceInvite, WorkspaceMembership}
 
   @owner_role "owner"
+  @admin_role "admin"
   @member_role "member"
 
   @owner_only_invites "owner_only"
-  @members_can_invite "members_can_invite"
-
   @default_channel_name "general"
   @invite_code_bytes 24
   @default_invite_ttl_minutes 30
@@ -122,10 +121,10 @@ defmodule DiscordClone.Workspaces do
 
   def create_workspace(_scope, _attrs), do: {:error, :unauthenticated}
 
-  def rename_workspace(%Scope{user: %User{} = user} = scope, workspace_id, attrs)
+  def rename_workspace(%Scope{user: %User{}} = scope, workspace_id, attrs)
       when is_map(attrs) do
     with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
-         :ok <- authorize_manage_workspace(workspace, user) do
+         :ok <- authorize_rename_workspace(scope, workspace) do
       workspace
       |> Workspace.rename_changeset(workspace_rename_attrs(attrs))
       |> Repo.update()
@@ -222,9 +221,9 @@ defmodule DiscordClone.Workspaces do
     |> Channel.create_changeset(channel_attrs(workspace_id, attrs))
   end
 
-  def create_channel(%Scope{user: %User{} = user}, workspace_id, attrs) when is_map(attrs) do
+  def create_channel(%Scope{user: %User{}} = scope, workspace_id, attrs) when is_map(attrs) do
     with {:ok, workspace} <- get_workspace(workspace_id),
-         :ok <- authorize_manage_channels(workspace, user) do
+         :ok <- authorize_create_channel(scope, workspace) do
       create_channel_with_reads(workspace, attrs)
     end
   end
@@ -242,7 +241,7 @@ defmodule DiscordClone.Workspaces do
   def create_workspace_invite(%Scope{user: %User{} = user} = scope, workspace_id, attrs)
       when is_map(attrs) do
     with {:ok, %Workspace{id: workspace_id} = workspace} <- fetch_workspace(scope, workspace_id),
-         :ok <- authorize_create_invite(workspace, user) do
+         :ok <- authorize_create_invite(scope, workspace) do
       %WorkspaceInvite{}
       |> WorkspaceInvite.create_changeset(invite_creation_attrs(workspace_id, user, attrs))
       |> Repo.insert()
@@ -258,10 +257,33 @@ defmodule DiscordClone.Workspaces do
 
   def create_workspace_invite(_scope, _workspace_id, _attrs), do: {:error, :unauthenticated}
 
-  def can_create_workspace_invite?(%Scope{user: %User{} = user}, %Workspace{} = workspace) do
-    workspace_member?(workspace.id, user.id) and
-      workspace_invite_policy_allows?(workspace, user)
-  end
+  def can_rename_workspace?(%Scope{} = scope, %Workspace{} = workspace),
+    do: has_workspace_role?(scope, workspace, [@owner_role])
+
+  def can_rename_workspace?(_scope, _workspace), do: false
+
+  def can_delete_workspace?(%Scope{} = scope, %Workspace{} = workspace),
+    do: has_workspace_role?(scope, workspace, [@owner_role])
+
+  def can_delete_workspace?(_scope, _workspace), do: false
+
+  def can_create_channel?(%Scope{} = scope, %Workspace{} = workspace),
+    do: has_workspace_role?(scope, workspace, [@owner_role, @admin_role])
+
+  def can_create_channel?(_scope, _workspace), do: false
+
+  def can_rename_channel?(%Scope{} = scope, %Workspace{} = workspace),
+    do: has_workspace_role?(scope, workspace, [@owner_role, @admin_role])
+
+  def can_rename_channel?(_scope, _workspace), do: false
+
+  def can_delete_channel?(%Scope{} = scope, %Workspace{} = workspace),
+    do: has_workspace_role?(scope, workspace, [@owner_role])
+
+  def can_delete_channel?(_scope, _workspace), do: false
+
+  def can_create_workspace_invite?(%Scope{} = scope, %Workspace{} = workspace),
+    do: has_workspace_role?(scope, workspace, [@owner_role, @admin_role])
 
   def can_create_workspace_invite?(_scope, _workspace), do: false
 
@@ -314,10 +336,10 @@ defmodule DiscordClone.Workspaces do
 
   def accept_workspace_invite(_scope, _code), do: {:error, :unauthenticated}
 
-  def rename_channel(%Scope{user: %User{} = user} = scope, workspace_id, channel_id, attrs)
+  def rename_channel(%Scope{user: %User{}} = scope, workspace_id, channel_id, attrs)
       when is_map(attrs) do
     with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
-         :ok <- authorize_manage_channels(workspace, user),
+         :ok <- authorize_rename_channel(scope, workspace),
          {:ok, channel} <- get_channel(workspace.id, channel_id) do
       channel
       |> Channel.rename_changeset(channel_rename_attrs(attrs))
@@ -334,9 +356,9 @@ defmodule DiscordClone.Workspaces do
 
   def rename_channel(_scope, _workspace_id, _channel_id, _attrs), do: {:error, :unauthenticated}
 
-  def delete_channel(%Scope{user: %User{} = user} = scope, workspace_id, channel_id) do
+  def delete_channel(%Scope{user: %User{}} = scope, workspace_id, channel_id) do
     with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
-         :ok <- authorize_manage_channels(workspace, user),
+         :ok <- authorize_delete_channel(scope, workspace),
          {:ok, channel} <- get_channel(workspace.id, channel_id),
          :ok <- reject_landing_channel_delete(workspace, channel) do
       Repo.delete(channel)
@@ -368,9 +390,9 @@ defmodule DiscordClone.Workspaces do
 
   def leave_workspace(_scope, _workspace_id), do: {:error, :unauthenticated}
 
-  def delete_workspace(%Scope{user: %User{id: user_id}}, workspace_id) do
+  def delete_workspace(%Scope{user: %User{}} = scope, workspace_id) do
     with {:ok, workspace} <- get_workspace(workspace_id),
-         :ok <- authorize_delete_workspace(workspace, user_id),
+         :ok <- authorize_delete_workspace(scope, workspace),
          {:ok, deleted_workspace} <- Repo.delete(workspace) do
       :ok = Chat.stop_workspace_presence(deleted_workspace.id)
       {:ok, deleted_workspace}
@@ -618,34 +640,31 @@ defmodule DiscordClone.Workspaces do
       else: {:error, :unauthorized}
   end
 
-  defp authorize_manage_workspace(workspace, user),
-    do: authorize_view_workspace(workspace, user)
+  defp authorize_rename_workspace(scope, workspace) do
+    if can_rename_workspace?(scope, workspace), do: :ok, else: {:error, :owner_required}
+  end
 
-  defp authorize_manage_channels(workspace, user),
-    do: authorize_view_workspace(workspace, user)
+  defp authorize_create_channel(scope, workspace) do
+    if can_create_channel?(scope, workspace), do: :ok, else: {:error, :unauthorized}
+  end
 
-  defp authorize_create_invite(workspace, user) do
-    if workspace_invite_policy_allows?(workspace, user),
+  defp authorize_rename_channel(scope, workspace) do
+    if can_rename_channel?(scope, workspace), do: :ok, else: {:error, :unauthorized}
+  end
+
+  defp authorize_delete_channel(scope, workspace) do
+    if can_delete_channel?(scope, workspace), do: :ok, else: {:error, :owner_required}
+  end
+
+  defp authorize_create_invite(scope, workspace) do
+    if can_create_workspace_invite?(scope, workspace),
       do: :ok,
       else: {:error, :invite_permission_required}
   end
 
-  defp workspace_invite_policy_allows?(
-         %Workspace{invite_policy: @owner_only_invites, owner_id: owner_id},
-         %User{id: user_id}
-       ),
-       do: owner_id == user_id
-
-  defp workspace_invite_policy_allows?(%Workspace{invite_policy: @members_can_invite}, %User{}),
-    do: true
-
-  defp workspace_invite_policy_allows?(_workspace, _user), do: false
-
-  defp authorize_delete_workspace(%Workspace{owner_id: owner_id}, user_id)
-       when owner_id == user_id,
-       do: :ok
-
-  defp authorize_delete_workspace(_workspace, _user_id), do: {:error, :owner_required}
+  defp authorize_delete_workspace(scope, workspace) do
+    if can_delete_workspace?(scope, workspace), do: :ok, else: {:error, :owner_required}
+  end
 
   defp create_channel_with_reads(%Workspace{} = workspace, attrs) do
     Multi.new()
@@ -685,6 +704,13 @@ defmodule DiscordClone.Workspaces do
     do: {:error, :owner_must_delete}
 
   defp reject_owner_leave(_membership), do: :ok
+
+  defp has_workspace_role?(%Scope{user: %User{id: user_id}}, %Workspace{id: workspace_id}, roles) do
+    case get_workspace_membership(workspace_id, user_id) do
+      {:ok, %WorkspaceMembership{role: role}} -> role in roles
+      {:error, _reason} -> false
+    end
+  end
 
   defp workspace_member?(workspace_id, user_id) do
     Repo.exists?(

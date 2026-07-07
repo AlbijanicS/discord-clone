@@ -156,6 +156,51 @@ defmodule DiscordClone.WorkspacesTest do
     end
   end
 
+  describe "workspace membership roles" do
+    test "accepts owner, admin, and member roles" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Role Workspace"})
+
+      assert add_workspace_member!(workspace, admin_scope, "admin").role == "admin"
+      assert add_workspace_member!(workspace, member_scope, "member").role == "member"
+      assert Repo.get_by!(WorkspaceMembership, workspace_id: workspace.id, role: "owner")
+    end
+  end
+
+  describe "role capabilities" do
+    test "exposes workspace, channel, and invite capabilities by workspace role" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Role Workspace"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert Workspaces.can_rename_workspace?(owner_scope, workspace)
+      assert Workspaces.can_delete_workspace?(owner_scope, workspace)
+      assert Workspaces.can_create_channel?(owner_scope, workspace)
+      assert Workspaces.can_rename_channel?(owner_scope, workspace)
+      assert Workspaces.can_delete_channel?(owner_scope, workspace)
+      assert Workspaces.can_create_workspace_invite?(owner_scope, workspace)
+
+      refute Workspaces.can_rename_workspace?(admin_scope, workspace)
+      refute Workspaces.can_delete_workspace?(admin_scope, workspace)
+      assert Workspaces.can_create_channel?(admin_scope, workspace)
+      assert Workspaces.can_rename_channel?(admin_scope, workspace)
+      refute Workspaces.can_delete_channel?(admin_scope, workspace)
+      assert Workspaces.can_create_workspace_invite?(admin_scope, workspace)
+
+      refute Workspaces.can_rename_workspace?(member_scope, workspace)
+      refute Workspaces.can_delete_workspace?(member_scope, workspace)
+      refute Workspaces.can_create_channel?(member_scope, workspace)
+      refute Workspaces.can_rename_channel?(member_scope, workspace)
+      refute Workspaces.can_delete_channel?(member_scope, workspace)
+      refute Workspaces.can_create_workspace_invite?(member_scope, workspace)
+    end
+  end
+
   describe "list_workspaces/1" do
     test "returns only workspaces where the user is a workspace member" do
       scope = user_scope_fixture()
@@ -444,7 +489,7 @@ defmodule DiscordClone.WorkspacesTest do
   end
 
   describe "create_channel/3" do
-    test "allows an authenticated workspace member to create a channel" do
+    test "allows the workspace owner to create a channel" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
 
@@ -453,6 +498,23 @@ defmodule DiscordClone.WorkspacesTest do
 
       assert channel.workspace_id == workspace.id
       assert channel.name == "general-chat"
+    end
+
+    test "allows admins but rejects members creating channels" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "My Server"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert {:ok, channel} =
+               Workspaces.create_channel(admin_scope, workspace.id, %{name: "Admin Planning"})
+
+      assert channel.name == "admin-planning"
+
+      assert Workspaces.create_channel(member_scope, workspace.id, %{name: "Member Planning"}) ==
+               {:error, :unauthorized}
     end
 
     test "initializes empty read rows for all current workspace members" do
@@ -647,17 +709,21 @@ defmodule DiscordClone.WorkspacesTest do
       assert Repo.aggregate(WorkspaceInvite, :count) == 0
     end
 
-    test "allows any member in members-can-invite workspaces to create an invite" do
+    test "allows admins but rejects members creating invites" do
       owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
       member_scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
-      workspace = set_invite_policy!(workspace, "members_can_invite")
-      add_workspace_member!(workspace, member_scope)
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
 
-      assert {:ok, invite} = Workspaces.create_workspace_invite(member_scope, workspace.id)
+      assert {:ok, invite} = Workspaces.create_workspace_invite(admin_scope, workspace.id)
 
       assert invite.workspace_id == workspace.id
-      assert invite.created_by_user_id == member_scope.user.id
+      assert invite.created_by_user_id == admin_scope.user.id
+
+      assert Workspaces.create_workspace_invite(member_scope, workspace.id) ==
+               {:error, :invite_permission_required}
     end
 
     test "ignores server-owned attributes while accepting controlled expiration and max uses" do
@@ -1089,7 +1155,7 @@ defmodule DiscordClone.WorkspacesTest do
   end
 
   describe "rename_workspace/3" do
-    test "allows a workspace member to rename a workspace" do
+    test "allows the workspace owner to rename a workspace" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
 
@@ -1098,6 +1164,23 @@ defmodule DiscordClone.WorkspacesTest do
 
       assert renamed_workspace.id == workspace.id
       assert renamed_workspace.name == "Design Guild"
+    end
+
+    test "rejects admins and members renaming a workspace" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "My Server"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert Workspaces.rename_workspace(admin_scope, workspace.id, %{name: "Admin Name"}) ==
+               {:error, :owner_required}
+
+      assert Workspaces.rename_workspace(member_scope, workspace.id, %{name: "Member Name"}) ==
+               {:error, :owner_required}
+
+      assert Repo.reload!(workspace).name == "My Server"
     end
 
     test "returns an invalid workspace changeset for invalid input" do
@@ -1135,7 +1218,7 @@ defmodule DiscordClone.WorkspacesTest do
   end
 
   describe "rename_channel/4" do
-    test "allows a workspace member to rename a channel" do
+    test "allows the workspace owner to rename a channel" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
       {:ok, channel} = Workspaces.create_channel(scope, workspace.id, %{name: "planning"})
@@ -1146,6 +1229,27 @@ defmodule DiscordClone.WorkspacesTest do
       assert renamed_channel.id == channel.id
       assert renamed_channel.workspace_id == workspace.id
       assert renamed_channel.name == "design-room"
+    end
+
+    test "allows admins but rejects members renaming channels" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "My Server"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+      {:ok, channel} = Workspaces.create_channel(owner_scope, workspace.id, %{name: "planning"})
+
+      assert {:ok, renamed_channel} =
+               Workspaces.rename_channel(admin_scope, workspace.id, channel.id, %{
+                 name: "Admin Planning"
+               })
+
+      assert renamed_channel.name == "admin-planning"
+
+      assert Workspaces.rename_channel(member_scope, workspace.id, channel.id, %{
+               name: "Member Planning"
+             }) == {:error, :unauthorized}
     end
 
     test "allows renaming the landing channel without changing the landing channel id" do
@@ -1239,6 +1343,24 @@ defmodule DiscordClone.WorkspacesTest do
 
       assert deleted_channel.id == channel.id
       refute Repo.get(Channel, channel.id)
+    end
+
+    test "rejects admins and members deleting channels" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "My Server"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+      {:ok, channel} = Workspaces.create_channel(owner_scope, workspace.id, %{name: "planning"})
+
+      assert Workspaces.delete_channel(admin_scope, workspace.id, channel.id) ==
+               {:error, :owner_required}
+
+      assert Workspaces.delete_channel(member_scope, workspace.id, channel.id) ==
+               {:error, :owner_required}
+
+      assert Repo.get(Channel, channel.id)
     end
 
     test "deletes messages for the deleted channel only" do
@@ -1531,12 +1653,12 @@ defmodule DiscordClone.WorkspacesTest do
     end
   end
 
-  defp add_workspace_member!(workspace, scope) do
+  defp add_workspace_member!(workspace, scope, role \\ "member") do
     %WorkspaceMembership{}
     |> WorkspaceMembership.changeset(%{
       workspace_id: workspace.id,
       user_id: scope.user.id,
-      role: "member"
+      role: role
     })
     |> Repo.insert!()
   end
@@ -1571,11 +1693,5 @@ defmodule DiscordClone.WorkspacesTest do
       end)
 
     message
-  end
-
-  defp set_invite_policy!(workspace, invite_policy) do
-    workspace
-    |> Ecto.Changeset.change(invite_policy: invite_policy)
-    |> Repo.update!()
   end
 end
