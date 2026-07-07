@@ -259,6 +259,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               <div :if={row.row_kind == :compact} id={"#{dom_id}-spacer"} aria-hidden="true"></div>
               <div id={"#{dom_id}-body"} class="relative min-w-0 pr-40">
                 <div
+                  :if={!message_deleted?(row.message)}
                   id={"#{dom_id}-reaction-palette"}
                   class={[
                     "pointer-events-none absolute right-0 z-10 flex items-center gap-0.5 rounded-md bg-base-100/95 p-0.5 opacity-0 shadow-lg shadow-base-300/20 ring-1 ring-base-content/10 transition duration-150 group-hover:pointer-events-auto group-hover:opacity-100",
@@ -300,7 +301,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                   </time>
                 </div>
                 {message_content(row, dom_id)}
-                <%= if reaction_summaries_for(@reaction_summaries, row.message.id) != [] do %>
+                <%= if !message_deleted?(row.message) &&
+                          reaction_summaries_for(@reaction_summaries, row.message.id) != [] do %>
                   <div
                     id={"#{dom_id}-reactions"}
                     class="mt-1.5 flex flex-wrap items-center gap-1.5"
@@ -417,6 +419,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          newer_available_meta(socket.assigns.message_window_meta, message)
        )}
     end
+  end
+
+  def handle_info({:message_deleted, payload}, socket) do
+    {:noreply, refresh_deleted_message(socket, payload)}
   end
 
   def handle_info({:workspace_message_created, %{workspace_id: workspace_id} = payload}, socket) do
@@ -1249,7 +1255,49 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     restream_message_row(socket, message_id)
   end
 
+  defp refresh_deleted_message(socket, %{channel_id: channel_id, message_id: message_id}) do
+    if socket.assigns.selected_channel.id == channel_id do
+      case {Map.fetch(socket.assigns.message_rows_by_id, message_id),
+            Chat.fetch_message(socket.assigns.current_scope, message_id)} do
+        {{:ok, row}, {:ok, message}} ->
+          row = %{row | message: message}
+
+          socket
+          |> assign(
+            :reaction_summaries,
+            Map.delete(socket.assigns.reaction_summaries, message_id)
+          )
+          |> maybe_assign_deleted_boundary_message(message)
+          |> put_message_row(row)
+          |> stream_insert(:messages, row)
+
+        _not_visible_or_inaccessible ->
+          socket
+      end
+    else
+      socket
+    end
+  end
+
+  defp refresh_deleted_message(socket, _payload), do: socket
+
+  defp maybe_assign_deleted_boundary_message(socket, message) do
+    socket
+    |> maybe_assign_boundary_message(:oldest_message, message)
+    |> maybe_assign_boundary_message(:latest_message, message)
+  end
+
+  defp maybe_assign_boundary_message(socket, assign_name, message) do
+    case Map.get(socket.assigns, assign_name) do
+      %{id: id} when id == message.id -> assign(socket, assign_name, message)
+      _other -> socket
+    end
+  end
+
   defp reaction_palette, do: @reaction_palette
+
+  defp message_deleted?(%{deleted_at: %DateTime{}}), do: true
+  defp message_deleted?(_message), do: false
 
   defp reaction_option_id(message_id, index), do: "message-#{message_id}-reaction-option-#{index}"
 
@@ -1273,6 +1321,14 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   end
 
   defp message_content(row, dom_id) do
+    if message_deleted?(row.message) do
+      deleted_message_placeholder(dom_id)
+    else
+      active_message_content(row, dom_id)
+    end
+  end
+
+  defp active_message_content(row, dom_id) do
     {:safe, attrs} =
       Phoenix.HTML.attributes_escape(
         id: "#{dom_id}-content",
@@ -1288,6 +1344,17 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       |> Phoenix.HTML.html_escape()
 
     {:safe, ["<p", attrs, ">", content, "</p>"]}
+  end
+
+  defp deleted_message_placeholder(dom_id) do
+    {:safe, attrs} =
+      Phoenix.HTML.attributes_escape(
+        id: "#{dom_id}-deleted-placeholder",
+        class:
+          "mt-0.5 rounded bg-base-200/70 px-3 py-2 text-sm italic leading-5 text-base-content/50 ring-1 ring-base-300/60"
+      )
+
+    {:safe, ["<p", attrs, ">Message deleted</p>"]}
   end
 
   defp prepend_older_message_rows([], socket), do: socket

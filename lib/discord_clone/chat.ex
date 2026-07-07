@@ -8,6 +8,7 @@ defmodule DiscordClone.Chat do
 
   import Ecto.Query
 
+  alias Ecto.Multi
   alias DiscordClone.Accounts.{Scope, User}
 
   alias DiscordClone.Chat.{
@@ -25,7 +26,13 @@ defmodule DiscordClone.Chat do
   }
 
   alias DiscordClone.Repo
-  alias DiscordClone.Workspaces.{Channel, WorkspaceMembership, WorkspaceModeration}
+
+  alias DiscordClone.Workspaces.{
+    Channel,
+    WorkspaceAuditEvent,
+    WorkspaceMembership,
+    WorkspaceModeration
+  }
 
   @recent_message_limit 100
   @message_page_size 50
@@ -498,6 +505,15 @@ defmodule DiscordClone.Chat do
 
   def list_recent_messages(_scope, _channel_id), do: {:error, :unauthenticated}
 
+  def fetch_message(%Scope{user: %User{id: user_id}}, message_id) do
+    case get_member_message(message_id, user_id) do
+      %Message{} = message -> {:ok, Repo.preload(message, :user)}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def fetch_message(_scope, _message_id), do: {:error, :unauthenticated}
+
   def load_latest_message_window(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
       latest_seq = channel.last_message_seq
@@ -681,6 +697,7 @@ defmodule DiscordClone.Chat do
   def toggle_reaction(%Scope{user: %User{id: user_id}}, message_id, emoji) do
     with {:ok, normalized_emoji} <- Emoji.validate_reaction(emoji),
          %Message{} = message <- get_member_message(message_id, user_id),
+         :ok <- reject_deleted_message(message),
          :ok <- authorize_unmuted(message.channel.workspace_id, user_id) do
       case Repo.get_by(MessageReaction,
              message_id: message.id,
@@ -709,6 +726,7 @@ defmodule DiscordClone.Chat do
       end
     else
       nil -> {:error, :not_found}
+      {:error, :message_deleted} -> {:error, :message_deleted}
       {:error, :muted} -> {:error, :muted}
       {:error, :timeout} -> {:error, :timeout}
       {:error, reason} -> {:error, :invalid_emoji, reason}
@@ -716,6 +734,18 @@ defmodule DiscordClone.Chat do
   end
 
   def toggle_reaction(_scope, _message_id, _emoji), do: {:error, :unauthenticated}
+
+  def delete_message(%Scope{user: %User{id: user_id}}, message_id) do
+    with %Message{} = message <- get_member_message(message_id, user_id),
+         :ok <- authorize_delete_message(message, user_id) do
+      delete_message_with_optional_audit(message, user_id)
+    else
+      nil -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def delete_message(_scope, _message_id), do: {:error, :unauthenticated}
 
   def list_reaction_summaries(%Scope{user: %User{}}, []), do: {:ok, %{}}
 
@@ -836,6 +866,87 @@ defmodule DiscordClone.Chat do
       {:error, :not_found}
     end
   end
+
+  defp authorize_delete_message(%Message{user_id: user_id}, user_id), do: :ok
+
+  defp authorize_delete_message(%Message{} = message, user_id) do
+    message.channel.workspace_id
+    |> actor_target_roles(user_id, message.user_id)
+    |> case do
+      {%{role: "owner"}, %{role: role}} when role in ["admin", "member"] -> :ok
+      {%{role: "admin"}, %{role: role}} when role in ["admin", "member"] -> :ok
+      _roles -> {:error, :unauthorized}
+    end
+  end
+
+  defp delete_message_with_optional_audit(%Message{} = message, user_id) do
+    deleted_at = DateTime.utc_now(:second)
+
+    multi =
+      Multi.new()
+      |> Multi.delete_all(
+        :reactions,
+        from(reaction in MessageReaction, where: reaction.message_id == ^message.id)
+      )
+      |> Multi.update(
+        :message,
+        Message.soft_delete_changeset(message, %{
+          deleted_at: deleted_at,
+          deleted_by_user_id: user_id
+        })
+      )
+      |> maybe_insert_message_delete_audit(message, user_id)
+
+    case Repo.transaction(multi) do
+      {:ok, %{message: message}} ->
+        message = Repo.preload(message, :user)
+        {:ok, pid} = ChannelSupervisor.start_channel(message.channel_id)
+        :ok = ChannelServer.put_recent_message(pid, message)
+        :ok = broadcast_message_deleted(message)
+        {:ok, message}
+
+      {:error, :message, changeset, _changes_so_far} ->
+        {:error, :invalid_message, changeset}
+
+      {:error, :audit_event, changeset, _changes_so_far} ->
+        {:error, :invalid_audit_event, changeset}
+    end
+  end
+
+  defp maybe_insert_message_delete_audit(%Multi{} = multi, %Message{user_id: user_id}, user_id),
+    do: multi
+
+  defp maybe_insert_message_delete_audit(%Multi{} = multi, %Message{} = message, actor_user_id) do
+    Multi.insert(multi, :audit_event, fn %{message: deleted_message} ->
+      WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
+        workspace_id: message.channel.workspace_id,
+        actor_user_id: actor_user_id,
+        target_user_id: message.user_id,
+        event_type: "moderator_message_deleted",
+        metadata: %{
+          "message_id" => deleted_message.id,
+          "channel_id" => deleted_message.channel_id
+        }
+      })
+    end)
+  end
+
+  defp actor_target_roles(workspace_id, actor_user_id, target_user_id) do
+    memberships =
+      Repo.all(
+        from membership in WorkspaceMembership,
+          where:
+            membership.workspace_id == ^workspace_id and
+              membership.user_id in ^[actor_user_id, target_user_id],
+          select: {membership.user_id, membership}
+      )
+      |> Map.new()
+
+    {Map.get(memberships, actor_user_id), Map.get(memberships, target_user_id)}
+  end
+
+  defp reject_deleted_message(%Message{deleted_at: %DateTime{}}), do: {:error, :message_deleted}
+  defp reject_deleted_message(%Message{}), do: :ok
 
   defp authorize_workspace_member(workspace_id, user_id) do
     if Repo.exists?(
@@ -1289,6 +1400,15 @@ defmodule DiscordClone.Chat do
       self(),
       channel_messages_topic(message.channel_id),
       {:message_created, message}
+    )
+  end
+
+  defp broadcast_message_deleted(%Message{} = message) do
+    Phoenix.PubSub.broadcast_from(
+      DiscordClone.PubSub,
+      self(),
+      channel_messages_topic(message.channel_id),
+      {:message_deleted, %{channel_id: message.channel_id, message_id: message.id}}
     )
   end
 

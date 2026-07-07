@@ -794,6 +794,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   defp audit_event_title(%{event_type: "member_timed_out"}), do: "Member timed out"
   defp audit_event_title(%{event_type: "member_timeout_removed"}), do: "Timeout removed"
   defp audit_event_title(%{event_type: "member_timeout_expired"}), do: "Timeout expired"
+  defp audit_event_title(%{event_type: "moderator_message_deleted"}), do: "Message deleted"
   defp audit_event_title(event), do: event.event_type
 
   defp audit_event_detail(event) do
@@ -808,6 +809,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
       "member_timed_out" -> "#{actor} timed out #{target}"
       "member_timeout_removed" -> "#{actor} removed timeout from #{target}"
       "member_timeout_expired" -> "Timeout expired for #{target}"
+      "moderator_message_deleted" -> "#{actor} deleted a message by #{target}"
       _event_type -> "#{actor} changed #{target}"
     end
   end

@@ -2995,6 +2995,143 @@ defmodule DiscordClone.ChatTest do
     end
   end
 
+  describe "delete_message/2" do
+    test "allows an author to soft delete their own message without removing it from message windows" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      assert {:ok, message} =
+               Chat.send_message(scope, workspace.default_channel_id, %{
+                 "content" => "delete my draft"
+               })
+
+      assert {:ok, deleted_message} = Chat.delete_message(scope, message.id)
+
+      assert deleted_message.id == message.id
+      assert deleted_message.content == "delete my draft"
+      assert deleted_message.deleted_at
+      assert deleted_message.deleted_by_user_id == scope.user.id
+
+      assert %Message{} = stored_message = Repo.get!(Message, message.id)
+      assert stored_message.content == "delete my draft"
+      assert stored_message.deleted_at == deleted_message.deleted_at
+
+      assert {:ok, %{messages: [window_message]}} =
+               Chat.load_latest_message_window(scope, workspace.default_channel_id)
+
+      assert window_message.id == message.id
+      assert window_message.deleted_at == deleted_message.deleted_at
+      assert window_message.content == "delete my draft"
+
+      assert {:ok, []} = Workspaces.list_audit_events(scope, workspace.id)
+    end
+
+    test "allows an owner to delete a member message and records a moderation audit event" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      assert {:ok, message} =
+               Chat.send_message(member_scope, workspace.default_channel_id, %{
+                 "content" => "needs moderation"
+               })
+
+      assert {:ok, deleted_message} = Chat.delete_message(owner_scope, message.id)
+
+      assert deleted_message.deleted_by_user_id == owner_scope.user.id
+
+      assert {:ok, [audit_event]} = Workspaces.list_audit_events(owner_scope, workspace.id)
+      assert audit_event.event_type == "moderator_message_deleted"
+      assert audit_event.actor_user_id == owner_scope.user.id
+      assert audit_event.target_user_id == member_scope.user.id
+      assert audit_event.metadata["message_id"] == message.id
+      assert audit_event.metadata["channel_id"] == workspace.default_channel_id
+    end
+
+    test "enforces moderator delete boundaries by role" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      other_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+      add_workspace_member!(workspace, other_member_scope, "member")
+
+      {:ok, member_message} =
+        Chat.send_message(member_scope, workspace.default_channel_id, %{
+          "content" => "member message"
+        })
+
+      {:ok, admin_message} =
+        Chat.send_message(admin_scope, workspace.default_channel_id, %{
+          "content" => "admin message"
+        })
+
+      {:ok, owner_message} =
+        Chat.send_message(owner_scope, workspace.default_channel_id, %{
+          "content" => "owner message"
+        })
+
+      assert {:ok, _deleted_message} = Chat.delete_message(admin_scope, member_message.id)
+      assert {:ok, _deleted_message} = Chat.delete_message(admin_scope, admin_message.id)
+      assert Chat.delete_message(admin_scope, owner_message.id) == {:error, :unauthorized}
+      assert Chat.delete_message(other_member_scope, owner_message.id) == {:error, :unauthorized}
+    end
+
+    test "removes existing reactions and rejects future reactions on deleted messages" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      {:ok, message} =
+        Chat.send_message(owner_scope, workspace.default_channel_id, %{
+          "content" => "reaction cleanup"
+        })
+
+      assert {:ok, _reaction} = Chat.toggle_reaction(owner_scope, message.id, "👍")
+      assert {:ok, _reaction} = Chat.toggle_reaction(member_scope, message.id, "❤️")
+
+      assert {:ok, summaries} = Chat.list_reaction_summaries(owner_scope, [message.id])
+      assert Map.has_key?(summaries, message.id)
+
+      assert {:ok, _deleted_message} = Chat.delete_message(owner_scope, message.id)
+
+      refute Repo.get_by(MessageReaction, message_id: message.id)
+      assert {:ok, %{}} = Chat.list_reaction_summaries(owner_scope, [message.id])
+      assert Chat.toggle_reaction(member_scope, message.id, "👍") == {:error, :message_deleted}
+    end
+
+    test "broadcasts message deletion and updates the channel runtime cache" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      assert {:ok, message} =
+               Chat.send_message(owner_scope, workspace.default_channel_id, %{
+                 "content" => "live delete"
+               })
+
+      subscriber = start_subscriber(member_scope, workspace.default_channel_id)
+      assert_receive {:subscribed, ^subscriber}
+
+      assert {:ok, deleted_message} = Chat.delete_message(owner_scope, message.id)
+
+      assert_receive {:subscriber_received, ^subscriber, {:message_deleted, payload}}
+      assert payload.message_id == message.id
+      assert payload.channel_id == workspace.default_channel_id
+
+      assert {:ok, [cached_message]} =
+               Chat.list_recent_messages(owner_scope, workspace.default_channel_id)
+
+      assert cached_message.id == message.id
+      assert cached_message.deleted_at == deleted_message.deleted_at
+    end
+  end
+
   describe "send_message/3" do
     test "persists trimmed content in the selected channel with the author preloaded" do
       scope = user_scope_fixture()
@@ -3580,12 +3717,12 @@ defmodule DiscordClone.ChatTest do
     )
   end
 
-  defp add_workspace_member!(workspace, scope) do
+  defp add_workspace_member!(workspace, scope, role \\ "member") do
     %WorkspaceMembership{}
     |> WorkspaceMembership.changeset(%{
       workspace_id: workspace.id,
       user_id: scope.user.id,
-      role: "member"
+      role: role
     })
     |> Repo.insert!()
   end

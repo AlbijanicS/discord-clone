@@ -5,9 +5,11 @@ defmodule DiscordClone.Chat.Message do
   schema "messages" do
     field :content, :string
     field :seq, :integer
+    field :deleted_at, :utc_datetime
 
     belongs_to :channel, DiscordClone.Workspaces.Channel
     belongs_to :user, DiscordClone.Accounts.User
+    belongs_to :deleted_by_user, DiscordClone.Accounts.User
 
     has_many :message_reactions, DiscordClone.Chat.MessageReaction
 
@@ -24,6 +26,13 @@ defmodule DiscordClone.Chat.Message do
     |> foreign_key_constraint(:user_id)
     |> check_constraint(:seq, name: :messages_seq_positive)
     |> unique_constraint(:seq, name: :messages_channel_id_seq_index)
+  end
+
+  def soft_delete_changeset(message, attrs) do
+    message
+    |> cast(attrs, [:deleted_at, :deleted_by_user_id])
+    |> validate_required([:deleted_at, :deleted_by_user_id])
+    |> foreign_key_constraint(:deleted_by_user_id)
   end
 
   defp normalize_content(content) when is_binary(content), do: String.trim(content)

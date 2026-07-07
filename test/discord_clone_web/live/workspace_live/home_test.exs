@@ -2100,6 +2100,44 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(viewer_view, "#message-#{message.id}-content", "please react live")
     end
 
+    test "refreshes connected viewers with a deleted message placeholder and clears reactions", %{
+      conn: viewer_conn,
+      scope: viewer_scope
+    } do
+      owner_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, viewer_scope)
+
+      message =
+        insert_message!(
+          workspace.default_channel_id,
+          viewer_scope.user.id,
+          "remove this live",
+          ~U[2026-06-19 10:30:00Z]
+        )
+
+      assert {:ok, _reaction} = Chat.toggle_reaction(owner_scope, message.id, "👍")
+
+      channel_path = ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+      {:ok, viewer_view, _html} = live(viewer_conn, channel_path)
+
+      assert has_element?(viewer_view, "#message-#{message.id}-content", "remove this live")
+      assert has_element?(viewer_view, "#message-#{message.id}-reaction-0", "👍 1")
+
+      assert {:ok, _deleted_message} = Chat.delete_message(owner_scope, message.id)
+      _ = :sys.get_state(viewer_view.pid)
+
+      assert has_element?(
+               viewer_view,
+               "#message-#{message.id}-deleted-placeholder",
+               "Message deleted"
+             )
+
+      refute has_element?(viewer_view, "#message-#{message.id}-content", "remove this live")
+      refute has_element?(viewer_view, "#message-#{message.id}-reaction-0")
+      refute has_element?(viewer_view, "#message-#{message.id}-reaction-option-0")
+    end
+
     test "keeps the full message experience working together", %{
       conn: viewer_conn,
       scope: viewer_scope
