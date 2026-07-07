@@ -641,17 +641,41 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                   <.icon name="hero-ellipsis-horizontal" class="size-4" />
                 </summary>
                 <div class="absolute right-0 z-30 mt-1 w-40 rounded border border-base-300 bg-base-100 p-1 shadow-lg">
-                  <button
-                    :for={action <- member_actions}
-                    id={"#{dom_id}-#{member_action_id(action)}"}
-                    type="button"
-                    class={[
-                      "block w-full rounded px-3 py-2 text-left text-xs font-medium transition hover:bg-base-200",
-                      member_action_destructive?(action) && "text-error hover:bg-error/10"
-                    ]}
-                  >
-                    {member_action_label(action)}
-                  </button>
+                  <%= for action <- member_actions do %>
+                    <%= if action == :timeout do %>
+                      <div class="border-y border-base-300/70 py-1">
+                        <p class="px-3 py-1 text-[0.65rem] font-semibold uppercase text-base-content/50">
+                          Timeout
+                        </p>
+                        <button
+                          :for={{duration, label} <- timeout_duration_presets()}
+                          id={"#{dom_id}-timeout-#{timeout_duration_id(duration)}"}
+                          type="button"
+                          class="block w-full rounded px-3 py-2 text-left text-xs font-medium transition hover:bg-base-200"
+                          phx-click="member_action"
+                          phx-value-action="timeout"
+                          phx-value-timeout_duration={duration}
+                          phx-value-user_id={item.member.user.id}
+                        >
+                          {label}
+                        </button>
+                      </div>
+                    <% else %>
+                      <button
+                        id={"#{dom_id}-#{member_action_id(action)}"}
+                        type="button"
+                        class={[
+                          "block w-full rounded px-3 py-2 text-left text-xs font-medium transition hover:bg-base-200",
+                          member_action_destructive?(action) && "text-error hover:bg-error/10"
+                        ]}
+                        phx-click={member_action_click(action)}
+                        phx-value-action={action}
+                        phx-value-user_id={item.member.user.id}
+                      >
+                        {member_action_label(action)}
+                      </button>
+                    <% end %>
+                  <% end %>
                 </div>
               </details>
             </div>
@@ -739,14 +763,37 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   defp member_action_label(:promote_to_admin), do: "Promote to admin"
   defp member_action_label(:demote_to_member), do: "Demote to member"
   defp member_action_label(:mute), do: "Mute"
+  defp member_action_label(:unmute), do: "Unmute"
   defp member_action_label(:timeout), do: "Timeout"
+  defp member_action_label(:remove_timeout), do: "Remove timeout"
   defp member_action_label(:kick), do: "Kick"
   defp member_action_label(:ban), do: "Ban"
 
   defp member_action_destructive?(action), do: action in [:kick, :ban]
 
+  defp member_action_click(action) when action in [:mute, :unmute, :remove_timeout],
+    do: "member_action"
+
+  defp member_action_click(_action), do: nil
+
+  defp timeout_duration_presets do
+    [
+      {"5_minutes", "5 minutes"},
+      {"1_hour", "1 hour"},
+      {"24_hours", "24 hours"},
+      {"7_days", "7 days"}
+    ]
+  end
+
+  defp timeout_duration_id(duration), do: String.replace(duration, "_", "-")
+
   defp audit_event_title(%{event_type: "member_role_promoted"}), do: "Member promoted"
   defp audit_event_title(%{event_type: "member_role_demoted"}), do: "Admin demoted"
+  defp audit_event_title(%{event_type: "member_muted"}), do: "Member muted"
+  defp audit_event_title(%{event_type: "member_unmuted"}), do: "Member unmuted"
+  defp audit_event_title(%{event_type: "member_timed_out"}), do: "Member timed out"
+  defp audit_event_title(%{event_type: "member_timeout_removed"}), do: "Timeout removed"
+  defp audit_event_title(%{event_type: "member_timeout_expired"}), do: "Timeout expired"
   defp audit_event_title(event), do: event.event_type
 
   defp audit_event_detail(event) do
@@ -756,6 +803,11 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
     case event.event_type do
       "member_role_promoted" -> "#{actor} promoted #{target} to admin"
       "member_role_demoted" -> "#{actor} demoted #{target} to member"
+      "member_muted" -> "#{actor} muted #{target}"
+      "member_unmuted" -> "#{actor} unmuted #{target}"
+      "member_timed_out" -> "#{actor} timed out #{target}"
+      "member_timeout_removed" -> "#{actor} removed timeout from #{target}"
+      "member_timeout_expired" -> "Timeout expired for #{target}"
       _event_type -> "#{actor} changed #{target}"
     end
   end

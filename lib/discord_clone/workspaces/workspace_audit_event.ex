@@ -2,7 +2,7 @@ defmodule DiscordClone.Workspaces.WorkspaceAuditEvent do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @role_event_types ~w(member_role_promoted member_role_demoted)
+  @event_types ~w(member_role_promoted member_role_demoted member_muted member_unmuted member_timed_out member_timeout_removed member_timeout_expired)
 
   schema "workspace_audit_events" do
     field :event_type, :string
@@ -27,7 +27,7 @@ defmodule DiscordClone.Workspaces.WorkspaceAuditEvent do
       :metadata
     ])
     |> validate_required([:workspace_id, :event_type, :metadata])
-    |> validate_inclusion(:event_type, @role_event_types)
+    |> validate_inclusion(:event_type, @event_types)
     |> foreign_key_constraint(:workspace_id)
     |> foreign_key_constraint(:actor_user_id)
     |> foreign_key_constraint(:target_user_id)

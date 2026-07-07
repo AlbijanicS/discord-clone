@@ -440,6 +440,302 @@ defmodule DiscordClone.WorkspacesTest do
     end
   end
 
+  describe "workspace-wide mute workflow" do
+    test "owners can mute members with an optional reason and audit event" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Mute Workspace"})
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert {:ok, moderation} =
+               Workspaces.mute_member(owner_scope, workspace.id, member_scope.user.id, %{
+                 "reason" => "Posting launch spoilers"
+               })
+
+      assert moderation.workspace_id == workspace.id
+      assert moderation.target_user_id == member_scope.user.id
+      assert moderation.reason == "Posting launch spoilers"
+      assert moderation.active?
+
+      assert {:ok, %{muted?: true, mute_reason: "Posting launch spoilers"}} =
+               Workspaces.member_moderation_state(
+                 member_scope,
+                 workspace.id,
+                 member_scope.user.id
+               )
+
+      assert {:ok, [audit_event]} = Workspaces.list_audit_events(owner_scope, workspace.id)
+      assert audit_event.event_type == "member_muted"
+      assert audit_event.actor_user_id == owner_scope.user.id
+      assert audit_event.target_user_id == member_scope.user.id
+      assert audit_event.reason == "Posting launch spoilers"
+      assert audit_event.metadata == %{"moderation_type" => "mute"}
+    end
+
+    test "admins can mute and unmute non-owners while members cannot inspect others" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      peer_admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Mute Workspace"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, peer_admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert {:error, :unauthorized} =
+               Workspaces.mute_member(admin_scope, workspace.id, owner_scope.user.id, %{})
+
+      assert {:ok, moderation} =
+               Workspaces.mute_member(admin_scope, workspace.id, peer_admin_scope.user.id, %{})
+
+      assert moderation.reason == nil
+      assert Workspaces.can_create_channel?(peer_admin_scope, workspace)
+
+      assert {:error, :unauthorized} =
+               Workspaces.member_moderation_state(
+                 member_scope,
+                 workspace.id,
+                 peer_admin_scope.user.id
+               )
+
+      assert {:ok, ended_moderation} =
+               Workspaces.unmute_member(admin_scope, workspace.id, peer_admin_scope.user.id)
+
+      refute ended_moderation.active?
+
+      assert {:ok, %{muted?: false, mute_reason: nil}} =
+               Workspaces.member_moderation_state(
+                 peer_admin_scope,
+                 workspace.id,
+                 peer_admin_scope.user.id
+               )
+
+      assert {:ok, [unmute_event, mute_event]} =
+               Workspaces.list_audit_events(owner_scope, workspace.id)
+
+      assert unmute_event.event_type == "member_unmuted"
+      assert unmute_event.actor_user_id == admin_scope.user.id
+      assert unmute_event.target_user_id == peer_admin_scope.user.id
+      assert mute_event.event_type == "member_muted"
+    end
+  end
+
+  describe "workspace-wide timeout workflow" do
+    test "owners can timeout members with a fixed duration preset and audit event" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Timeout Workspace"})
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert {:ok, moderation} =
+               Workspaces.timeout_member(
+                 owner_scope,
+                 workspace.id,
+                 member_scope.user.id,
+                 "5_minutes",
+                 %{"reason" => "Cooling down"}
+               )
+
+      assert moderation.workspace_id == workspace.id
+      assert moderation.target_user_id == member_scope.user.id
+      assert moderation.reason == "Cooling down"
+      assert moderation.active?
+      assert DateTime.compare(moderation.expires_at, DateTime.utc_now(:second)) == :gt
+
+      assert {:ok,
+              %{
+                timed_out?: true,
+                timeout_reason: "Cooling down",
+                timeout_ends_at: timeout_ends_at
+              }} =
+               Workspaces.member_moderation_state(
+                 member_scope,
+                 workspace.id,
+                 member_scope.user.id
+               )
+
+      assert DateTime.compare(timeout_ends_at, DateTime.utc_now(:second)) == :gt
+
+      assert {:ok, [audit_event]} = Workspaces.list_audit_events(owner_scope, workspace.id)
+      assert audit_event.event_type == "member_timed_out"
+      assert audit_event.actor_user_id == owner_scope.user.id
+      assert audit_event.target_user_id == member_scope.user.id
+      assert audit_event.reason == "Cooling down"
+      assert audit_event.metadata["moderation_type"] == "timeout"
+      assert audit_event.metadata["duration"] == "5_minutes"
+    end
+
+    test "admins can timeout and remove timeouts for non-owners with fixed presets only" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      peer_admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Timeout Workspace"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, peer_admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert Workspaces.timeout_member(
+               admin_scope,
+               workspace.id,
+               member_scope.user.id,
+               "13_minutes",
+               %{}
+             ) == {:error, :invalid_timeout_duration}
+
+      assert {:error, :unauthorized} =
+               Workspaces.timeout_member(admin_scope, workspace.id, owner_scope.user.id, "1_hour")
+
+      assert {:ok, moderation} =
+               Workspaces.timeout_member(
+                 admin_scope,
+                 workspace.id,
+                 peer_admin_scope.user.id,
+                 "1_hour"
+               )
+
+      assert moderation.reason == nil
+      assert Workspaces.can_create_channel?(peer_admin_scope, workspace)
+
+      peer_admin_membership =
+        Repo.get_by!(WorkspaceMembership,
+          workspace_id: workspace.id,
+          user_id: peer_admin_scope.user.id
+        )
+
+      assert :remove_timeout in Workspaces.available_member_actions(
+               admin_scope,
+               workspace,
+               peer_admin_membership
+             )
+
+      refute :timeout in Workspaces.available_member_actions(
+               admin_scope,
+               workspace,
+               peer_admin_membership
+             )
+
+      assert {:ok, ended_moderation} =
+               Workspaces.remove_member_timeout(
+                 admin_scope,
+                 workspace.id,
+                 peer_admin_scope.user.id
+               )
+
+      refute ended_moderation.active?
+
+      assert {:ok, %{timed_out?: false, timeout_reason: nil, timeout_ends_at: nil}} =
+               Workspaces.member_moderation_state(
+                 peer_admin_scope,
+                 workspace.id,
+                 peer_admin_scope.user.id
+               )
+
+      assert {:ok, [remove_event, timeout_event]} =
+               Workspaces.list_audit_events(owner_scope, workspace.id)
+
+      assert remove_event.event_type == "member_timeout_removed"
+      assert remove_event.actor_user_id == admin_scope.user.id
+      assert timeout_event.event_type == "member_timed_out"
+    end
+
+    test "natural timeout expiry is audited once and broadcasts moderation changes" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Timeout Workspace"})
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert {:ok, moderation} =
+               Workspaces.timeout_member(
+                 owner_scope,
+                 workspace.id,
+                 member_scope.user.id,
+                 "5_minutes"
+               )
+
+      moderation
+      |> Ecto.Changeset.change(expires_at: DateTime.add(DateTime.utc_now(:second), -1, :second))
+      |> Repo.update!()
+
+      assert :ok = Workspaces.subscribe_to_workspace_moderation(owner_scope, workspace.id)
+
+      assert {:ok, expired_moderation} = Workspaces.expire_member_timeout(moderation.id)
+      refute expired_moderation.active?
+
+      assert_receive {:workspace_moderation_changed,
+                      %{workspace_id: workspace_id, target_user_id: target_user_id}}
+
+      assert workspace_id == workspace.id
+      assert target_user_id == member_scope.user.id
+
+      assert Workspaces.expire_member_timeout(moderation.id) == {:ok, :already_inactive}
+
+      assert {:ok, [expired_event, timeout_event]} =
+               Workspaces.list_audit_events(owner_scope, workspace.id)
+
+      assert expired_event.event_type == "member_timeout_expired"
+      assert expired_event.actor_user_id == nil
+      assert expired_event.target_user_id == member_scope.user.id
+      assert timeout_event.event_type == "member_timed_out"
+    end
+
+    test "expired timeout timestamps stop counting as active even before the scheduler runs" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Timeout Workspace"})
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert {:ok, stale_timeout} =
+               Workspaces.timeout_member(
+                 owner_scope,
+                 workspace.id,
+                 member_scope.user.id,
+                 "5_minutes"
+               )
+
+      stale_timeout
+      |> Ecto.Changeset.change(expires_at: DateTime.add(DateTime.utc_now(:second), -1, :second))
+      |> Repo.update!()
+
+      assert {:ok, %{timed_out?: false, timeout_reason: nil, timeout_ends_at: nil}} =
+               Workspaces.member_moderation_state(
+                 member_scope,
+                 workspace.id,
+                 member_scope.user.id
+               )
+
+      member_membership =
+        Repo.get_by!(WorkspaceMembership,
+          workspace_id: workspace.id,
+          user_id: member_scope.user.id
+        )
+
+      assert :timeout in Workspaces.available_member_actions(
+               owner_scope,
+               workspace,
+               member_membership
+             )
+
+      refute :remove_timeout in Workspaces.available_member_actions(
+               owner_scope,
+               workspace,
+               member_membership
+             )
+
+      assert {:ok, replacement_timeout} =
+               Workspaces.timeout_member(
+                 owner_scope,
+                 workspace.id,
+                 member_scope.user.id,
+                 "1_hour"
+               )
+
+      assert replacement_timeout.id != stale_timeout.id
+      assert replacement_timeout.active?
+      assert DateTime.compare(replacement_timeout.expires_at, DateTime.utc_now(:second)) == :gt
+    end
+  end
+
   describe "list_workspaces/1" do
     test "returns only workspaces where the user is a workspace member" do
       scope = user_scope_fixture()

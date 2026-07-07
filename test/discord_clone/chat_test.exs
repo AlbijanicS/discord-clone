@@ -2230,6 +2230,58 @@ defmodule DiscordClone.ChatTest do
       refute Map.has_key?(payload, :members)
     end
 
+    test "schedules existing future timeout expiry when the workspace runtime starts" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      assert {:ok, moderation} =
+               Workspaces.timeout_member(
+                 owner_scope,
+                 workspace.id,
+                 member_scope.user.id,
+                 "5_minutes"
+               )
+
+      assert :ok =
+               Chat.join_workspace_presence(owner_scope, workspace.id, start_live_view_process())
+
+      pid = WorkspaceServer.whereis(workspace.id)
+      state = :sys.get_state(pid)
+
+      assert Map.has_key?(state.timeout_timers, moderation.id)
+    end
+
+    test "schedules new timeout expiry and cancels it after manual removal" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      assert :ok =
+               Chat.join_workspace_presence(owner_scope, workspace.id, start_live_view_process())
+
+      pid = WorkspaceServer.whereis(workspace.id)
+
+      assert {:ok, moderation} =
+               Workspaces.timeout_member(
+                 owner_scope,
+                 workspace.id,
+                 member_scope.user.id,
+                 "5_minutes"
+               )
+
+      state = :sys.get_state(pid)
+      assert Map.has_key?(state.timeout_timers, moderation.id)
+
+      assert {:ok, _ended_moderation} =
+               Workspaces.remove_member_timeout(owner_scope, workspace.id, member_scope.user.id)
+
+      state = :sys.get_state(pid)
+      refute Map.has_key?(state.timeout_timers, moderation.id)
+    end
+
     test "rejects anonymous scopes" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
@@ -2885,6 +2937,61 @@ defmodule DiscordClone.ChatTest do
 
       assert Chat.list_older_messages(non_member_scope, workspace.default_channel_id, cursor) ==
                {:error, :not_found}
+    end
+  end
+
+  describe "workspace moderation enforcement" do
+    test "muted members can read but cannot send messages, react, or start typing" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      message =
+        insert_message!(workspace.default_channel_id, owner_scope.user.id, "readable", now())
+
+      assert {:ok, _channel} = Chat.open_channel(member_scope, workspace.default_channel_id)
+
+      assert {:ok, _moderation} =
+               Workspaces.mute_member(owner_scope, workspace.id, member_scope.user.id, %{})
+
+      assert Chat.send_message(member_scope, workspace.default_channel_id, %{
+               "content" => "blocked"
+             }) == {:error, :muted}
+
+      assert Chat.toggle_reaction(member_scope, message.id, "👍") == {:error, :muted}
+
+      assert Chat.user_started_typing(member_scope, workspace.default_channel_id) ==
+               {:error, :muted}
+    end
+
+    test "timed-out members can read but cannot send messages, react, or start typing" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      message =
+        insert_message!(workspace.default_channel_id, owner_scope.user.id, "readable", now())
+
+      assert {:ok, _channel} = Chat.open_channel(member_scope, workspace.default_channel_id)
+
+      assert {:ok, _moderation} =
+               Workspaces.timeout_member(
+                 owner_scope,
+                 workspace.id,
+                 member_scope.user.id,
+                 "1_hour"
+               )
+
+      assert Chat.send_message(member_scope, workspace.default_channel_id, %{
+               "content" => "blocked"
+             }) == {:error, :timeout}
+
+      assert Chat.toggle_reaction(member_scope, message.id, "👍") == {:error, :timeout}
+
+      assert Chat.user_started_typing(member_scope, workspace.default_channel_id) ==
+               {:error, :timeout}
     end
   end
 

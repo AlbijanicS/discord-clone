@@ -22,12 +22,21 @@ defmodule DiscordClone.Workspaces do
     Workspace,
     WorkspaceAuditEvent,
     WorkspaceInvite,
+    WorkspaceModeration,
     WorkspaceMembership
   }
 
   @owner_role "owner"
   @admin_role "admin"
   @member_role "member"
+  @mute_type "mute"
+  @timeout_type "timeout"
+  @timeout_duration_presets %{
+    "5_minutes" => {5, :minute},
+    "1_hour" => {1, :hour},
+    "24_hours" => {24, :hour},
+    "7_days" => {7, :day}
+  }
 
   @owner_only_invites "owner_only"
   @default_channel_name "general"
@@ -309,14 +318,149 @@ defmodule DiscordClone.Workspaces do
         %Workspace{id: workspace_id} = workspace,
         %WorkspaceMembership{workspace_id: workspace_id} = target_membership
       ) do
-    case workspace_role(scope, workspace) do
-      @owner_role -> owner_member_actions(target_membership)
-      @admin_role -> admin_member_actions(target_membership)
-      _role -> []
-    end
+    actions =
+      case workspace_role(scope, workspace) do
+        @owner_role -> owner_member_actions(target_membership)
+        @admin_role -> admin_member_actions(target_membership)
+        _role -> []
+      end
+
+    actions
+    |> active_mute_actions(target_membership)
+    |> active_timeout_actions(target_membership)
   end
 
   def available_member_actions(_scope, _workspace, _target_membership), do: []
+
+  def mute_member(scope, workspace_id, target_user_id, attrs \\ %{})
+
+  def mute_member(%Scope{user: %User{}} = scope, workspace_id, target_user_id, attrs)
+      when is_map(attrs) do
+    with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
+         {:ok, target_membership} <- get_workspace_membership(workspace.id, target_user_id),
+         :ok <- authorize_mute_member(scope, workspace, target_membership) do
+      mute_member_with_audit(scope, target_membership, attrs)
+    end
+  end
+
+  def mute_member(%Scope{user: %User{}}, _workspace_id, _target_user_id, _attrs),
+    do: {:error, :invalid_attrs}
+
+  def mute_member(_scope, _workspace_id, _target_user_id, _attrs),
+    do: {:error, :unauthenticated}
+
+  def unmute_member(%Scope{user: %User{}} = scope, workspace_id, target_user_id) do
+    with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
+         {:ok, target_membership} <- get_workspace_membership(workspace.id, target_user_id),
+         :ok <- authorize_unmute_member(scope, workspace, target_membership),
+         {:ok, moderation} <- fetch_active_moderation(workspace.id, target_user_id, @mute_type) do
+      unmute_member_with_audit(scope, moderation)
+    end
+  end
+
+  def unmute_member(_scope, _workspace_id, _target_user_id), do: {:error, :unauthenticated}
+
+  def timeout_member(scope, workspace_id, target_user_id, duration, attrs \\ %{})
+
+  def timeout_member(
+        %Scope{user: %User{}} = scope,
+        workspace_id,
+        target_user_id,
+        duration,
+        attrs
+      )
+      when is_binary(duration) and is_map(attrs) do
+    with {:ok, expires_at} <- timeout_expires_at(duration),
+         {:ok, workspace} <- fetch_workspace(scope, workspace_id),
+         {:ok, target_membership} <- get_workspace_membership(workspace.id, target_user_id),
+         :ok <- authorize_timeout_member(scope, workspace, target_membership),
+         {:ok, _expired_timeout} <- expire_due_timeout_for_target(workspace.id, target_user_id) do
+      timeout_member_with_audit(scope, target_membership, duration, expires_at, attrs)
+    end
+  end
+
+  def timeout_member(%Scope{user: %User{}}, _workspace_id, _target_user_id, _duration, _attrs),
+    do: {:error, :invalid_attrs}
+
+  def timeout_member(_scope, _workspace_id, _target_user_id, _duration, _attrs),
+    do: {:error, :unauthenticated}
+
+  def remove_member_timeout(%Scope{user: %User{}} = scope, workspace_id, target_user_id) do
+    with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
+         {:ok, target_membership} <- get_workspace_membership(workspace.id, target_user_id),
+         :ok <- authorize_remove_member_timeout(scope, workspace, target_membership),
+         {:ok, moderation} <- fetch_active_moderation(workspace.id, target_user_id, @timeout_type) do
+      remove_member_timeout_with_audit(scope, moderation)
+    end
+  end
+
+  def remove_member_timeout(_scope, _workspace_id, _target_user_id),
+    do: {:error, :unauthenticated}
+
+  def list_active_future_timeouts(workspace_id) do
+    now = DateTime.utc_now(:second)
+
+    Repo.all(
+      from moderation in WorkspaceModeration,
+        where:
+          moderation.workspace_id == ^workspace_id and
+            moderation.type == ^@timeout_type and
+            moderation.active? == true and
+            moderation.expires_at > ^now,
+        order_by: [asc: moderation.expires_at, asc: moderation.id]
+    )
+  end
+
+  def expire_member_timeout(moderation_id) do
+    case Repo.get(WorkspaceModeration, moderation_id) do
+      %WorkspaceModeration{
+        type: @timeout_type,
+        active?: true,
+        expires_at: %DateTime{} = expires_at
+      } =
+          moderation ->
+        if DateTime.compare(expires_at, DateTime.utc_now(:second)) in [:lt, :eq] do
+          expire_member_timeout_with_audit(moderation)
+        else
+          {:ok, :not_due}
+        end
+
+      %WorkspaceModeration{type: @timeout_type, active?: false} ->
+        {:ok, :already_inactive}
+
+      %WorkspaceModeration{} ->
+        {:error, :not_found}
+
+      nil ->
+        {:error, :not_found}
+    end
+  end
+
+  def member_moderation_state(
+        %Scope{user: %User{id: actor_user_id}} = scope,
+        workspace_id,
+        target_user_id
+      ) do
+    with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
+         {:ok, target_membership} <- get_workspace_membership(workspace.id, target_user_id),
+         :ok <-
+           authorize_view_member_moderation(scope, workspace, target_membership, actor_user_id) do
+      mute = get_active_moderation(workspace.id, target_user_id, @mute_type)
+      timeout = get_active_moderation(workspace.id, target_user_id, @timeout_type)
+
+      {:ok,
+       %{
+         muted?: match?(%WorkspaceModeration{}, mute),
+         mute_reason: moderation_reason(mute),
+         timed_out?: match?(%WorkspaceModeration{}, timeout),
+         timeout_reason: moderation_reason(timeout),
+         timeout_ends_at: moderation_expires_at(timeout)
+       }}
+    end
+  end
+
+  def member_moderation_state(_scope, _workspace_id, _target_user_id),
+    do: {:error, :unauthenticated}
 
   def change_member_role(
         %Scope{user: %User{}} = scope,
@@ -356,6 +500,14 @@ defmodule DiscordClone.Workspaces do
   end
 
   def list_audit_events(_scope, _workspace_id), do: {:error, :unauthenticated}
+
+  def subscribe_to_workspace_moderation(%Scope{user: %User{id: user_id}}, workspace_id) do
+    with :ok <- authorize_view_workspace(workspace_id, user_id) do
+      Phoenix.PubSub.subscribe(DiscordClone.PubSub, workspace_moderation_topic(workspace_id))
+    end
+  end
+
+  def subscribe_to_workspace_moderation(_scope, _workspace_id), do: {:error, :unauthenticated}
 
   def preview_workspace_invite(%Scope{user: %User{} = user}, code) when is_binary(code) do
     with {:ok, invite} <- get_invite_by_code(code),
@@ -743,6 +895,393 @@ defmodule DiscordClone.Workspaces do
   defp authorize_view_audit_events(scope, workspace) do
     if can_view_audit_log?(scope, workspace), do: :ok, else: {:error, :owner_required}
   end
+
+  defp authorize_mute_member(scope, workspace, %WorkspaceMembership{} = target_membership) do
+    if :mute in available_member_actions(scope, workspace, target_membership),
+      do: :ok,
+      else: {:error, :unauthorized}
+  end
+
+  defp authorize_unmute_member(scope, workspace, %WorkspaceMembership{} = target_membership) do
+    if :unmute in available_member_actions(scope, workspace, target_membership),
+      do: :ok,
+      else: {:error, :unauthorized}
+  end
+
+  defp authorize_timeout_member(scope, workspace, %WorkspaceMembership{} = target_membership) do
+    if :timeout in available_member_actions(scope, workspace, target_membership),
+      do: :ok,
+      else: {:error, :unauthorized}
+  end
+
+  defp authorize_remove_member_timeout(
+         scope,
+         workspace,
+         %WorkspaceMembership{} = target_membership
+       ) do
+    if :remove_timeout in available_member_actions(scope, workspace, target_membership),
+      do: :ok,
+      else: {:error, :unauthorized}
+  end
+
+  defp authorize_view_member_moderation(
+         _scope,
+         _workspace,
+         %WorkspaceMembership{user_id: target_user_id},
+         actor_user_id
+       )
+       when target_user_id == actor_user_id,
+       do: :ok
+
+  defp authorize_view_member_moderation(scope, workspace, _target_membership, _actor_user_id) do
+    if has_workspace_role?(scope, workspace, [@owner_role, @admin_role]),
+      do: :ok,
+      else: {:error, :unauthorized}
+  end
+
+  defp mute_member_with_audit(
+         %Scope{user: %User{id: actor_user_id}},
+         %WorkspaceMembership{} = target_membership,
+         attrs
+       ) do
+    reason = moderation_reason_attrs(attrs)
+
+    Multi.new()
+    |> Multi.insert(
+      :moderation,
+      WorkspaceModeration.create_changeset(%WorkspaceModeration{}, %{
+        workspace_id: target_membership.workspace_id,
+        target_user_id: target_membership.user_id,
+        created_by_user_id: actor_user_id,
+        type: @mute_type,
+        reason: reason
+      })
+    )
+    |> Multi.insert(:audit_event, fn %{moderation: moderation} ->
+      WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
+        workspace_id: moderation.workspace_id,
+        actor_user_id: actor_user_id,
+        target_user_id: moderation.target_user_id,
+        event_type: "member_muted",
+        reason: moderation.reason,
+        metadata: %{"moderation_type" => moderation.type}
+      })
+    end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{moderation: moderation}} ->
+        :ok =
+          broadcast_workspace_moderation_changed(
+            moderation.workspace_id,
+            moderation.target_user_id
+          )
+
+        {:ok, moderation}
+
+      {:error, :moderation, changeset, _changes_so_far} ->
+        {:error, :invalid_moderation, changeset}
+
+      {:error, :audit_event, changeset, _changes_so_far} ->
+        {:error, :invalid_audit_event, changeset}
+    end
+  end
+
+  defp unmute_member_with_audit(
+         %Scope{user: %User{id: actor_user_id}},
+         %WorkspaceModeration{} = moderation
+       ) do
+    Multi.new()
+    |> Multi.update(
+      :moderation,
+      WorkspaceModeration.end_changeset(moderation, %{
+        active?: false,
+        ended_at: DateTime.utc_now(:second),
+        ended_by_user_id: actor_user_id
+      })
+    )
+    |> Multi.insert(:audit_event, fn %{moderation: ended_moderation} ->
+      WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
+        workspace_id: ended_moderation.workspace_id,
+        actor_user_id: actor_user_id,
+        target_user_id: ended_moderation.target_user_id,
+        event_type: "member_unmuted",
+        metadata: %{"moderation_type" => ended_moderation.type}
+      })
+    end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{moderation: moderation}} ->
+        :ok =
+          broadcast_workspace_moderation_changed(
+            moderation.workspace_id,
+            moderation.target_user_id
+          )
+
+        {:ok, moderation}
+
+      {:error, :moderation, changeset, _changes_so_far} ->
+        {:error, :invalid_moderation, changeset}
+
+      {:error, :audit_event, changeset, _changes_so_far} ->
+        {:error, :invalid_audit_event, changeset}
+    end
+  end
+
+  defp timeout_member_with_audit(
+         %Scope{user: %User{id: actor_user_id}},
+         %WorkspaceMembership{} = target_membership,
+         duration,
+         expires_at,
+         attrs
+       ) do
+    reason = moderation_reason_attrs(attrs)
+
+    Multi.new()
+    |> Multi.insert(
+      :moderation,
+      WorkspaceModeration.create_changeset(%WorkspaceModeration{}, %{
+        workspace_id: target_membership.workspace_id,
+        target_user_id: target_membership.user_id,
+        created_by_user_id: actor_user_id,
+        type: @timeout_type,
+        reason: reason,
+        expires_at: expires_at
+      })
+    )
+    |> Multi.insert(:audit_event, fn %{moderation: moderation} ->
+      WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
+        workspace_id: moderation.workspace_id,
+        actor_user_id: actor_user_id,
+        target_user_id: moderation.target_user_id,
+        event_type: "member_timed_out",
+        reason: moderation.reason,
+        metadata: %{
+          "moderation_type" => moderation.type,
+          "duration" => duration,
+          "expires_at" => DateTime.to_iso8601(moderation.expires_at)
+        }
+      })
+    end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{moderation: moderation}} ->
+        :ok = Chat.schedule_workspace_timeout_expiry(moderation)
+
+        :ok =
+          broadcast_workspace_moderation_changed(
+            moderation.workspace_id,
+            moderation.target_user_id
+          )
+
+        {:ok, moderation}
+
+      {:error, :moderation, changeset, _changes_so_far} ->
+        {:error, :invalid_moderation, changeset}
+
+      {:error, :audit_event, changeset, _changes_so_far} ->
+        {:error, :invalid_audit_event, changeset}
+    end
+  end
+
+  defp remove_member_timeout_with_audit(
+         %Scope{user: %User{id: actor_user_id}},
+         %WorkspaceModeration{} = moderation
+       ) do
+    Multi.new()
+    |> Multi.update(
+      :moderation,
+      WorkspaceModeration.end_changeset(moderation, %{
+        active?: false,
+        ended_at: DateTime.utc_now(:second),
+        ended_by_user_id: actor_user_id
+      })
+    )
+    |> Multi.insert(:audit_event, fn %{moderation: ended_moderation} ->
+      WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
+        workspace_id: ended_moderation.workspace_id,
+        actor_user_id: actor_user_id,
+        target_user_id: ended_moderation.target_user_id,
+        event_type: "member_timeout_removed",
+        metadata: %{"moderation_type" => ended_moderation.type}
+      })
+    end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{moderation: moderation}} ->
+        :ok = Chat.cancel_workspace_timeout_expiry(moderation)
+
+        :ok =
+          broadcast_workspace_moderation_changed(
+            moderation.workspace_id,
+            moderation.target_user_id
+          )
+
+        {:ok, moderation}
+
+      {:error, :moderation, changeset, _changes_so_far} ->
+        {:error, :invalid_moderation, changeset}
+
+      {:error, :audit_event, changeset, _changes_so_far} ->
+        {:error, :invalid_audit_event, changeset}
+    end
+  end
+
+  defp expire_member_timeout_with_audit(%WorkspaceModeration{} = moderation) do
+    Multi.new()
+    |> Multi.update(
+      :moderation,
+      WorkspaceModeration.end_changeset(moderation, %{
+        active?: false,
+        ended_at: DateTime.utc_now(:second)
+      })
+    )
+    |> Multi.insert(:audit_event, fn %{moderation: ended_moderation} ->
+      WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
+        workspace_id: ended_moderation.workspace_id,
+        actor_user_id: nil,
+        target_user_id: ended_moderation.target_user_id,
+        event_type: "member_timeout_expired",
+        metadata: %{
+          "moderation_type" => ended_moderation.type,
+          "expires_at" => DateTime.to_iso8601(ended_moderation.expires_at)
+        }
+      })
+    end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{moderation: moderation}} ->
+        :ok =
+          broadcast_workspace_moderation_changed(
+            moderation.workspace_id,
+            moderation.target_user_id
+          )
+
+        {:ok, moderation}
+
+      {:error, :moderation, changeset, _changes_so_far} ->
+        {:error, :invalid_moderation, changeset}
+
+      {:error, :audit_event, changeset, _changes_so_far} ->
+        {:error, :invalid_audit_event, changeset}
+    end
+  end
+
+  defp timeout_expires_at(duration) do
+    case Map.fetch(@timeout_duration_presets, duration) do
+      {:ok, {amount, unit}} -> {:ok, DateTime.add(DateTime.utc_now(:second), amount, unit)}
+      :error -> {:error, :invalid_timeout_duration}
+    end
+  end
+
+  defp moderation_reason_attrs(attrs) do
+    attrs
+    |> get_attr(:reason)
+    |> case do
+      reason when is_binary(reason) ->
+        reason = String.trim(reason)
+        if reason == "", do: nil, else: reason
+
+      _reason ->
+        nil
+    end
+  end
+
+  defp get_active_moderation(workspace_id, target_user_id, @timeout_type) do
+    now = DateTime.utc_now(:second)
+
+    Repo.one(
+      from moderation in WorkspaceModeration,
+        where:
+          moderation.workspace_id == ^workspace_id and
+            moderation.target_user_id == ^target_user_id and
+            moderation.type == ^@timeout_type and
+            moderation.active? == true and
+            moderation.expires_at > ^now,
+        limit: 1
+    )
+  end
+
+  defp get_active_moderation(workspace_id, target_user_id, type) do
+    Repo.get_by(WorkspaceModeration,
+      workspace_id: workspace_id,
+      target_user_id: target_user_id,
+      type: type,
+      active?: true
+    )
+  end
+
+  defp fetch_active_moderation(workspace_id, target_user_id, type) do
+    case get_active_moderation(workspace_id, target_user_id, type) do
+      %WorkspaceModeration{} = moderation -> {:ok, moderation}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp moderation_reason(%WorkspaceModeration{reason: reason}), do: reason
+  defp moderation_reason(_moderation), do: nil
+
+  defp moderation_expires_at(%WorkspaceModeration{expires_at: expires_at}), do: expires_at
+  defp moderation_expires_at(_moderation), do: nil
+
+  defp expire_due_timeout_for_target(workspace_id, target_user_id) do
+    now = DateTime.utc_now(:second)
+
+    query =
+      from moderation in WorkspaceModeration,
+        where:
+          moderation.workspace_id == ^workspace_id and
+            moderation.target_user_id == ^target_user_id and
+            moderation.type == ^@timeout_type and
+            moderation.active? == true and
+            moderation.expires_at <= ^now,
+        limit: 1
+
+    case Repo.one(query) do
+      %WorkspaceModeration{id: moderation_id} -> expire_member_timeout(moderation_id)
+      nil -> {:ok, nil}
+    end
+  end
+
+  defp active_mute_actions(actions, %WorkspaceMembership{} = target_membership) do
+    if :mute in actions and active_mute?(target_membership) do
+      Enum.map(actions, fn
+        :mute -> :unmute
+        action -> action
+      end)
+    else
+      actions
+    end
+  end
+
+  defp active_mute?(%WorkspaceMembership{workspace_id: workspace_id, user_id: user_id}) do
+    match?(%WorkspaceModeration{}, get_active_moderation(workspace_id, user_id, @mute_type))
+  end
+
+  defp active_timeout_actions(actions, %WorkspaceMembership{} = target_membership) do
+    if :timeout in actions and active_timeout?(target_membership) do
+      Enum.map(actions, fn
+        :timeout -> :remove_timeout
+        action -> action
+      end)
+    else
+      actions
+    end
+  end
+
+  defp active_timeout?(%WorkspaceMembership{workspace_id: workspace_id, user_id: user_id}) do
+    match?(%WorkspaceModeration{}, get_active_moderation(workspace_id, user_id, @timeout_type))
+  end
+
+  defp broadcast_workspace_moderation_changed(workspace_id, target_user_id) do
+    Phoenix.PubSub.broadcast(
+      DiscordClone.PubSub,
+      workspace_moderation_topic(workspace_id),
+      {:workspace_moderation_changed,
+       %{workspace_id: workspace_id, target_user_id: target_user_id}}
+    )
+  end
+
+  defp workspace_moderation_topic(workspace_id), do: "workspaces:#{workspace_id}:moderation"
 
   defp change_member_role_with_audit(
          %Scope{user: %User{id: actor_user_id}},

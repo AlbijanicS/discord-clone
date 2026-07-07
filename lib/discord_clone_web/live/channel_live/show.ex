@@ -27,6 +27,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
          {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id),
          {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id),
+         {:ok, current_member_moderation_state} <-
+           current_member_moderation_state(socket, workspace.id),
          {:ok, message_window} <- open_channel_message_window(socket, channel.id),
          {:ok, channel_unread_counts} <- load_channel_unread_counts(socket, workspace.id),
          {:ok, selected_channel_read_summary} <-
@@ -37,6 +39,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          :ok <- subscribe_to_channel_messages(socket, channel.id),
          :ok <- subscribe_to_channel_reactions(socket, channel.id),
          :ok <- subscribe_to_workspace_messages(socket, workspace.id),
+         :ok <- subscribe_to_workspace_moderation(socket, workspace.id),
          :ok <- subscribe_to_channel_read_states(socket, channels),
          :ok <- subscribe_to_channel_typing(socket, channel.id) do
       message_rows = MessageRows.annotate(messages)
@@ -50,6 +53,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:channel_form, channel_form(workspace.id))
         |> assign(:show_channel_form?, false)
         |> assign(:message_form, message_form())
+        |> assign(:current_member_moderation_state, current_member_moderation_state)
         |> assign(:oldest_message, List.first(messages))
         |> assign(:latest_message, List.last(messages))
         |> assign(:message_window_meta, message_window.meta)
@@ -356,6 +360,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               phx-change="message_typing"
               phx-submit="send_message"
               phx-hook="MessageComposer"
+              aria-disabled={current_member_participation_blocked?(@current_member_moderation_state)}
               class="flex items-end"
             >
               <div
@@ -368,11 +373,19 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                   placeholder={"Message ##{@selected_channel.name}"}
                   autocomplete="off"
                   phx-throttle="3000"
+                  disabled={current_member_participation_blocked?(@current_member_moderation_state)}
                   class="w-full appearance-none border-0 bg-transparent px-1 py-2 text-sm leading-5 text-base-content outline-none ring-0 transition placeholder:text-base-content/40 focus:border-0 focus:outline-none focus:ring-0"
                   error_class="input-error border-0 ring-0"
                 />
               </div>
             </.form>
+            <p
+              :if={current_member_participation_blocked?(@current_member_moderation_state)}
+              id="message-composer-muted-feedback"
+              class="mt-2 text-xs font-medium text-error"
+            >
+              {moderation_feedback(@current_member_moderation_state)}
+            </p>
           </div>
         </section>
       </Shell.app>
@@ -447,6 +460,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     else
       {:noreply, socket}
     end
+  end
+
+  def handle_info({:workspace_moderation_changed, payload}, socket) do
+    {:noreply, refresh_workspace_moderation(socket, payload)}
   end
 
   def handle_info(
@@ -760,6 +777,56 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
       {:error, _reason, _detail} ->
         {:noreply, put_flash(socket, :error, "Reaction could not be saved.")}
+    end
+  end
+
+  def handle_event("member_action", %{"action" => action, "user_id" => user_id} = params, socket)
+      when action in ["mute", "unmute", "timeout", "remove_timeout"] do
+    user_id = String.to_integer(user_id)
+    workspace_id = socket.assigns.selected_workspace.id
+
+    result =
+      case action do
+        "mute" ->
+          Workspaces.mute_member(
+            socket.assigns.current_scope,
+            socket.assigns.selected_workspace.id,
+            user_id
+          )
+
+        "timeout" ->
+          Workspaces.timeout_member(
+            socket.assigns.current_scope,
+            workspace_id,
+            user_id,
+            Map.fetch!(params, "timeout_duration")
+          )
+
+        "remove_timeout" ->
+          Workspaces.remove_member_timeout(
+            socket.assigns.current_scope,
+            workspace_id,
+            user_id
+          )
+
+        "unmute" ->
+          Workspaces.unmute_member(
+            socket.assigns.current_scope,
+            socket.assigns.selected_workspace.id,
+            user_id
+          )
+      end
+
+    case result do
+      {:ok, _moderation} ->
+        payload = %{workspace_id: socket.assigns.selected_workspace.id, target_user_id: user_id}
+        {:noreply, refresh_workspace_moderation(socket, payload)}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Member action could not be completed.")}
+
+      {:error, _reason, _detail} ->
+        {:noreply, put_flash(socket, :error, "Member action could not be completed.")}
     end
   end
 
@@ -1096,6 +1163,54 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     |> Chat.change_message()
     |> to_form(as: :message)
   end
+
+  defp current_member_moderation_state(socket, workspace_id) do
+    Workspaces.member_moderation_state(
+      socket.assigns.current_scope,
+      workspace_id,
+      socket.assigns.current_scope.user.id
+    )
+  end
+
+  defp current_member_muted?(%{muted?: muted?}), do: muted?
+  defp current_member_muted?(_state), do: false
+
+  defp current_member_timed_out?(%{timed_out?: timed_out?}), do: timed_out?
+  defp current_member_timed_out?(_state), do: false
+
+  defp current_member_participation_blocked?(state) do
+    current_member_muted?(state) or current_member_timed_out?(state)
+  end
+
+  defp moderation_feedback(state) do
+    cond do
+      current_member_muted?(state) ->
+        "You are muted in this workspace and cannot send messages or reactions."
+
+      current_member_timed_out?(state) ->
+        "You are timed out in this workspace and cannot send messages or reactions."
+
+      true ->
+        nil
+    end
+  end
+
+  defp refresh_workspace_moderation(socket, %{workspace_id: workspace_id}) do
+    if socket.assigns.selected_workspace.id == workspace_id do
+      with {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id),
+           {:ok, moderation_state} <- current_member_moderation_state(socket, workspace_id) do
+        socket
+        |> assign(:current_member_moderation_state, moderation_state)
+        |> Presence.refresh_workspace_members(members)
+      else
+        _error -> socket
+      end
+    else
+      socket
+    end
+  end
+
+  defp refresh_workspace_moderation(socket, _payload), do: socket
 
   defp blank_message?(%{"content" => content}) when is_binary(content) do
     String.trim(content) == ""
@@ -1607,6 +1722,14 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   defp subscribe_to_workspace_messages(socket, workspace_id) do
     if connected?(socket) do
       Chat.subscribe_to_workspace_messages(socket.assigns.current_scope, workspace_id)
+    else
+      :ok
+    end
+  end
+
+  defp subscribe_to_workspace_moderation(socket, workspace_id) do
+    if connected?(socket) do
+      Workspaces.subscribe_to_workspace_moderation(socket.assigns.current_scope, workspace_id)
     else
       :ok
     end

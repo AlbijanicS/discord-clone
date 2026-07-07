@@ -1216,7 +1216,12 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
              )
 
       assert has_element?(owner_view, "#workspace-member-#{member_scope.user.id}-mute")
-      assert has_element?(owner_view, "#workspace-member-#{member_scope.user.id}-timeout")
+
+      assert has_element?(
+               owner_view,
+               "#workspace-member-#{member_scope.user.id}-timeout-5-minutes"
+             )
+
       assert has_element?(owner_view, "#workspace-member-#{member_scope.user.id}-kick")
       assert has_element?(owner_view, "#workspace-member-#{member_scope.user.id}-ban")
 
@@ -1263,17 +1268,150 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert has_element?(view, "#workspace-member-#{peer_admin_scope.user.id}-actions")
       assert has_element?(view, "#workspace-member-#{peer_admin_scope.user.id}-mute")
-      assert has_element?(view, "#workspace-member-#{peer_admin_scope.user.id}-timeout")
+      assert has_element?(view, "#workspace-member-#{peer_admin_scope.user.id}-timeout-5-minutes")
       refute has_element?(view, "#workspace-member-#{peer_admin_scope.user.id}-kick")
       refute has_element?(view, "#workspace-member-#{peer_admin_scope.user.id}-ban")
       refute has_element?(view, "#workspace-member-#{peer_admin_scope.user.id}-demote-to-member")
 
       assert has_element?(view, "#workspace-member-#{member_scope.user.id}-actions")
       assert has_element?(view, "#workspace-member-#{member_scope.user.id}-mute")
-      assert has_element?(view, "#workspace-member-#{member_scope.user.id}-timeout")
+      assert has_element?(view, "#workspace-member-#{member_scope.user.id}-timeout-5-minutes")
       assert has_element?(view, "#workspace-member-#{member_scope.user.id}-kick")
       assert has_element?(view, "#workspace-member-#{member_scope.user.id}-ban")
       refute has_element?(view, "#workspace-member-#{member_scope.user.id}-promote-to-admin")
+    end
+
+    test "shows active mute controls to staff and disables only the muted user's composer", %{
+      conn: owner_conn,
+      scope: owner_scope
+    } do
+      muted_scope =
+        %{username: "muted_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      observer_scope =
+        %{username: "observer_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, muted_scope, "member")
+      add_workspace_member!(workspace, observer_scope, "member")
+
+      assert {:ok, _moderation} =
+               Workspaces.mute_member(owner_scope, workspace.id, muted_scope.user.id, %{
+                 "reason" => "Cooling down"
+               })
+
+      {:ok, owner_view, _html} =
+        live(owner_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(owner_view, "#workspace-member-#{muted_scope.user.id}-unmute")
+      refute has_element?(owner_view, "#workspace-member-#{muted_scope.user.id}-mute")
+
+      muted_conn = build_conn() |> log_in_user(muted_scope.user)
+
+      {:ok, muted_view, _html} =
+        live(
+          muted_conn,
+          ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+        )
+
+      assert has_element?(muted_view, "#message_content[disabled]")
+      assert has_element?(muted_view, "#message-composer-muted-feedback", "muted")
+
+      observer_conn = build_conn() |> log_in_user(observer_scope.user)
+
+      {:ok, observer_view, _html} =
+        live(
+          observer_conn,
+          ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+        )
+
+      assert has_element?(observer_view, "#workspace-member-#{muted_scope.user.id}")
+      refute has_element?(observer_view, "#workspace-member-#{muted_scope.user.id}-unmute")
+      refute has_element?(observer_view, "#message-composer-muted-feedback")
+    end
+
+    test "refreshes connected channel surfaces after mute and unmute actions", %{
+      conn: owner_conn,
+      scope: owner_scope
+    } do
+      target_scope =
+        %{username: "live_muted_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope, "member")
+
+      {:ok, owner_view, _html} =
+        live(owner_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      target_conn = build_conn() |> log_in_user(target_scope.user)
+
+      {:ok, target_view, _html} =
+        live(
+          target_conn,
+          ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+        )
+
+      refute has_element?(target_view, "#message-composer-muted-feedback")
+
+      owner_view
+      |> element("#workspace-member-#{target_scope.user.id}-mute")
+      |> render_click()
+
+      render(target_view)
+      assert has_element?(target_view, "#message-composer-muted-feedback")
+      assert has_element?(owner_view, "#workspace-member-#{target_scope.user.id}-unmute")
+
+      owner_view
+      |> element("#workspace-member-#{target_scope.user.id}-unmute")
+      |> render_click()
+
+      render(target_view)
+      refute has_element?(target_view, "#message-composer-muted-feedback")
+      assert has_element?(owner_view, "#workspace-member-#{target_scope.user.id}-mute")
+    end
+
+    test "shows timeout preset controls and disables the timed-out user's composer", %{
+      conn: owner_conn,
+      scope: owner_scope
+    } do
+      target_scope =
+        %{username: "timed_out_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope, "member")
+
+      {:ok, owner_view, _html} =
+        live(owner_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(
+               owner_view,
+               "#workspace-member-#{target_scope.user.id}-timeout-5-minutes"
+             )
+
+      owner_view
+      |> element("#workspace-member-#{target_scope.user.id}-timeout-5-minutes")
+      |> render_click()
+
+      assert has_element?(owner_view, "#workspace-member-#{target_scope.user.id}-remove-timeout")
+
+      target_conn = build_conn() |> log_in_user(target_scope.user)
+
+      {:ok, target_view, _html} =
+        live(
+          target_conn,
+          ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+        )
+
+      assert has_element?(target_view, "#message_content[disabled]")
+      assert has_element?(target_view, "#message-composer-muted-feedback", "timed out")
     end
 
     test "renders durable members offline after workspace presence runtime loss", %{

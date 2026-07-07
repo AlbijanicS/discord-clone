@@ -4,6 +4,7 @@ defmodule DiscordClone.Chat.WorkspaceServer do
   use GenServer
 
   alias DiscordClone.Chat.{WorkspacePresence, WorkspaceRegistry}
+  alias DiscordClone.Workspaces.WorkspaceModeration
 
   @disconnect_grace_ms 50
 
@@ -26,9 +27,25 @@ defmodule DiscordClone.Chat.WorkspaceServer do
     GenServer.call(server, :online_user_ids)
   end
 
+  def schedule_timeout_expiry(server, %WorkspaceModeration{} = moderation) do
+    GenServer.call(server, {:schedule_timeout_expiry, moderation})
+  end
+
+  def cancel_timeout_expiry(server, moderation_id) do
+    GenServer.call(server, {:cancel_timeout_expiry, moderation_id})
+  end
+
   @impl true
   def init(workspace_id) do
-    {:ok, %{workspace_id: workspace_id, users: %{}, monitors: %{}, pending_left_timers: %{}}}
+    state = %{
+      workspace_id: workspace_id,
+      users: %{},
+      monitors: %{},
+      pending_left_timers: %{},
+      timeout_timers: %{}
+    }
+
+    {:ok, state}
   end
 
   @impl true
@@ -74,6 +91,14 @@ defmodule DiscordClone.Chat.WorkspaceServer do
     {:reply, online_user_ids, state}
   end
 
+  def handle_call({:schedule_timeout_expiry, %WorkspaceModeration{} = moderation}, _from, state) do
+    {:reply, :ok, put_timeout_expiry_timer(state, moderation)}
+  end
+
+  def handle_call({:cancel_timeout_expiry, moderation_id}, _from, state) do
+    {:reply, :ok, drop_timeout_expiry_timer(state, moderation_id)}
+  end
+
   @impl true
   def handle_info({:DOWN, monitor_ref, :process, _pid, _reason}, state) do
     case Map.pop(state.monitors, monitor_ref) do
@@ -104,6 +129,17 @@ defmodule DiscordClone.Chat.WorkspaceServer do
           :ok = WorkspacePresence.broadcast_user_left(state.workspace_id, user_id)
           {:noreply, state}
         end
+
+      _other_timer ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:expire_member_timeout, moderation_id, token}, state) do
+    case Map.get(state.timeout_timers, moderation_id) do
+      {_timer_ref, ^token} ->
+        _result = DiscordClone.Workspaces.expire_member_timeout(moderation_id)
+        {:noreply, %{state | timeout_timers: Map.delete(state.timeout_timers, moderation_id)}}
 
       _other_timer ->
         {:noreply, state}
@@ -146,6 +182,38 @@ defmodule DiscordClone.Chat.WorkspaceServer do
         Process.cancel_timer(timer_ref)
         %{state | pending_left_timers: pending_left_timers}
     end
+  end
+
+  defp put_timeout_expiry_timer(state, %WorkspaceModeration{id: moderation_id} = moderation) do
+    state = drop_timeout_expiry_timer(state, moderation_id)
+    token = make_ref()
+
+    timer_ref =
+      Process.send_after(
+        self(),
+        {:expire_member_timeout, moderation_id, token},
+        timeout_delay_ms(moderation)
+      )
+
+    %{
+      state
+      | timeout_timers: Map.put(state.timeout_timers, moderation_id, {timer_ref, token})
+    }
+  end
+
+  defp drop_timeout_expiry_timer(state, moderation_id) do
+    case Map.pop(state.timeout_timers, moderation_id) do
+      {nil, _timeout_timers} ->
+        state
+
+      {{timer_ref, _token}, timeout_timers} ->
+        Process.cancel_timer(timer_ref)
+        %{state | timeout_timers: timeout_timers}
+    end
+  end
+
+  defp timeout_delay_ms(%WorkspaceModeration{expires_at: %DateTime{} = expires_at}) do
+    max(DateTime.diff(expires_at, DateTime.utc_now(:millisecond), :millisecond), 0)
   end
 
   defp remove_user_pid(users, user_id, live_view_pid) do

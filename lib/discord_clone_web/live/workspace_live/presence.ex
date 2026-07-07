@@ -34,6 +34,12 @@ defmodule DiscordCloneWeb.WorkspaceLive.Presence do
   def user_joined(socket, payload), do: update_online_user_ids(socket, payload, :join)
   def user_left(socket, payload), do: update_online_user_ids(socket, payload, :leave)
 
+  def refresh_workspace_members(socket, members) do
+    socket
+    |> assign(:workspace_members, members)
+    |> refresh_workspace_members()
+  end
+
   defp update_online_user_ids(socket, %{workspace_id: workspace_id, user_id: user_id}, event)
        when event in [:join, :leave] do
     if selected_workspace_id(socket) == workspace_id do

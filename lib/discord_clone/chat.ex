@@ -20,11 +20,12 @@ defmodule DiscordClone.Chat do
     MessageReaction,
     ChannelUnreadSpan,
     WorkspacePresence,
-    WorkspacePresenceRuntime
+    WorkspacePresenceRuntime,
+    WorkspaceServer
   }
 
   alias DiscordClone.Repo
-  alias DiscordClone.Workspaces.{Channel, WorkspaceMembership}
+  alias DiscordClone.Workspaces.{Channel, WorkspaceMembership, WorkspaceModeration}
 
   @recent_message_limit 100
   @message_page_size 50
@@ -126,6 +127,24 @@ defmodule DiscordClone.Chat do
     )
 
     :ok
+  end
+
+  def schedule_workspace_timeout_expiry(
+        %WorkspaceModeration{workspace_id: workspace_id} = moderation
+      ) do
+    case WorkspaceServer.whereis(workspace_id) do
+      pid when is_pid(pid) -> WorkspaceServer.schedule_timeout_expiry(pid, moderation)
+      nil -> :ok
+    end
+  end
+
+  def cancel_workspace_timeout_expiry(
+        %WorkspaceModeration{workspace_id: workspace_id} = moderation
+      ) do
+    case WorkspaceServer.whereis(workspace_id) do
+      pid when is_pid(pid) -> WorkspaceServer.cancel_timeout_expiry(pid, moderation.id)
+      nil -> :ok
+    end
   end
 
   def backfill_unread_ranges_from_channel_reads(workspace_id) do
@@ -445,7 +464,9 @@ defmodule DiscordClone.Chat do
   def join_workspace_presence(%Scope{user: %User{id: user_id}}, workspace_id, live_view_pid)
       when is_pid(live_view_pid) do
     with :ok <- authorize_workspace_member(workspace_id, user_id) do
-      WorkspacePresenceRuntime.join(workspace_id, user_id, live_view_pid)
+      with :ok <- WorkspacePresenceRuntime.join(workspace_id, user_id, live_view_pid) do
+        schedule_existing_workspace_timeout_expiries(workspace_id)
+      end
     end
   end
 
@@ -550,11 +571,13 @@ defmodule DiscordClone.Chat do
   def list_typing_user_ids(_scope, _channel_id), do: {:error, :unauthenticated}
 
   def user_started_typing(%Scope{user: %User{id: user_id}}, channel_id) do
-    with %Channel{} <- get_member_channel(channel_id, user_id),
+    with %Channel{} = channel <- get_member_channel(channel_id, user_id),
+         :ok <- authorize_unmuted(channel.workspace_id, user_id),
          {:ok, pid} <- ChannelSupervisor.start_channel(channel_id) do
       ChannelServer.user_started_typing(pid, user_id)
     else
       nil -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -566,6 +589,8 @@ defmodule DiscordClone.Chat do
       ChannelServer.user_stopped_typing(pid, user_id)
     else
       nil -> {:error, :not_found}
+      {:error, :muted} -> {:error, :muted}
+      {:error, :timeout} -> {:error, :timeout}
     end
   end
 
@@ -600,7 +625,8 @@ defmodule DiscordClone.Chat do
   def list_older_messages(_scope, _channel_id, _cursor), do: {:error, :unauthenticated}
 
   def send_message(%Scope{user: %User{id: user_id}}, channel_id, attrs) do
-    with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
+    with %Channel{} = channel <- get_member_channel(channel_id, user_id),
+         :ok <- authorize_unmuted(channel.workspace_id, user_id) do
       changeset =
         Message.changeset(%Message{}, %{
           "content" => Map.get(attrs, "content") || Map.get(attrs, :content),
@@ -624,6 +650,8 @@ defmodule DiscordClone.Chat do
       end
     else
       nil -> {:error, :not_found}
+      {:error, :muted} -> {:error, :muted}
+      {:error, :timeout} -> {:error, :timeout}
     end
   end
 
@@ -652,7 +680,8 @@ defmodule DiscordClone.Chat do
 
   def toggle_reaction(%Scope{user: %User{id: user_id}}, message_id, emoji) do
     with {:ok, normalized_emoji} <- Emoji.validate_reaction(emoji),
-         %Message{} = message <- get_member_message(message_id, user_id) do
+         %Message{} = message <- get_member_message(message_id, user_id),
+         :ok <- authorize_unmuted(message.channel.workspace_id, user_id) do
       case Repo.get_by(MessageReaction,
              message_id: message.id,
              user_id: user_id,
@@ -680,6 +709,8 @@ defmodule DiscordClone.Chat do
       end
     else
       nil -> {:error, :not_found}
+      {:error, :muted} -> {:error, :muted}
+      {:error, :timeout} -> {:error, :timeout}
       {:error, reason} -> {:error, :invalid_emoji, reason}
     end
   end
@@ -737,8 +768,52 @@ defmodule DiscordClone.Chat do
           membership.workspace_id == channel.workspace_id and
             membership.user_id == ^user_id,
         where: message.id == ^message_id,
-        limit: 1
+        limit: 1,
+        preload: [channel: channel]
     )
+  end
+
+  defp authorize_unmuted(workspace_id, user_id) do
+    muted? =
+      Repo.exists?(
+        from moderation in WorkspaceModeration,
+          where:
+            moderation.workspace_id == ^workspace_id and
+              moderation.target_user_id == ^user_id and
+              moderation.type == "mute" and
+              moderation.active? == true
+      )
+
+    timed_out? =
+      Repo.exists?(
+        from moderation in WorkspaceModeration,
+          where:
+            moderation.workspace_id == ^workspace_id and
+              moderation.target_user_id == ^user_id and
+              moderation.type == "timeout" and
+              moderation.active? == true and
+              moderation.expires_at > ^DateTime.utc_now(:second)
+      )
+
+    cond do
+      muted? -> {:error, :muted}
+      timed_out? -> {:error, :timeout}
+      true -> :ok
+    end
+  end
+
+  defp schedule_existing_workspace_timeout_expiries(workspace_id) do
+    case WorkspacePresenceRuntime.whereis(workspace_id) do
+      pid when is_pid(pid) ->
+        workspace_id
+        |> DiscordClone.Workspaces.list_active_future_timeouts()
+        |> Enum.each(&WorkspaceServer.schedule_timeout_expiry(pid, &1))
+
+        :ok
+
+      nil ->
+        :ok
+    end
   end
 
   defp authorize_member_messages(message_ids, user_id) do

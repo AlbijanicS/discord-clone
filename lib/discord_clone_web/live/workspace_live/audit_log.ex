@@ -121,6 +121,51 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
     end
   end
 
+  def handle_event("member_action", %{"action" => action, "user_id" => user_id} = params, socket)
+      when action in ["mute", "unmute", "timeout", "remove_timeout"] do
+    user_id = String.to_integer(user_id)
+    workspace_id = socket.assigns.selected_workspace.id
+
+    result =
+      case action do
+        "mute" ->
+          Workspaces.mute_member(socket.assigns.current_scope, workspace_id, user_id)
+
+        "unmute" ->
+          Workspaces.unmute_member(socket.assigns.current_scope, workspace_id, user_id)
+
+        "timeout" ->
+          Workspaces.timeout_member(
+            socket.assigns.current_scope,
+            workspace_id,
+            user_id,
+            Map.fetch!(params, "timeout_duration")
+          )
+
+        "remove_timeout" ->
+          Workspaces.remove_member_timeout(socket.assigns.current_scope, workspace_id, user_id)
+      end
+
+    case result do
+      {:ok, _moderation} ->
+        {:ok, members} = Workspaces.list_members(socket.assigns.current_scope, workspace_id)
+
+        {:ok, audit_events} =
+          Workspaces.list_audit_events(socket.assigns.current_scope, workspace_id)
+
+        {:noreply,
+         socket
+         |> assign(:audit_events, audit_events)
+         |> Presence.refresh_workspace_members(members)}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Member action could not be completed.")}
+
+      {:error, _reason, _detail} ->
+        {:noreply, put_flash(socket, :error, "Member action could not be completed.")}
+    end
+  end
+
   defp workspace_form(scope, attrs \\ %{}) do
     scope
     |> Workspaces.change_workspace(attrs)
