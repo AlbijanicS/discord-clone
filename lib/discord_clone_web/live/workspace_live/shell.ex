@@ -642,38 +642,68 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                 </summary>
                 <div class="absolute right-0 z-30 mt-1 w-40 rounded border border-base-300 bg-base-100 p-1 shadow-lg">
                   <%= for action <- member_actions do %>
-                    <%= if action == :timeout do %>
-                      <div class="border-y border-base-300/70 py-1">
-                        <p class="px-3 py-1 text-[0.65rem] font-semibold uppercase text-base-content/50">
-                          Timeout
-                        </p>
+                    <%= cond do %>
+                      <% action == :timeout -> %>
+                        <div class="border-y border-base-300/70 py-1">
+                          <p class="px-3 py-1 text-[0.65rem] font-semibold uppercase text-base-content/50">
+                            Timeout
+                          </p>
+                          <button
+                            :for={{duration, label} <- timeout_duration_presets()}
+                            id={"#{dom_id}-timeout-#{timeout_duration_id(duration)}"}
+                            type="button"
+                            class="block w-full rounded px-3 py-2 text-left text-xs font-medium transition hover:bg-base-200"
+                            phx-click="member_action"
+                            phx-value-action="timeout"
+                            phx-value-timeout_duration={duration}
+                            phx-value-user_id={item.member.user.id}
+                          >
+                            {label}
+                          </button>
+                        </div>
+                      <% action == :kick -> %>
+                        <.form
+                          for={%{}}
+                          id={"#{dom_id}-kick-form"}
+                          phx-submit="kick_member"
+                          class="border-t border-base-300/70 py-1"
+                        >
+                          <p class="px-3 py-1 text-[0.65rem] font-semibold uppercase text-error">
+                            Kick
+                          </p>
+                          <input type="hidden" name="user_id" value={item.member.user.id} />
+                          <input
+                            type="text"
+                            name="reason"
+                            id={"#{dom_id}-kick-reason"}
+                            placeholder="Reason (required)"
+                            autocomplete="off"
+                            class="mx-2 mb-1 w-[calc(100%-1rem)] rounded border border-base-300 bg-base-100 px-2 py-1 text-xs outline-none focus:border-primary/40"
+                          />
+                          <button
+                            id={"#{dom_id}-kick"}
+                            type="submit"
+                            class="block w-full rounded px-3 py-2 text-left text-xs font-medium text-error transition hover:bg-error/10"
+                            phx-value-user_id={item.member.user.id}
+                            data-confirm="Kick this member? They lose access immediately but can rejoin with a valid invite."
+                          >
+                            Confirm kick
+                          </button>
+                        </.form>
+                      <% true -> %>
                         <button
-                          :for={{duration, label} <- timeout_duration_presets()}
-                          id={"#{dom_id}-timeout-#{timeout_duration_id(duration)}"}
+                          id={"#{dom_id}-#{member_action_id(action)}"}
                           type="button"
-                          class="block w-full rounded px-3 py-2 text-left text-xs font-medium transition hover:bg-base-200"
-                          phx-click="member_action"
-                          phx-value-action="timeout"
-                          phx-value-timeout_duration={duration}
+                          class={[
+                            "block w-full rounded px-3 py-2 text-left text-xs font-medium transition hover:bg-base-200",
+                            member_action_destructive?(action) && "text-error hover:bg-error/10"
+                          ]}
+                          phx-click={member_action_click(action)}
+                          phx-value-action={action}
                           phx-value-user_id={item.member.user.id}
                         >
-                          {label}
+                          {member_action_label(action)}
                         </button>
-                      </div>
-                    <% else %>
-                      <button
-                        id={"#{dom_id}-#{member_action_id(action)}"}
-                        type="button"
-                        class={[
-                          "block w-full rounded px-3 py-2 text-left text-xs font-medium transition hover:bg-base-200",
-                          member_action_destructive?(action) && "text-error hover:bg-error/10"
-                        ]}
-                        phx-click={member_action_click(action)}
-                        phx-value-action={action}
-                        phx-value-user_id={item.member.user.id}
-                      >
-                        {member_action_label(action)}
-                      </button>
                     <% end %>
                   <% end %>
                 </div>
@@ -794,6 +824,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   defp audit_event_title(%{event_type: "member_timed_out"}), do: "Member timed out"
   defp audit_event_title(%{event_type: "member_timeout_removed"}), do: "Timeout removed"
   defp audit_event_title(%{event_type: "member_timeout_expired"}), do: "Timeout expired"
+  defp audit_event_title(%{event_type: "member_kicked"}), do: "Member kicked"
   defp audit_event_title(%{event_type: "moderator_message_deleted"}), do: "Message deleted"
   defp audit_event_title(event), do: event.event_type
 
@@ -809,6 +840,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
       "member_timed_out" -> "#{actor} timed out #{target}"
       "member_timeout_removed" -> "#{actor} removed timeout from #{target}"
       "member_timeout_expired" -> "Timeout expired for #{target}"
+      "member_kicked" -> "#{actor} kicked #{target}"
       "moderator_message_deleted" -> "#{actor} deleted a message by #{target}"
       _event_type -> "#{actor} changed #{target}"
     end

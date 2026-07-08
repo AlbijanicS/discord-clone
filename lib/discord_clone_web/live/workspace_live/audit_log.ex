@@ -166,6 +166,37 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
     end
   end
 
+  def handle_event("kick_member", %{"user_id" => user_id} = params, socket) do
+    user_id = String.to_integer(user_id)
+    workspace_id = socket.assigns.selected_workspace.id
+    reason = Map.get(params, "reason", "")
+
+    case Workspaces.kick_member(socket.assigns.current_scope, workspace_id, user_id, %{
+           "reason" => reason
+         }) do
+      {:ok, _membership} ->
+        {:ok, members} = Workspaces.list_members(socket.assigns.current_scope, workspace_id)
+
+        {:ok, audit_events} =
+          Workspaces.list_audit_events(socket.assigns.current_scope, workspace_id)
+
+        {:noreply,
+         socket
+         |> put_flash(:info, "Member removed from the workspace.")
+         |> assign(:audit_events, audit_events)
+         |> Presence.refresh_workspace_members(members)}
+
+      {:error, :reason_required} ->
+        {:noreply, put_flash(socket, :error, "A reason is required to kick a member.")}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Member could not be kicked.")}
+
+      {:error, _reason, _detail} ->
+        {:noreply, put_flash(socket, :error, "Member could not be kicked.")}
+    end
+  end
+
   defp workspace_form(scope, attrs \\ %{}) do
     scope
     |> Workspaces.change_workspace(attrs)

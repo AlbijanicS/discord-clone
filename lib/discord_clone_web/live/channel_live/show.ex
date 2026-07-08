@@ -473,6 +473,26 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   end
 
   def handle_info(
+        {:workspace_access_revoked,
+         %{workspace_id: workspace_id, target_user_id: target_user_id}},
+        socket
+      ) do
+    cond do
+      socket.assigns.selected_workspace.id != workspace_id ->
+        {:noreply, socket}
+
+      target_user_id == socket.assigns.current_scope.user.id ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "You were removed from this workspace.")
+         |> push_navigate(to: ~p"/workspaces")}
+
+      true ->
+        {:noreply, refresh_workspace_moderation(socket, %{workspace_id: workspace_id})}
+    end
+  end
+
+  def handle_info(
         {:DOWN, monitor_ref, :process, _pid, _reason},
         %{assigns: %{channel_runtime_monitor_ref: monitor_ref}} = socket
       ) do
@@ -833,6 +853,35 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
       {:error, _reason, _detail} ->
         {:noreply, put_flash(socket, :error, "Member action could not be completed.")}
+    end
+  end
+
+  def handle_event("kick_member", %{"user_id" => user_id} = params, socket) do
+    user_id = String.to_integer(user_id)
+    reason = Map.get(params, "reason", "")
+
+    case Workspaces.kick_member(
+           socket.assigns.current_scope,
+           socket.assigns.selected_workspace.id,
+           user_id,
+           %{"reason" => reason}
+         ) do
+      {:ok, _membership} ->
+        payload = %{workspace_id: socket.assigns.selected_workspace.id, target_user_id: user_id}
+
+        {:noreply,
+         socket
+         |> put_flash(:info, "Member removed from the workspace.")
+         |> refresh_workspace_moderation(payload)}
+
+      {:error, :reason_required} ->
+        {:noreply, put_flash(socket, :error, "A reason is required to kick a member.")}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Member could not be kicked.")}
+
+      {:error, _reason, _detail} ->
+        {:noreply, put_flash(socket, :error, "Member could not be kicked.")}
     end
   end
 

@@ -1414,6 +1414,78 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(target_view, "#message-composer-muted-feedback", "timed out")
     end
 
+    test "kicks a member with a reason, removes them live, and redirects the kicked user", %{
+      conn: owner_conn,
+      scope: owner_scope
+    } do
+      target_scope =
+        %{username: "kick_target_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope, "member")
+
+      {:ok, owner_view, _html} =
+        live(owner_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      target_conn = build_conn() |> log_in_user(target_scope.user)
+
+      {:ok, target_view, _html} =
+        live(
+          target_conn,
+          ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+        )
+
+      assert has_element?(owner_view, "#workspace-member-#{target_scope.user.id}-kick")
+
+      owner_view
+      |> form("#workspace-member-#{target_scope.user.id}-kick-form", %{reason: "Repeated spam"})
+      |> render_submit()
+
+      assert_redirect(target_view, ~p"/workspaces")
+
+      refute has_element?(owner_view, "#workspace-member-#{target_scope.user.id}")
+
+      refute Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: target_scope.user.id
+             )
+
+      assert {:ok, events} = Workspaces.list_audit_events(owner_scope, workspace.id)
+
+      assert Enum.any?(
+               events,
+               &(&1.event_type == "member_kicked" and &1.reason == "Repeated spam")
+             )
+    end
+
+    test "rejects a kick submitted without a reason", %{conn: owner_conn, scope: owner_scope} do
+      target_scope =
+        %{username: "kick_reason_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope, "member")
+
+      {:ok, owner_view, _html} =
+        live(owner_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      html =
+        owner_view
+        |> form("#workspace-member-#{target_scope.user.id}-kick-form", %{reason: "   "})
+        |> render_submit()
+
+      assert html =~ "reason is required"
+      assert has_element?(owner_view, "#workspace-member-#{target_scope.user.id}")
+
+      assert Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: target_scope.user.id
+             )
+    end
+
     test "renders durable members offline after workspace presence runtime loss", %{
       conn: conn,
       scope: member_scope

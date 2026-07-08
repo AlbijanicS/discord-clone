@@ -35,3 +35,7 @@ discord_clone-*.tar
 npm-debug.log
 /assets/node_modules/
 
+# Agent skills installed via npx skills
+/.agents/
+skills-lock.json
+

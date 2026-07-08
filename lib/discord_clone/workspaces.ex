@@ -397,6 +397,24 @@ defmodule DiscordClone.Workspaces do
   def remove_member_timeout(_scope, _workspace_id, _target_user_id),
     do: {:error, :unauthenticated}
 
+  def kick_member(scope, workspace_id, target_user_id, attrs \\ %{})
+
+  def kick_member(%Scope{user: %User{}} = scope, workspace_id, target_user_id, attrs)
+      when is_map(attrs) do
+    with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
+         {:ok, target_membership} <- get_workspace_membership(workspace.id, target_user_id),
+         :ok <- authorize_kick_member(scope, workspace, target_membership),
+         {:ok, reason} <- validate_required_reason(attrs) do
+      kick_member_with_audit(scope, workspace, target_membership, reason)
+    end
+  end
+
+  def kick_member(%Scope{user: %User{}}, _workspace_id, _target_user_id, _attrs),
+    do: {:error, :invalid_attrs}
+
+  def kick_member(_scope, _workspace_id, _target_user_id, _attrs),
+    do: {:error, :unauthenticated}
+
   def list_active_future_timeouts(workspace_id) do
     now = DateTime.utc_now(:second)
 
@@ -924,6 +942,12 @@ defmodule DiscordClone.Workspaces do
       else: {:error, :unauthorized}
   end
 
+  defp authorize_kick_member(scope, workspace, %WorkspaceMembership{} = target_membership) do
+    if :kick in available_member_actions(scope, workspace, target_membership),
+      do: :ok,
+      else: {:error, :unauthorized}
+  end
+
   defp authorize_view_member_moderation(
          _scope,
          _workspace,
@@ -1126,6 +1150,66 @@ defmodule DiscordClone.Workspaces do
     end
   end
 
+  defp kick_member_with_audit(
+         %Scope{user: %User{id: actor_user_id}},
+         %Workspace{} = workspace,
+         %WorkspaceMembership{} = target_membership,
+         reason
+       ) do
+    target_user_id = target_membership.user_id
+    active_timeouts = active_timeout_moderations(workspace.id, target_user_id)
+
+    Multi.new()
+    |> Multi.delete_all(
+      :moderations,
+      from(moderation in WorkspaceModeration,
+        where:
+          moderation.workspace_id == ^workspace.id and
+            moderation.target_user_id == ^target_user_id
+      )
+    )
+    |> Multi.run(:channel_reads, fn _repo, _changes ->
+      :ok = Chat.delete_workspace_reads_for_user(target_user_id, workspace.id)
+      {:ok, :deleted}
+    end)
+    |> Multi.delete(:membership, target_membership)
+    |> Multi.insert(
+      :audit_event,
+      WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
+        workspace_id: workspace.id,
+        actor_user_id: actor_user_id,
+        target_user_id: target_user_id,
+        event_type: "member_kicked",
+        reason: reason,
+        metadata: %{}
+      })
+    )
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{membership: membership}} ->
+        Enum.each(active_timeouts, &Chat.cancel_workspace_timeout_expiry/1)
+        :ok = broadcast_workspace_access_revoked(workspace.id, target_user_id)
+        {:ok, membership}
+
+      {:error, :audit_event, changeset, _changes_so_far} ->
+        {:error, :invalid_audit_event, changeset}
+
+      {:error, _failed_operation, _failed_value, _changes_so_far} ->
+        {:error, :kick_failed}
+    end
+  end
+
+  defp active_timeout_moderations(workspace_id, target_user_id) do
+    Repo.all(
+      from moderation in WorkspaceModeration,
+        where:
+          moderation.workspace_id == ^workspace_id and
+            moderation.target_user_id == ^target_user_id and
+            moderation.type == ^@timeout_type and
+            moderation.active? == true
+    )
+  end
+
   defp expire_member_timeout_with_audit(%WorkspaceModeration{} = moderation) do
     Multi.new()
     |> Multi.update(
@@ -1170,6 +1254,13 @@ defmodule DiscordClone.Workspaces do
     case Map.fetch(@timeout_duration_presets, duration) do
       {:ok, {amount, unit}} -> {:ok, DateTime.add(DateTime.utc_now(:second), amount, unit)}
       :error -> {:error, :invalid_timeout_duration}
+    end
+  end
+
+  defp validate_required_reason(attrs) do
+    case moderation_reason_attrs(attrs) do
+      nil -> {:error, :reason_required}
+      reason -> {:ok, reason}
     end
   end
 
@@ -1278,6 +1369,14 @@ defmodule DiscordClone.Workspaces do
       workspace_moderation_topic(workspace_id),
       {:workspace_moderation_changed,
        %{workspace_id: workspace_id, target_user_id: target_user_id}}
+    )
+  end
+
+  defp broadcast_workspace_access_revoked(workspace_id, target_user_id) do
+    Phoenix.PubSub.broadcast(
+      DiscordClone.PubSub,
+      workspace_moderation_topic(workspace_id),
+      {:workspace_access_revoked, %{workspace_id: workspace_id, target_user_id: target_user_id}}
     )
   end
 

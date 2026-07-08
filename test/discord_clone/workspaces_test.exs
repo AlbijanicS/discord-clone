@@ -1,6 +1,8 @@
 defmodule DiscordClone.WorkspacesTest do
   use DiscordClone.DataCase
 
+  alias DiscordClone.Chat
+
   alias DiscordClone.Chat.{
     ChannelRead,
     ChannelReadState,
@@ -15,7 +17,8 @@ defmodule DiscordClone.WorkspacesTest do
     Channel,
     WorkspaceAuditEvent,
     WorkspaceInvite,
-    WorkspaceMembership
+    WorkspaceMembership,
+    WorkspaceModeration
   }
 
   import DiscordClone.AccountsFixtures
@@ -733,6 +736,209 @@ defmodule DiscordClone.WorkspacesTest do
       assert replacement_timeout.id != stale_timeout.id
       assert replacement_timeout.active?
       assert DateTime.compare(replacement_timeout.expires_at, DateTime.utc_now(:second)) == :gt
+    end
+  end
+
+  describe "kick_member/4" do
+    test "owners can kick members and admins with a required reason and audit event" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Kick Workspace"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert {:ok, kicked_membership} =
+               Workspaces.kick_member(owner_scope, workspace.id, member_scope.user.id, %{
+                 "reason" => "Repeated spam"
+               })
+
+      assert kicked_membership.user_id == member_scope.user.id
+
+      refute Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: member_scope.user.id
+             )
+
+      assert {:ok, kicked_admin} =
+               Workspaces.kick_member(owner_scope, workspace.id, admin_scope.user.id, %{
+                 "reason" => "Abusing staff powers"
+               })
+
+      assert kicked_admin.user_id == admin_scope.user.id
+
+      assert {:ok, events} = Workspaces.list_audit_events(owner_scope, workspace.id)
+      kick_events = Enum.filter(events, &(&1.event_type == "member_kicked"))
+
+      assert [admin_event, member_event] = kick_events
+      assert admin_event.target_user_id == admin_scope.user.id
+      assert admin_event.actor_user_id == owner_scope.user.id
+      assert admin_event.reason == "Abusing staff powers"
+      assert member_event.target_user_id == member_scope.user.id
+      assert member_event.reason == "Repeated spam"
+    end
+
+    test "kick requires a non-empty reason" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Kick Workspace"})
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert {:error, :reason_required} =
+               Workspaces.kick_member(owner_scope, workspace.id, member_scope.user.id, %{
+                 "reason" => "   "
+               })
+
+      assert {:error, :reason_required} =
+               Workspaces.kick_member(owner_scope, workspace.id, member_scope.user.id, %{})
+
+      assert Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: member_scope.user.id
+             )
+    end
+
+    test "admins can kick members but not owners or other admins" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      peer_admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Kick Workspace"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, peer_admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert {:error, :unauthorized} =
+               Workspaces.kick_member(admin_scope, workspace.id, owner_scope.user.id, %{
+                 "reason" => "Trying to remove the owner"
+               })
+
+      assert {:error, :unauthorized} =
+               Workspaces.kick_member(admin_scope, workspace.id, peer_admin_scope.user.id, %{
+                 "reason" => "Trying to remove a peer admin"
+               })
+
+      assert {:ok, _kicked} =
+               Workspaces.kick_member(admin_scope, workspace.id, member_scope.user.id, %{
+                 "reason" => "Disruptive behavior"
+               })
+
+      assert Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: owner_scope.user.id
+             )
+
+      assert Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: peer_admin_scope.user.id
+             )
+    end
+
+    test "regular members cannot kick anyone" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Kick Workspace"})
+      add_workspace_member!(workspace, member_scope, "member")
+      add_workspace_member!(workspace, other_scope, "member")
+
+      assert {:error, :unauthorized} =
+               Workspaces.kick_member(member_scope, workspace.id, other_scope.user.id, %{
+                 "reason" => "I do not have permission"
+               })
+    end
+
+    test "kicking clears active moderation state, read/unread state, and preserves messages" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Kick Workspace"})
+      channel = Repo.get_by!(Channel, workspace_id: workspace.id)
+      add_workspace_member!(workspace, member_scope, "member")
+
+      {:ok, message} =
+        Chat.send_message(member_scope, channel.id, %{"content" => "hello there"})
+
+      {:ok, _mute} =
+        Workspaces.mute_member(owner_scope, workspace.id, member_scope.user.id, %{})
+
+      {:ok, _timeout} =
+        Workspaces.timeout_member(owner_scope, workspace.id, member_scope.user.id, "1_hour")
+
+      assert {:ok, _kicked} =
+               Workspaces.kick_member(owner_scope, workspace.id, member_scope.user.id, %{
+                 "reason" => "Cleanup verification"
+               })
+
+      refute Repo.exists?(
+               from moderation in WorkspaceModeration,
+                 where:
+                   moderation.workspace_id == ^workspace.id and
+                     moderation.target_user_id == ^member_scope.user.id
+             )
+
+      refute Repo.exists?(
+               from read in ChannelRead,
+                 where: read.channel_id == ^channel.id and read.user_id == ^member_scope.user.id
+             )
+
+      refute Repo.exists?(
+               from read_state in ChannelReadState,
+                 where:
+                   read_state.channel_id == ^channel.id and
+                     read_state.user_id == ^member_scope.user.id
+             )
+
+      preserved = Repo.get(Message, message.id)
+      assert preserved
+      assert preserved.user_id == member_scope.user.id
+      assert is_nil(preserved.deleted_at)
+    end
+
+    test "kicked users can rejoin with a valid invite as regular members" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Kick Workspace"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      assert {:ok, _kicked} =
+               Workspaces.kick_member(owner_scope, workspace.id, admin_scope.user.id, %{
+                 "reason" => "Temporary removal"
+               })
+
+      refute Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: admin_scope.user.id
+             )
+
+      assert {:ok, %{already_member?: false}} =
+               Workspaces.accept_workspace_invite(admin_scope, invite.code)
+
+      assert %WorkspaceMembership{role: "member"} =
+               Repo.get_by(WorkspaceMembership,
+                 workspace_id: workspace.id,
+                 user_id: admin_scope.user.id
+               )
+    end
+
+    test "kicking broadcasts access revocation to moderation subscribers" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Kick Workspace"})
+      add_workspace_member!(workspace, member_scope, "member")
+
+      :ok = Workspaces.subscribe_to_workspace_moderation(owner_scope, workspace.id)
+
+      assert {:ok, _kicked} =
+               Workspaces.kick_member(owner_scope, workspace.id, member_scope.user.id, %{
+                 "reason" => "Broadcast verification"
+               })
+
+      assert_receive {:workspace_access_revoked,
+                      %{workspace_id: workspace_id, target_user_id: target_user_id}}
+
+      assert workspace_id == workspace.id
+      assert target_user_id == member_scope.user.id
     end
   end
 
