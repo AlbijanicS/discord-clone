@@ -2,6 +2,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   use DiscordCloneWeb, :html
 
   alias DiscordClone.Workspaces
+  alias DiscordCloneWeb.WorkspaceLive.MemberActionsMenu
 
   attr :workspace_stream, :any, required: true
   attr :channel_stream, :any, default: nil
@@ -682,121 +683,13 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                   <.icon name="hero-ellipsis-horizontal" class="size-4" />
                 </summary>
                 <div class="absolute right-0 z-30 mt-1 w-40 rounded border border-base-300 bg-base-100 p-1 shadow-lg">
-                  <%= for action <- member_actions do %>
-                    <%= cond do %>
-                      <% action == :timeout -> %>
-                        <div class="border-y border-base-300/70 py-1">
-                          <p class="px-3 py-1 text-[0.65rem] font-semibold uppercase text-base-content/50">
-                            Timeout
-                          </p>
-                          <button
-                            :for={{duration, label} <- timeout_duration_presets()}
-                            id={"#{dom_id}-timeout-#{timeout_duration_id(duration)}"}
-                            type="button"
-                            class="block w-full rounded px-3 py-2 text-left text-xs font-medium transition hover:bg-base-200"
-                            phx-click="member_action"
-                            phx-value-action="timeout"
-                            phx-value-timeout_duration={duration}
-                            phx-value-user_id={item.member.user.id}
-                          >
-                            {label}
-                          </button>
-                        </div>
-                      <% action == :kick -> %>
-                        <.form
-                          for={%{}}
-                          id={"#{dom_id}-kick-form"}
-                          phx-submit="kick_member"
-                          class="border-t border-base-300/70 py-1"
-                        >
-                          <p class="px-3 py-1 text-[0.65rem] font-semibold uppercase text-error">
-                            Kick
-                          </p>
-                          <input type="hidden" name="user_id" value={item.member.user.id} />
-                          <input
-                            type="text"
-                            name="reason"
-                            id={"#{dom_id}-kick-reason"}
-                            placeholder="Reason (required)"
-                            autocomplete="off"
-                            class="mx-2 mb-1 w-[calc(100%-1rem)] rounded border border-base-300 bg-base-100 px-2 py-1 text-xs outline-none focus:border-primary/40"
-                          />
-                          <button
-                            id={"#{dom_id}-kick"}
-                            type="submit"
-                            class="block w-full rounded px-3 py-2 text-left text-xs font-medium text-error transition hover:bg-error/10"
-                            phx-value-user_id={item.member.user.id}
-                            data-confirm="Kick this member? They lose access immediately but can rejoin with a valid invite."
-                          >
-                            Confirm kick
-                          </button>
-                        </.form>
-                      <% action == :ban -> %>
-                        <.form
-                          for={%{}}
-                          id={"#{dom_id}-ban-form"}
-                          phx-submit="ban_member"
-                          class="border-t border-base-300/70 py-1"
-                        >
-                          <p class="px-3 py-1 text-[0.65rem] font-semibold uppercase text-error">
-                            Ban
-                          </p>
-                          <input type="hidden" name="user_id" value={item.member.user.id} />
-                          <input
-                            type="text"
-                            name="reason"
-                            id={"#{dom_id}-ban-reason"}
-                            placeholder="Reason (required)"
-                            autocomplete="off"
-                            class="mx-2 mb-1 w-[calc(100%-1rem)] rounded border border-base-300 bg-base-100 px-2 py-1 text-xs outline-none focus:border-primary/40"
-                          />
-                          <fieldset class="mx-2 mb-1 space-y-0.5">
-                            <legend class="px-1 py-1 text-[0.6rem] font-semibold uppercase text-base-content/50">
-                              Delete messages
-                            </legend>
-                            <label
-                              :for={
-                                {value, label} <-
-                                  ban_cleanup_window_choices(@current_scope, @selected_workspace)
-                              }
-                              class="flex items-center gap-2 rounded px-1 py-0.5 text-xs font-medium transition hover:bg-base-200"
-                            >
-                              <input
-                                type="radio"
-                                name="cleanup_window"
-                                value={value}
-                                checked={value == "none"}
-                                class="radio radio-xs"
-                              />
-                              {label}
-                            </label>
-                          </fieldset>
-                          <button
-                            id={"#{dom_id}-ban"}
-                            type="submit"
-                            class="block w-full rounded px-3 py-2 text-left text-xs font-medium text-error transition hover:bg-error/10"
-                            phx-value-user_id={item.member.user.id}
-                            data-confirm="Ban this member? They lose access immediately and cannot rejoin via invite."
-                          >
-                            Confirm ban
-                          </button>
-                        </.form>
-                      <% true -> %>
-                        <button
-                          id={"#{dom_id}-#{member_action_id(action)}"}
-                          type="button"
-                          class={[
-                            "block w-full rounded px-3 py-2 text-left text-xs font-medium transition hover:bg-base-200",
-                            member_action_destructive?(action) && "text-error hover:bg-error/10"
-                          ]}
-                          phx-click={member_action_click(action)}
-                          phx-value-action={action}
-                          phx-value-user_id={item.member.user.id}
-                        >
-                          {member_action_label(action)}
-                        </button>
-                    <% end %>
-                  <% end %>
+                  <MemberActionsMenu.menu_items
+                    id_prefix={dom_id}
+                    actions={member_actions}
+                    user_id={item.member.user.id}
+                    current_scope={@current_scope}
+                    workspace={@selected_workspace}
+                  />
                 </div>
               </details>
             </div>
@@ -873,54 +766,6 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
 
   defp member_actions(current_scope, workspace, member) do
     Workspaces.available_member_actions(current_scope, workspace, member)
-  end
-
-  defp member_action_id(action) do
-    action
-    |> Atom.to_string()
-    |> String.replace("_", "-")
-  end
-
-  defp member_action_label(:promote_to_admin), do: "Promote to admin"
-  defp member_action_label(:demote_to_member), do: "Demote to member"
-  defp member_action_label(:mute), do: "Mute"
-  defp member_action_label(:unmute), do: "Unmute"
-  defp member_action_label(:timeout), do: "Timeout"
-  defp member_action_label(:remove_timeout), do: "Remove timeout"
-  defp member_action_label(:kick), do: "Kick"
-  defp member_action_label(:ban), do: "Ban"
-
-  defp member_action_destructive?(action), do: action in [:kick, :ban]
-
-  defp member_action_click(action) when action in [:mute, :unmute, :remove_timeout],
-    do: "member_action"
-
-  defp member_action_click(_action), do: nil
-
-  defp timeout_duration_presets do
-    [
-      {"5_minutes", "5 minutes"},
-      {"1_hour", "1 hour"},
-      {"24_hours", "24 hours"},
-      {"7_days", "7 days"}
-    ]
-  end
-
-  defp timeout_duration_id(duration), do: String.replace(duration, "_", "-")
-
-  defp ban_cleanup_window_choices(current_scope, workspace) do
-    bounded = [
-      {"none", "None"},
-      {"1_hour", "Last 1 hour"},
-      {"24_hours", "Last 24 hours"},
-      {"7_days", "Last 7 days"}
-    ]
-
-    if Workspaces.can_purge_all_workspace_messages?(current_scope, workspace) do
-      bounded ++ [{"all", "All messages"}]
-    else
-      bounded
-    end
   end
 
   defp audit_event_title(%{event_type: "member_role_promoted"}), do: "Member promoted"

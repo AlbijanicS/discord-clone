@@ -5,6 +5,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   alias DiscordClone.Chat.Emoji
   alias DiscordClone.Chat.WorkspacePresence, as: PresenceEvents
   alias DiscordCloneWeb.ChannelLive.MessageRows
+  alias DiscordCloneWeb.WorkspaceLive.MemberActionsMenu
   alias DiscordCloneWeb.WorkspaceLive.Presence
   alias DiscordCloneWeb.WorkspaceLive.Shell
 
@@ -75,6 +76,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:unread_divider_seq, unread_divider_seq(selected_channel_read_summary))
         |> assign(:suppressed_selected_channel_read_state_payloads, MapSet.new())
         |> assign(:reaction_summaries, reaction_summaries)
+        |> assign(:member_by_user_id, member_by_user_id(members))
+        |> assign(
+          :member_actions_by_user_id,
+          member_actions_by_user_id(socket.assigns.current_scope, workspace, members)
+        )
         |> assign(:message_rows_by_id, message_rows_by_id(message_rows))
         |> stream_configure(:messages, dom_id: &"message-#{&1.id}")
         |> stream(:workspaces, workspaces)
@@ -281,6 +287,48 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                     <span aria-hidden="true">{emoji}</span>
                   </button>
                 </div>
+                <details
+                  :if={
+                    !message_deleted?(row.message) and
+                      message_menu?(
+                        row,
+                        @member_by_user_id,
+                        @member_actions_by_user_id,
+                        @current_scope
+                      )
+                  }
+                  id={"#{dom_id}-actions"}
+                  class={[
+                    "absolute right-0 z-20",
+                    if(row.row_kind == :compact, do: "top-0", else: "top-0.5")
+                  ]}
+                >
+                  <summary
+                    class="btn btn-square btn-xs btn-ghost list-none opacity-0 transition group-hover:opacity-100 [&::-webkit-details-marker]:hidden"
+                    aria-label="Open message actions"
+                  >
+                    <.icon name="hero-ellipsis-horizontal" class="size-4" />
+                  </summary>
+                  <div class="absolute right-0 z-30 mt-1 w-44 rounded border border-base-300 bg-base-100 p-1 shadow-lg">
+                    <button
+                      :if={can_delete_message?(row, @member_by_user_id, @current_scope)}
+                      id={"#{dom_id}-delete"}
+                      type="button"
+                      class="block w-full rounded px-3 py-2 text-left text-xs font-medium text-error transition hover:bg-error/10"
+                      phx-click="delete_message"
+                      phx-value-message-id={row.message.id}
+                    >
+                      Delete message
+                    </button>
+                    <MemberActionsMenu.menu_items
+                      id_prefix={dom_id}
+                      actions={message_author_actions(@member_actions_by_user_id, row)}
+                      user_id={row.message.user_id}
+                      current_scope={@current_scope}
+                      workspace={@selected_workspace}
+                    />
+                  </div>
+                </details>
                 <div
                   :if={row.row_kind == :full}
                   id={"#{dom_id}-header"}
@@ -806,6 +854,19 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
+  def handle_event("delete_message", %{"message-id" => message_id}, socket) do
+    message_id = to_integer(message_id)
+
+    case Chat.delete_message(socket.assigns.current_scope, message_id) do
+      {:ok, _message} ->
+        payload = %{channel_id: socket.assigns.selected_channel.id, message_id: message_id}
+        {:noreply, refresh_deleted_message(socket, payload)}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Message could not be deleted.")}
+    end
+  end
+
   def handle_event("member_action", %{"action" => action, "user_id" => user_id} = params, socket)
       when action in ["mute", "unmute", "timeout", "remove_timeout"] do
     user_id = String.to_integer(user_id)
@@ -1283,13 +1344,23 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
-  defp refresh_workspace_moderation(socket, %{workspace_id: workspace_id}) do
+  defp refresh_workspace_moderation(socket, %{workspace_id: workspace_id} = payload) do
     if socket.assigns.selected_workspace.id == workspace_id do
       with {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id),
            {:ok, moderation_state} <- current_member_moderation_state(socket, workspace_id) do
         socket
         |> assign(:current_member_moderation_state, moderation_state)
+        |> assign(:member_by_user_id, member_by_user_id(members))
+        |> assign(
+          :member_actions_by_user_id,
+          member_actions_by_user_id(
+            socket.assigns.current_scope,
+            socket.assigns.selected_workspace,
+            members
+          )
+        )
         |> Presence.refresh_workspace_members(members)
+        |> restream_author_message_rows(payload)
       else
         _error -> socket
       end
@@ -1299,6 +1370,19 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   end
 
   defp refresh_workspace_moderation(socket, _payload), do: socket
+
+  # Rows inside the `phx-update="stream"` container only re-render when the
+  # stream is touched, so a moderation change that flips an author's menu
+  # (mute↔unmute, timeout↔remove_timeout, or losing actions after kick/ban)
+  # must re-stream that author's message rows.
+  defp restream_author_message_rows(socket, %{target_user_id: target_user_id}) do
+    socket.assigns.message_rows_by_id
+    |> Map.values()
+    |> Enum.filter(&(&1.message.user_id == target_user_id))
+    |> Enum.reduce(socket, fn row, socket -> stream_insert(socket, :messages, row) end)
+  end
+
+  defp restream_author_message_rows(socket, _payload), do: socket
 
   defp blank_message?(%{"content" => content}) when is_binary(content) do
     String.trim(content) == ""
@@ -1380,6 +1464,48 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   defp message_deleted?(%{deleted_at: %DateTime{}}), do: true
   defp message_deleted?(_message), do: false
+
+  defp member_by_user_id(members), do: Map.new(members, &{&1.user_id, &1})
+
+  defp member_actions_by_user_id(scope, workspace, members) do
+    Map.new(members, &{&1.user_id, Workspaces.available_member_actions(scope, workspace, &1)})
+  end
+
+  defp message_author_actions(member_actions_by_user_id, %{message: %{user_id: user_id}}) do
+    Map.get(member_actions_by_user_id, user_id, [])
+  end
+
+  defp own_message?(%{message: %{user_id: user_id}}, %{user: %{id: current_user_id}}),
+    do: user_id == current_user_id
+
+  defp message_menu?(row, member_by_user_id, member_actions_by_user_id, current_scope) do
+    can_delete_message?(row, member_by_user_id, current_scope) or
+      message_author_actions(member_actions_by_user_id, row) != []
+  end
+
+  defp can_delete_message?(row, member_by_user_id, current_scope) do
+    own_message?(row, current_scope) or
+      moderator_can_delete_message?(row, member_by_user_id, current_scope)
+  end
+
+  defp moderator_can_delete_message?(row, member_by_user_id, current_scope) do
+    current_workspace_role(member_by_user_id, current_scope) in ["owner", "admin"] and
+      author_role_deletable?(member_by_user_id, row.message.user_id)
+  end
+
+  defp author_role_deletable?(member_by_user_id, author_user_id) do
+    case Map.get(member_by_user_id, author_user_id) do
+      %{role: role} -> role in ["admin", "member"]
+      _no_membership -> false
+    end
+  end
+
+  defp current_workspace_role(member_by_user_id, current_scope) do
+    case Map.get(member_by_user_id, current_scope.user.id) do
+      %{role: role} -> role
+      _no_membership -> nil
+    end
+  end
 
   defp reaction_option_id(message_id, index), do: "message-#{message_id}-reaction-option-#{index}"
 
