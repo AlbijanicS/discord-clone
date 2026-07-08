@@ -107,6 +107,32 @@ defmodule DiscordCloneWeb.InviteControllerTest do
       refute response =~ "invite-preview-accept-form"
     end
 
+    test "renders a generic unavailable state without an accept control for banned users", %{
+      conn: conn
+    } do
+      owner_scope = user_scope_fixture()
+      banned_user = user_fixture()
+      banned_scope = user_scope_fixture(banned_user)
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, banned_scope)
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      {:ok, _ban} =
+        Workspaces.ban_member(owner_scope, workspace.id, banned_user.id, %{"reason" => "spam"})
+
+      conn =
+        conn
+        |> log_in_user(banned_user)
+        |> get(~p"/invites/#{invite.code}")
+
+      response = html_response(conn, 403)
+
+      assert response =~ "This invite link cannot be used."
+      refute response =~ "Foundry"
+      refute response =~ "Accept invite"
+      refute response =~ "invite-preview-accept-form"
+    end
+
     test "renders a fully-used failure state without an accept control", %{conn: conn} do
       owner_scope = user_scope_fixture()
       invited_user = user_fixture()
@@ -187,6 +213,33 @@ defmodule DiscordCloneWeb.InviteControllerTest do
              ) == 1
 
       assert Repo.get!(DiscordClone.Workspaces.WorkspaceInvite, invite.id).uses_count == 0
+    end
+
+    test "blocks banned users from accepting without creating membership", %{conn: conn} do
+      owner_scope = user_scope_fixture()
+      banned_user = user_fixture()
+      banned_scope = user_scope_fixture(banned_user)
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, banned_scope)
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      {:ok, _ban} =
+        Workspaces.ban_member(owner_scope, workspace.id, banned_user.id, %{"reason" => "spam"})
+
+      conn =
+        conn
+        |> log_in_user(banned_user)
+        |> post(~p"/invites/#{invite.code}/accept")
+
+      response = html_response(conn, 403)
+
+      assert response =~ "This invite link cannot be used."
+      refute response =~ "Accept invite"
+
+      refute Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: banned_user.id
+             )
     end
 
     test "renders a failure page for expired invites without creating membership", %{conn: conn} do

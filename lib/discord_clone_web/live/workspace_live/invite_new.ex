@@ -255,6 +255,33 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
     end
   end
 
+  def handle_event("ban_member", %{"user_id" => user_id} = params, socket) do
+    user_id = String.to_integer(user_id)
+    workspace_id = socket.assigns.selected_workspace.id
+    reason = Map.get(params, "reason", "")
+
+    case Workspaces.ban_member(socket.assigns.current_scope, workspace_id, user_id, %{
+           "reason" => reason
+         }) do
+      {:ok, _ban} ->
+        {:ok, members} = Workspaces.list_members(socket.assigns.current_scope, workspace_id)
+
+        {:noreply,
+         socket
+         |> put_flash(:info, "Member banned from the workspace.")
+         |> Presence.refresh_workspace_members(members)}
+
+      {:error, :reason_required} ->
+        {:noreply, put_flash(socket, :error, "A reason is required to ban a member.")}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Member could not be banned.")}
+
+      {:error, _reason, _detail} ->
+        {:noreply, put_flash(socket, :error, "Member could not be banned.")}
+    end
+  end
+
   defp workspace_form(scope, attrs \\ %{}) do
     scope
     |> Workspaces.change_workspace(attrs)

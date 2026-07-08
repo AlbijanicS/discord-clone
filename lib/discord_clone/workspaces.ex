@@ -21,6 +21,7 @@ defmodule DiscordClone.Workspaces do
     Channel,
     Workspace,
     WorkspaceAuditEvent,
+    WorkspaceBan,
     WorkspaceInvite,
     WorkspaceModeration,
     WorkspaceMembership
@@ -415,6 +416,31 @@ defmodule DiscordClone.Workspaces do
   def kick_member(_scope, _workspace_id, _target_user_id, _attrs),
     do: {:error, :unauthenticated}
 
+  def ban_member(scope, workspace_id, target_user_id, attrs \\ %{})
+
+  def ban_member(%Scope{user: %User{}} = scope, workspace_id, target_user_id, attrs)
+      when is_map(attrs) do
+    with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
+         {:ok, target_membership} <- get_workspace_membership(workspace.id, target_user_id),
+         :ok <- authorize_ban_member(scope, workspace, target_membership),
+         {:ok, reason} <- validate_required_reason(attrs) do
+      ban_member_with_audit(scope, workspace, target_membership, reason)
+    end
+  end
+
+  def ban_member(%Scope{user: %User{}}, _workspace_id, _target_user_id, _attrs),
+    do: {:error, :invalid_attrs}
+
+  def ban_member(_scope, _workspace_id, _target_user_id, _attrs),
+    do: {:error, :unauthenticated}
+
+  def workspace_banned?(workspace_id, user_id) do
+    Repo.exists?(
+      from ban in WorkspaceBan,
+        where: ban.workspace_id == ^workspace_id and ban.target_user_id == ^user_id
+    )
+  end
+
   def list_active_future_timeouts(workspace_id) do
     now = DateTime.utc_now(:second)
 
@@ -529,7 +555,8 @@ defmodule DiscordClone.Workspaces do
 
   def preview_workspace_invite(%Scope{user: %User{} = user}, code) when is_binary(code) do
     with {:ok, invite} <- get_invite_by_code(code),
-         :ok <- validate_invite_usable(invite) do
+         :ok <- validate_invite_usable(invite),
+         :ok <- validate_not_banned(invite.workspace_id, user.id) do
       {:ok,
        %{
          invite_code: invite.code,
@@ -552,6 +579,12 @@ defmodule DiscordClone.Workspaces do
     |> Multi.run(:invite_usable, fn _repo, %{invite: invite} ->
       case validate_invite_usable(invite) do
         :ok -> {:ok, invite}
+        {:error, reason} -> {:error, reason}
+      end
+    end)
+    |> Multi.run(:not_banned, fn _repo, %{invite: invite} ->
+      case validate_not_banned(invite.workspace_id, user.id) do
+        :ok -> {:ok, :not_banned}
         {:error, reason} -> {:error, reason}
       end
     end)
@@ -747,6 +780,10 @@ defmodule DiscordClone.Workspaces do
        do: {:error, :full}
 
   defp validate_invite_capacity(%WorkspaceInvite{}), do: :ok
+
+  defp validate_not_banned(workspace_id, user_id) do
+    if workspace_banned?(workspace_id, user_id), do: {:error, :banned}, else: :ok
+  end
 
   defp ensure_invite_membership(
          repo,
@@ -944,6 +981,12 @@ defmodule DiscordClone.Workspaces do
 
   defp authorize_kick_member(scope, workspace, %WorkspaceMembership{} = target_membership) do
     if :kick in available_member_actions(scope, workspace, target_membership),
+      do: :ok,
+      else: {:error, :unauthorized}
+  end
+
+  defp authorize_ban_member(scope, workspace, %WorkspaceMembership{} = target_membership) do
+    if :ban in available_member_actions(scope, workspace, target_membership),
       do: :ok,
       else: {:error, :unauthorized}
   end
@@ -1196,6 +1239,67 @@ defmodule DiscordClone.Workspaces do
 
       {:error, _failed_operation, _failed_value, _changes_so_far} ->
         {:error, :kick_failed}
+    end
+  end
+
+  defp ban_member_with_audit(
+         %Scope{user: %User{id: actor_user_id}},
+         %Workspace{} = workspace,
+         %WorkspaceMembership{} = target_membership,
+         reason
+       ) do
+    target_user_id = target_membership.user_id
+    active_timeouts = active_timeout_moderations(workspace.id, target_user_id)
+
+    Multi.new()
+    |> Multi.insert(
+      :ban,
+      WorkspaceBan.create_changeset(%WorkspaceBan{}, %{
+        workspace_id: workspace.id,
+        target_user_id: target_user_id,
+        banned_by_user_id: actor_user_id,
+        reason: reason
+      })
+    )
+    |> Multi.delete_all(
+      :moderations,
+      from(moderation in WorkspaceModeration,
+        where:
+          moderation.workspace_id == ^workspace.id and
+            moderation.target_user_id == ^target_user_id
+      )
+    )
+    |> Multi.run(:channel_reads, fn _repo, _changes ->
+      :ok = Chat.delete_workspace_reads_for_user(target_user_id, workspace.id)
+      {:ok, :deleted}
+    end)
+    |> Multi.delete(:membership, target_membership)
+    |> Multi.insert(
+      :audit_event,
+      WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
+        workspace_id: workspace.id,
+        actor_user_id: actor_user_id,
+        target_user_id: target_user_id,
+        event_type: "member_banned",
+        reason: reason,
+        metadata: %{}
+      })
+    )
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{ban: ban}} ->
+        Enum.each(active_timeouts, &Chat.cancel_workspace_timeout_expiry/1)
+        :ok = broadcast_workspace_access_revoked(workspace.id, target_user_id)
+        {:ok, ban}
+
+      {:error, :ban, changeset, _changes_so_far} ->
+        {:error, :invalid_ban, changeset}
+
+      {:error, :audit_event, changeset, _changes_so_far} ->
+        {:error, :invalid_audit_event, changeset}
+
+      {:error, _failed_operation, _failed_value, _changes_so_far} ->
+        {:error, :ban_failed}
     end
   end
 

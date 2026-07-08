@@ -690,6 +690,35 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                             Confirm kick
                           </button>
                         </.form>
+                      <% action == :ban -> %>
+                        <.form
+                          for={%{}}
+                          id={"#{dom_id}-ban-form"}
+                          phx-submit="ban_member"
+                          class="border-t border-base-300/70 py-1"
+                        >
+                          <p class="px-3 py-1 text-[0.65rem] font-semibold uppercase text-error">
+                            Ban
+                          </p>
+                          <input type="hidden" name="user_id" value={item.member.user.id} />
+                          <input
+                            type="text"
+                            name="reason"
+                            id={"#{dom_id}-ban-reason"}
+                            placeholder="Reason (required)"
+                            autocomplete="off"
+                            class="mx-2 mb-1 w-[calc(100%-1rem)] rounded border border-base-300 bg-base-100 px-2 py-1 text-xs outline-none focus:border-primary/40"
+                          />
+                          <button
+                            id={"#{dom_id}-ban"}
+                            type="submit"
+                            class="block w-full rounded px-3 py-2 text-left text-xs font-medium text-error transition hover:bg-error/10"
+                            phx-value-user_id={item.member.user.id}
+                            data-confirm="Ban this member? They lose access immediately and cannot rejoin via invite."
+                          >
+                            Confirm ban
+                          </button>
+                        </.form>
                       <% true -> %>
                         <button
                           id={"#{dom_id}-#{member_action_id(action)}"}
@@ -825,6 +854,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   defp audit_event_title(%{event_type: "member_timeout_removed"}), do: "Timeout removed"
   defp audit_event_title(%{event_type: "member_timeout_expired"}), do: "Timeout expired"
   defp audit_event_title(%{event_type: "member_kicked"}), do: "Member kicked"
+  defp audit_event_title(%{event_type: "member_banned"}), do: "Member banned"
   defp audit_event_title(%{event_type: "moderator_message_deleted"}), do: "Message deleted"
   defp audit_event_title(event), do: event.event_type
 
@@ -841,6 +871,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
       "member_timeout_removed" -> "#{actor} removed timeout from #{target}"
       "member_timeout_expired" -> "Timeout expired for #{target}"
       "member_kicked" -> "#{actor} kicked #{target}"
+      "member_banned" -> "#{actor} banned #{target}"
       "moderator_message_deleted" -> "#{actor} deleted a message by #{target}"
       _event_type -> "#{actor} changed #{target}"
     end

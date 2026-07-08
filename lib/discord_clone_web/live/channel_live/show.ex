@@ -885,6 +885,35 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
+  def handle_event("ban_member", %{"user_id" => user_id} = params, socket) do
+    user_id = String.to_integer(user_id)
+    reason = Map.get(params, "reason", "")
+
+    case Workspaces.ban_member(
+           socket.assigns.current_scope,
+           socket.assigns.selected_workspace.id,
+           user_id,
+           %{"reason" => reason}
+         ) do
+      {:ok, _ban} ->
+        payload = %{workspace_id: socket.assigns.selected_workspace.id, target_user_id: user_id}
+
+        {:noreply,
+         socket
+         |> put_flash(:info, "Member banned from the workspace.")
+         |> refresh_workspace_moderation(payload)}
+
+      {:error, :reason_required} ->
+        {:noreply, put_flash(socket, :error, "A reason is required to ban a member.")}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Member could not be banned.")}
+
+      {:error, _reason, _detail} ->
+        {:noreply, put_flash(socket, :error, "Member could not be banned.")}
+    end
+  end
+
   def handle_event("open_workspace_actions", %{"workspace_id" => workspace_id}, socket) do
     {:noreply,
      socket

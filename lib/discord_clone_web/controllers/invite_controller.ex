@@ -41,6 +41,14 @@ defmodule DiscordCloneWeb.InviteController do
     }
   end
 
+  defp invite_failure(:banned) do
+    %{
+      status: :forbidden,
+      title: "This invite link cannot be used.",
+      body: "Ask for a fresh invite link and try again."
+    }
+  end
+
   defp invite_failure(:revoked) do
     %{
       status: :gone,
