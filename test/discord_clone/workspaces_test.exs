@@ -1146,6 +1146,141 @@ defmodule DiscordClone.WorkspacesTest do
       assert target_user_id == member_scope.user.id
     end
 
+    test "cleans up the banned member's messages within the chosen window and records metadata" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Ban Workspace"})
+      channel = Repo.get_by!(Channel, workspace_id: workspace.id)
+      add_workspace_member!(workspace, member_scope, "member")
+
+      {:ok, recent} = Chat.send_message(member_scope, channel.id, %{"content" => "recent spam"})
+      {:ok, stale} = Chat.send_message(member_scope, channel.id, %{"content" => "old message"})
+      backdate_message!(stale, ~U[2020-01-01 00:00:00Z])
+
+      assert {:ok, _ban} =
+               Workspaces.ban_member(owner_scope, workspace.id, member_scope.user.id, %{
+                 "reason" => "Cleanup window",
+                 "cleanup_window" => "1_hour"
+               })
+
+      assert Repo.get(Message, recent.id).deleted_at
+      assert Repo.get(Message, recent.id).deleted_by_user_id == owner_scope.user.id
+      assert is_nil(Repo.get(Message, stale.id).deleted_at)
+
+      assert {:ok, events} = Workspaces.list_audit_events(owner_scope, workspace.id)
+      ban_event = Enum.find(events, &(&1.event_type == "member_banned"))
+      assert ban_event.metadata["cleanup_window"] == "1_hour"
+      assert ban_event.metadata["cleanup_message_count"] == 1
+    end
+
+    test "the default ban preserves messages and records no cleanup metadata" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Ban Workspace"})
+      channel = Repo.get_by!(Channel, workspace_id: workspace.id)
+      add_workspace_member!(workspace, member_scope, "member")
+
+      {:ok, message} = Chat.send_message(member_scope, channel.id, %{"content" => "keep me"})
+
+      assert {:ok, _ban} =
+               Workspaces.ban_member(owner_scope, workspace.id, member_scope.user.id, %{
+                 "reason" => "No cleanup"
+               })
+
+      assert is_nil(Repo.get(Message, message.id).deleted_at)
+
+      assert {:ok, events} = Workspaces.list_audit_events(owner_scope, workspace.id)
+      ban_event = Enum.find(events, &(&1.event_type == "member_banned"))
+      assert ban_event.metadata == %{}
+    end
+
+    test "owners can purge all of the banned member's workspace messages regardless of age" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Ban Workspace"})
+      channel = Repo.get_by!(Channel, workspace_id: workspace.id)
+      add_workspace_member!(workspace, member_scope, "member")
+
+      {:ok, recent} = Chat.send_message(member_scope, channel.id, %{"content" => "recent"})
+      {:ok, ancient} = Chat.send_message(member_scope, channel.id, %{"content" => "ancient"})
+      backdate_message!(ancient, ~U[2000-01-01 00:00:00Z])
+
+      assert {:ok, _ban} =
+               Workspaces.ban_member(owner_scope, workspace.id, member_scope.user.id, %{
+                 "reason" => "Purge everything",
+                 "cleanup_window" => "all"
+               })
+
+      assert Repo.get(Message, recent.id).deleted_at
+      assert Repo.get(Message, ancient.id).deleted_at
+
+      assert {:ok, events} = Workspaces.list_audit_events(owner_scope, workspace.id)
+      ban_event = Enum.find(events, &(&1.event_type == "member_banned"))
+      assert ban_event.metadata["cleanup_window"] == "all"
+      assert ban_event.metadata["cleanup_message_count"] == 2
+    end
+
+    test "admins cannot purge all workspace messages but may use bounded windows" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Ban Workspace"})
+      channel = Repo.get_by!(Channel, workspace_id: workspace.id)
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+
+      {:ok, message} = Chat.send_message(member_scope, channel.id, %{"content" => "recent"})
+
+      assert {:error, :cleanup_owner_required} =
+               Workspaces.ban_member(admin_scope, workspace.id, member_scope.user.id, %{
+                 "reason" => "Forging owner-only cleanup",
+                 "cleanup_window" => "all"
+               })
+
+      assert Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: member_scope.user.id
+             )
+
+      refute Repo.get_by(WorkspaceBan,
+               workspace_id: workspace.id,
+               target_user_id: member_scope.user.id
+             )
+
+      assert is_nil(Repo.get(Message, message.id).deleted_at)
+
+      assert {:ok, _ban} =
+               Workspaces.ban_member(admin_scope, workspace.id, member_scope.user.id, %{
+                 "reason" => "Bounded cleanup",
+                 "cleanup_window" => "24_hours"
+               })
+
+      assert Repo.get(Message, message.id).deleted_at
+    end
+
+    test "rejects an unknown cleanup window without banning" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Ban Workspace"})
+      channel = Repo.get_by!(Channel, workspace_id: workspace.id)
+      add_workspace_member!(workspace, member_scope, "member")
+
+      {:ok, message} = Chat.send_message(member_scope, channel.id, %{"content" => "recent"})
+
+      assert {:error, :invalid_cleanup_window} =
+               Workspaces.ban_member(owner_scope, workspace.id, member_scope.user.id, %{
+                 "reason" => "Bad window",
+                 "cleanup_window" => "forever"
+               })
+
+      assert Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: member_scope.user.id
+             )
+
+      assert is_nil(Repo.get(Message, message.id).deleted_at)
+    end
+
     test "banned users are blocked from previewing and accepting invites" do
       owner_scope = user_scope_fixture()
       member_scope = user_scope_fixture()
@@ -1168,6 +1303,149 @@ defmodule DiscordClone.WorkspacesTest do
                workspace_id: workspace.id,
                user_id: member_scope.user.id
              )
+    end
+  end
+
+  describe "unban_member/3" do
+    test "owners can unban a member, appending an audit event without restoring access" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Ban Workspace"})
+      add_workspace_member!(workspace, member_scope, "admin")
+
+      assert {:ok, _ban} =
+               Workspaces.ban_member(owner_scope, workspace.id, member_scope.user.id, %{
+                 "reason" => "Temporary removal"
+               })
+
+      assert {:ok, _unban} =
+               Workspaces.unban_member(owner_scope, workspace.id, member_scope.user.id)
+
+      refute Workspaces.workspace_banned?(workspace.id, member_scope.user.id)
+
+      refute Repo.get_by(WorkspaceBan,
+               workspace_id: workspace.id,
+               target_user_id: member_scope.user.id
+             )
+
+      # Unban never re-creates membership nor restores the prior admin role.
+      refute Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: member_scope.user.id
+             )
+
+      assert {:ok, events} = Workspaces.list_audit_events(owner_scope, workspace.id)
+      unban_event = Enum.find(events, &(&1.event_type == "member_unbanned"))
+
+      assert unban_event.target_user_id == member_scope.user.id
+      assert unban_event.actor_user_id == owner_scope.user.id
+    end
+
+    test "admins and members cannot unban, leaving the ban in place" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      banned_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Ban Workspace"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+      add_workspace_member!(workspace, banned_scope, "member")
+
+      assert {:ok, _ban} =
+               Workspaces.ban_member(owner_scope, workspace.id, banned_scope.user.id, %{
+                 "reason" => "Spam"
+               })
+
+      assert {:error, :owner_required} =
+               Workspaces.unban_member(admin_scope, workspace.id, banned_scope.user.id)
+
+      assert {:error, :owner_required} =
+               Workspaces.unban_member(member_scope, workspace.id, banned_scope.user.id)
+
+      assert Workspaces.workspace_banned?(workspace.id, banned_scope.user.id)
+    end
+
+    test "unbanning a user who is not banned returns an error" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Ban Workspace"})
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert {:error, :not_banned} =
+               Workspaces.unban_member(owner_scope, workspace.id, member_scope.user.id)
+    end
+  end
+
+  describe "list_banned_members/2" do
+    test "owners can list banned users with their ban details" do
+      owner_scope = user_scope_fixture()
+      first_scope = user_scope_fixture()
+      second_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Ban Workspace"})
+      add_workspace_member!(workspace, first_scope, "member")
+      add_workspace_member!(workspace, second_scope, "member")
+
+      assert {:ok, _} =
+               Workspaces.ban_member(owner_scope, workspace.id, first_scope.user.id, %{
+                 "reason" => "First offense"
+               })
+
+      assert {:ok, _} =
+               Workspaces.ban_member(owner_scope, workspace.id, second_scope.user.id, %{
+                 "reason" => "Second offense"
+               })
+
+      assert {:ok, banned} = Workspaces.list_banned_members(owner_scope, workspace.id)
+
+      banned_ids = Enum.map(banned, & &1.target_user_id)
+      assert first_scope.user.id in banned_ids
+      assert second_scope.user.id in banned_ids
+
+      ban = Enum.find(banned, &(&1.target_user_id == first_scope.user.id))
+      assert ban.reason == "First offense"
+      assert ban.target_user.id == first_scope.user.id
+    end
+
+    test "admins and members cannot list banned users" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Ban Workspace"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert {:error, :owner_required} =
+               Workspaces.list_banned_members(admin_scope, workspace.id)
+
+      assert {:error, :owner_required} =
+               Workspaces.list_banned_members(member_scope, workspace.id)
+    end
+
+    test "an unbanned admin can accept an invite and rejoins as a regular member" do
+      owner_scope = user_scope_fixture()
+      target_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Ban Workspace"})
+      add_workspace_member!(workspace, target_scope, "admin")
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      assert {:ok, _ban} =
+               Workspaces.ban_member(owner_scope, workspace.id, target_scope.user.id, %{
+                 "reason" => "Cooling off"
+               })
+
+      assert {:error, :banned} = Workspaces.accept_workspace_invite(target_scope, invite.code)
+
+      assert {:ok, _unban} =
+               Workspaces.unban_member(owner_scope, workspace.id, target_scope.user.id)
+
+      assert {:ok, _landing} = Workspaces.accept_workspace_invite(target_scope, invite.code)
+
+      # Rejoin restores a plain membership only — never the prior admin role.
+      assert %WorkspaceMembership{role: "member"} =
+               Repo.get_by(WorkspaceMembership,
+                 workspace_id: workspace.id,
+                 user_id: target_scope.user.id
+               )
     end
   end
 
@@ -2631,6 +2909,14 @@ defmodule DiscordClone.WorkspacesTest do
       role: role
     })
     |> Repo.insert!()
+  end
+
+  defp backdate_message!(%Message{id: id}, %DateTime{} = inserted_at) do
+    {1, _} =
+      Repo.update_all(
+        from(message in Message, where: message.id == ^id),
+        set: [inserted_at: inserted_at]
+      )
   end
 
   defp insert_message!(channel_id, user_id, content, inserted_at) do

@@ -136,6 +136,78 @@ defmodule DiscordClone.Chat do
     :ok
   end
 
+  @doc """
+  Soft-deletes messages authored by `target_user_id` across all channels in the
+  given workspace, optionally bounded to a time window.
+
+  `bound` is either `:all` (every message) or a `%DateTime{}` cutoff (only
+  messages inserted at or after the cutoff). Reactions on the affected messages
+  are removed and each message keeps its content behind a `deleted_at`
+  tombstone. Returns `{:ok, messages}` with the affected messages (author
+  preloaded) so callers can broadcast refreshes after committing.
+  """
+  def soft_delete_user_workspace_messages(workspace_id, target_user_id, actor_user_id, bound) do
+    deleted_at = DateTime.utc_now(:second)
+
+    message_ids =
+      Repo.all(cleanup_message_ids_query(workspace_id, target_user_id, bound))
+
+    if message_ids == [] do
+      {:ok, []}
+    else
+      Repo.delete_all(
+        from reaction in MessageReaction, where: reaction.message_id in ^message_ids
+      )
+
+      Repo.update_all(
+        from(message in Message, where: message.id in ^message_ids),
+        set: [deleted_at: deleted_at, deleted_by_user_id: actor_user_id, updated_at: deleted_at]
+      )
+
+      messages =
+        Repo.all(
+          from message in Message,
+            where: message.id in ^message_ids,
+            order_by: [asc: message.channel_id, asc: message.seq],
+            preload: [:user]
+        )
+
+      {:ok, messages}
+    end
+  end
+
+  defp cleanup_message_ids_query(workspace_id, target_user_id, bound) do
+    query =
+      from message in Message,
+        join: channel in Channel,
+        on: channel.id == message.channel_id,
+        where: channel.workspace_id == ^workspace_id,
+        where: message.user_id == ^target_user_id,
+        where: is_nil(message.deleted_at),
+        select: message.id
+
+    case bound do
+      :all -> query
+      %DateTime{} = cutoff -> from message in query, where: message.inserted_at >= ^cutoff
+    end
+  end
+
+  @doc """
+  Broadcasts `:message_deleted` refreshes for messages cleaned during a ban so
+  connected channel viewers can re-render the affected placeholders.
+  """
+  def broadcast_cleaned_messages(messages) do
+    Enum.each(messages, fn %Message{} = message ->
+      Phoenix.PubSub.broadcast(
+        DiscordClone.PubSub,
+        channel_messages_topic(message.channel_id),
+        {:message_deleted, %{channel_id: message.channel_id, message_id: message.id}}
+      )
+    end)
+
+    :ok
+  end
+
   def schedule_workspace_timeout_expiry(
         %WorkspaceModeration{workspace_id: workspace_id} = moderation
       ) do

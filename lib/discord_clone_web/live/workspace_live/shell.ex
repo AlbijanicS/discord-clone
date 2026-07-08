@@ -24,6 +24,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   attr :invite_form, :any, default: nil
   attr :invite_url, :string, default: nil
   attr :audit_events, :list, default: []
+  attr :banned_members, :list, default: []
   attr :online_user_ids, :any, default: MapSet.new()
   attr :channel_unread_counts, :map, default: %{}
 
@@ -552,6 +553,46 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                   </p>
                 </article>
               </div>
+
+              <div class="mt-10 border-t border-base-300 pt-6">
+                <h2 class="text-lg font-semibold tracking-tight">Banned members</h2>
+                <p class="mt-1 text-sm text-base-content/60">
+                  Unbanning restores rejoin eligibility. It does not restore membership or roles.
+                </p>
+
+                <div id="workspace-banned-members" class="mt-4 space-y-2">
+                  <div
+                    :if={@banned_members == []}
+                    id="workspace-banned-members-empty-state"
+                    class="rounded border border-base-300 bg-base-200/60 p-5 text-sm text-base-content/60"
+                  >
+                    No banned members.
+                  </div>
+                  <article
+                    :for={ban <- @banned_members}
+                    id={"workspace-banned-member-#{ban.target_user_id}"}
+                    class="flex flex-wrap items-start justify-between gap-3 rounded border border-base-300 bg-base-100 p-4 shadow-sm"
+                  >
+                    <div class="min-w-0">
+                      <p class="font-semibold">{ban.target_user.username}</p>
+                      <p
+                        :if={ban.reason}
+                        class="mt-1 text-sm text-base-content/60"
+                      >
+                        {ban.reason}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      phx-click="unban_member"
+                      phx-value-user_id={ban.target_user_id}
+                      class="btn btn-sm btn-ghost"
+                    >
+                      Unban
+                    </button>
+                  </article>
+                </div>
+              </div>
             </section>
           <% :no_workspace -> %>
             <div class="flex h-full items-center justify-center text-center">
@@ -709,6 +750,27 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                             autocomplete="off"
                             class="mx-2 mb-1 w-[calc(100%-1rem)] rounded border border-base-300 bg-base-100 px-2 py-1 text-xs outline-none focus:border-primary/40"
                           />
+                          <fieldset class="mx-2 mb-1 space-y-0.5">
+                            <legend class="px-1 py-1 text-[0.6rem] font-semibold uppercase text-base-content/50">
+                              Delete messages
+                            </legend>
+                            <label
+                              :for={
+                                {value, label} <-
+                                  ban_cleanup_window_choices(@current_scope, @selected_workspace)
+                              }
+                              class="flex items-center gap-2 rounded px-1 py-0.5 text-xs font-medium transition hover:bg-base-200"
+                            >
+                              <input
+                                type="radio"
+                                name="cleanup_window"
+                                value={value}
+                                checked={value == "none"}
+                                class="radio radio-xs"
+                              />
+                              {label}
+                            </label>
+                          </fieldset>
                           <button
                             id={"#{dom_id}-ban"}
                             type="submit"
@@ -845,6 +907,21 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   end
 
   defp timeout_duration_id(duration), do: String.replace(duration, "_", "-")
+
+  defp ban_cleanup_window_choices(current_scope, workspace) do
+    bounded = [
+      {"none", "None"},
+      {"1_hour", "Last 1 hour"},
+      {"24_hours", "Last 24 hours"},
+      {"7_days", "Last 7 days"}
+    ]
+
+    if Workspaces.can_purge_all_workspace_messages?(current_scope, workspace) do
+      bounded ++ [{"all", "All messages"}]
+    else
+      bounded
+    end
+  end
 
   defp audit_event_title(%{event_type: "member_role_promoted"}), do: "Member promoted"
   defp audit_event_title(%{event_type: "member_role_demoted"}), do: "Admin demoted"

@@ -39,6 +39,16 @@ defmodule DiscordClone.Workspaces do
     "7_days" => {7, :day}
   }
 
+  @no_cleanup_window "none"
+  @all_messages_cleanup_window "all"
+  @ban_cleanup_windows %{
+    @no_cleanup_window => :none,
+    "1_hour" => {1, :hour},
+    "24_hours" => {24, :hour},
+    "7_days" => {7, :day},
+    @all_messages_cleanup_window => :all
+  }
+
   @owner_only_invites "owner_only"
   @default_channel_name "general"
   @invite_code_bytes 24
@@ -314,6 +324,16 @@ defmodule DiscordClone.Workspaces do
 
   def can_manage_roles?(_scope, _workspace), do: false
 
+  def can_purge_all_workspace_messages?(%Scope{} = scope, %Workspace{} = workspace),
+    do: has_workspace_role?(scope, workspace, [@owner_role])
+
+  def can_purge_all_workspace_messages?(_scope, _workspace), do: false
+
+  def can_unban_member?(%Scope{} = scope, %Workspace{} = workspace),
+    do: has_workspace_role?(scope, workspace, [@owner_role])
+
+  def can_unban_member?(_scope, _workspace), do: false
+
   def available_member_actions(
         %Scope{} = scope,
         %Workspace{id: workspace_id} = workspace,
@@ -423,8 +443,9 @@ defmodule DiscordClone.Workspaces do
     with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
          {:ok, target_membership} <- get_workspace_membership(workspace.id, target_user_id),
          :ok <- authorize_ban_member(scope, workspace, target_membership),
-         {:ok, reason} <- validate_required_reason(attrs) do
-      ban_member_with_audit(scope, workspace, target_membership, reason)
+         {:ok, reason} <- validate_required_reason(attrs),
+         {:ok, cleanup_window} <- resolve_ban_cleanup_window(scope, workspace, attrs) do
+      ban_member_with_audit(scope, workspace, target_membership, reason, cleanup_window)
     end
   end
 
@@ -440,6 +461,16 @@ defmodule DiscordClone.Workspaces do
         where: ban.workspace_id == ^workspace_id and ban.target_user_id == ^user_id
     )
   end
+
+  def unban_member(%Scope{user: %User{}} = scope, workspace_id, target_user_id) do
+    with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
+         :ok <- authorize_unban_member(scope, workspace),
+         {:ok, ban} <- get_workspace_ban(workspace.id, target_user_id) do
+      unban_member_with_audit(scope, workspace, ban)
+    end
+  end
+
+  def unban_member(_scope, _workspace_id, _target_user_id), do: {:error, :unauthenticated}
 
   def list_active_future_timeouts(workspace_id) do
     now = DateTime.utc_now(:second)
@@ -544,6 +575,23 @@ defmodule DiscordClone.Workspaces do
   end
 
   def list_audit_events(_scope, _workspace_id), do: {:error, :unauthenticated}
+
+  def list_banned_members(%Scope{user: %User{}} = scope, workspace_id) do
+    with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
+         :ok <- authorize_unban_member(scope, workspace) do
+      banned_members =
+        Repo.all(
+          from ban in WorkspaceBan,
+            where: ban.workspace_id == ^workspace.id,
+            order_by: [desc: ban.inserted_at, desc: ban.id],
+            preload: [:target_user, :banned_by_user]
+        )
+
+      {:ok, banned_members}
+    end
+  end
+
+  def list_banned_members(_scope, _workspace_id), do: {:error, :unauthenticated}
 
   def subscribe_to_workspace_moderation(%Scope{user: %User{id: user_id}}, workspace_id) do
     with :ok <- authorize_view_workspace(workspace_id, user_id) do
@@ -991,6 +1039,10 @@ defmodule DiscordClone.Workspaces do
       else: {:error, :unauthorized}
   end
 
+  defp authorize_unban_member(scope, workspace) do
+    if can_unban_member?(scope, workspace), do: :ok, else: {:error, :owner_required}
+  end
+
   defp authorize_view_member_moderation(
          _scope,
          _workspace,
@@ -1246,7 +1298,8 @@ defmodule DiscordClone.Workspaces do
          %Scope{user: %User{id: actor_user_id}},
          %Workspace{} = workspace,
          %WorkspaceMembership{} = target_membership,
-         reason
+         reason,
+         cleanup_window
        ) do
     target_user_id = target_membership.user_id
     active_timeouts = active_timeout_moderations(workspace.id, target_user_id)
@@ -1273,22 +1326,25 @@ defmodule DiscordClone.Workspaces do
       :ok = Chat.delete_workspace_reads_for_user(target_user_id, workspace.id)
       {:ok, :deleted}
     end)
+    |> Multi.run(:message_cleanup, fn _repo, _changes ->
+      clean_up_banned_member_messages(workspace, target_user_id, actor_user_id, cleanup_window)
+    end)
     |> Multi.delete(:membership, target_membership)
-    |> Multi.insert(
-      :audit_event,
+    |> Multi.insert(:audit_event, fn %{message_cleanup: cleaned_messages} ->
       WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
         workspace_id: workspace.id,
         actor_user_id: actor_user_id,
         target_user_id: target_user_id,
         event_type: "member_banned",
         reason: reason,
-        metadata: %{}
+        metadata: ban_cleanup_metadata(cleanup_window, cleaned_messages)
       })
-    )
+    end)
     |> Repo.transaction()
     |> case do
-      {:ok, %{ban: ban}} ->
+      {:ok, %{ban: ban, message_cleanup: cleaned_messages}} ->
         Enum.each(active_timeouts, &Chat.cancel_workspace_timeout_expiry/1)
+        :ok = Chat.broadcast_cleaned_messages(cleaned_messages)
         :ok = broadcast_workspace_access_revoked(workspace.id, target_user_id)
         {:ok, ban}
 
@@ -1301,6 +1357,99 @@ defmodule DiscordClone.Workspaces do
       {:error, _failed_operation, _failed_value, _changes_so_far} ->
         {:error, :ban_failed}
     end
+  end
+
+  defp get_workspace_ban(workspace_id, target_user_id) do
+    case Repo.get_by(WorkspaceBan, workspace_id: workspace_id, target_user_id: target_user_id) do
+      %WorkspaceBan{} = ban -> {:ok, ban}
+      nil -> {:error, :not_banned}
+    end
+  end
+
+  defp unban_member_with_audit(
+         %Scope{user: %User{id: actor_user_id}},
+         %Workspace{} = workspace,
+         %WorkspaceBan{} = ban
+       ) do
+    Multi.new()
+    |> Multi.delete(:unban, ban)
+    |> Multi.insert(:audit_event, fn _changes ->
+      WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
+        workspace_id: workspace.id,
+        actor_user_id: actor_user_id,
+        target_user_id: ban.target_user_id,
+        event_type: "member_unbanned",
+        metadata: %{}
+      })
+    end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{unban: unban}} ->
+        {:ok, unban}
+
+      {:error, :audit_event, changeset, _changes_so_far} ->
+        {:error, :invalid_audit_event, changeset}
+
+      {:error, _failed_operation, _failed_value, _changes_so_far} ->
+        {:error, :unban_failed}
+    end
+  end
+
+  defp clean_up_banned_member_messages(_workspace, _target_user_id, _actor_user_id, :none),
+    do: {:ok, []}
+
+  defp clean_up_banned_member_messages(workspace, target_user_id, actor_user_id, cleanup_window) do
+    Chat.soft_delete_user_workspace_messages(
+      workspace.id,
+      target_user_id,
+      actor_user_id,
+      ban_cleanup_bound(cleanup_window)
+    )
+  end
+
+  defp ban_cleanup_bound(:all), do: :all
+
+  defp ban_cleanup_bound({amount, unit}),
+    do: DateTime.add(DateTime.utc_now(:second), -amount, unit)
+
+  defp ban_cleanup_metadata(:none, _cleaned_messages), do: %{}
+
+  defp ban_cleanup_metadata(cleanup_window, cleaned_messages) do
+    %{
+      "cleanup_window" => ban_cleanup_window_key(cleanup_window),
+      "cleanup_message_count" => length(cleaned_messages)
+    }
+  end
+
+  defp ban_cleanup_window_key(:all), do: @all_messages_cleanup_window
+
+  defp ban_cleanup_window_key(spec) do
+    Enum.find_value(@ban_cleanup_windows, fn {key, value} ->
+      if value == spec, do: key
+    end)
+  end
+
+  defp resolve_ban_cleanup_window(scope, workspace, attrs) do
+    case get_attr(attrs, :cleanup_window) do
+      nil ->
+        {:ok, :none}
+
+      window when is_binary(window) ->
+        case Map.fetch(@ban_cleanup_windows, window) do
+          {:ok, :all} -> authorize_all_message_cleanup(scope, workspace)
+          {:ok, spec} -> {:ok, spec}
+          :error -> {:error, :invalid_cleanup_window}
+        end
+
+      _window ->
+        {:error, :invalid_cleanup_window}
+    end
+  end
+
+  defp authorize_all_message_cleanup(scope, workspace) do
+    if can_purge_all_workspace_messages?(scope, workspace),
+      do: {:ok, :all},
+      else: {:error, :cleanup_owner_required}
   end
 
   defp active_timeout_moderations(workspace_id, target_user_id) do

@@ -3132,6 +3132,73 @@ defmodule DiscordClone.ChatTest do
     end
   end
 
+  describe "soft_delete_user_workspace_messages/4" do
+    test "soft-deletes only the target's messages inside the time window and removes their reactions" do
+      owner_scope = user_scope_fixture()
+      target_scope = user_scope_fixture()
+      other_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Cleanup"})
+      channel_id = workspace.default_channel_id
+      add_workspace_member!(workspace, target_scope, "member")
+      add_workspace_member!(workspace, other_scope, "member")
+
+      {:ok, recent} = Chat.send_message(target_scope, channel_id, %{"content" => "recent"})
+      {:ok, stale} = Chat.send_message(target_scope, channel_id, %{"content" => "stale"})
+      {:ok, other} = Chat.send_message(other_scope, channel_id, %{"content" => "someone else"})
+
+      backdate_message!(stale, ~U[2020-01-01 00:00:00Z])
+
+      {:ok, _reaction} = Chat.toggle_reaction(other_scope, recent.id, "👍")
+
+      cutoff = DateTime.add(DateTime.utc_now(:second), -1, :hour)
+
+      assert {:ok, deleted_messages} =
+               Chat.soft_delete_user_workspace_messages(
+                 workspace.id,
+                 target_scope.user.id,
+                 owner_scope.user.id,
+                 cutoff
+               )
+
+      assert Enum.map(deleted_messages, & &1.id) == [recent.id]
+
+      assert %Message{deleted_at: %DateTime{}, deleted_by_user_id: deleter} =
+               Repo.get(Message, recent.id)
+
+      assert deleter == owner_scope.user.id
+      refute Repo.get_by(MessageReaction, message_id: recent.id)
+
+      assert is_nil(Repo.get(Message, stale.id).deleted_at)
+      assert is_nil(Repo.get(Message, other.id).deleted_at)
+    end
+
+    test "with an :all bound soft-deletes every matching message regardless of age" do
+      owner_scope = user_scope_fixture()
+      target_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Cleanup"})
+      channel_id = workspace.default_channel_id
+      add_workspace_member!(workspace, target_scope, "member")
+
+      {:ok, recent} = Chat.send_message(target_scope, channel_id, %{"content" => "recent"})
+      {:ok, ancient} = Chat.send_message(target_scope, channel_id, %{"content" => "ancient"})
+      backdate_message!(ancient, ~U[2000-01-01 00:00:00Z])
+
+      assert {:ok, deleted_messages} =
+               Chat.soft_delete_user_workspace_messages(
+                 workspace.id,
+                 target_scope.user.id,
+                 owner_scope.user.id,
+                 :all
+               )
+
+      assert Enum.map(deleted_messages, & &1.id) |> Enum.sort() ==
+               Enum.sort([recent.id, ancient.id])
+
+      assert Repo.get(Message, recent.id).deleted_at
+      assert Repo.get(Message, ancient.id).deleted_at
+    end
+  end
+
   describe "send_message/3" do
     test "persists trimmed content in the selected channel with the author preloaded" do
       scope = user_scope_fixture()
@@ -3725,6 +3792,14 @@ defmodule DiscordClone.ChatTest do
       role: role
     })
     |> Repo.insert!()
+  end
+
+  defp backdate_message!(%Message{id: id}, %DateTime{} = inserted_at) do
+    {1, _} =
+      Repo.update_all(
+        from(message in Message, where: message.id == ^id),
+        set: [inserted_at: inserted_at]
+      )
   end
 
   defp start_subscriber(scope, channel_id) do

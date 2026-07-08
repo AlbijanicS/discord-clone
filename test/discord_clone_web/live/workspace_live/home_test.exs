@@ -1562,6 +1562,84 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute Workspaces.workspace_banned?(workspace.id, target_scope.user.id)
     end
 
+    test "bans a member with a cleanup window and refreshes affected messages live", %{
+      conn: owner_conn,
+      scope: owner_scope
+    } do
+      target_scope =
+        %{username: "ban_cleanup_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope, "member")
+
+      {:ok, message} =
+        Chat.send_message(target_scope, workspace.default_channel_id, %{
+          "content" => "cleanup me"
+        })
+
+      {:ok, owner_view, html} =
+        live(owner_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert html =~ "cleanup me"
+
+      assert has_element?(
+               owner_view,
+               "#workspace-member-#{target_scope.user.id}-ban-form input[name='cleanup_window'][value='all']"
+             )
+
+      owner_view
+      |> form("#workspace-member-#{target_scope.user.id}-ban-form", %{
+        reason: "Persistent abuse",
+        cleanup_window: "all"
+      })
+      |> render_submit()
+
+      assert Repo.get(Message, message.id).deleted_at
+
+      updated_html = render(owner_view)
+      assert updated_html =~ "Message deleted"
+      refute updated_html =~ "cleanup me"
+
+      assert {:ok, events} = Workspaces.list_audit_events(owner_scope, workspace.id)
+      ban_event = Enum.find(events, &(&1.event_type == "member_banned"))
+      assert ban_event.metadata["cleanup_window"] == "all"
+      assert ban_event.metadata["cleanup_message_count"] == 1
+    end
+
+    test "hides the all-messages cleanup option from admins in the ban form", %{
+      conn: admin_conn,
+      scope: admin_scope
+    } do
+      owner_scope =
+        %{username: "ban_cleanup_owner"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      member_scope =
+        %{username: "ban_cleanup_target"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope, "member")
+
+      {:ok, admin_view, _html} =
+        live(admin_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(
+               admin_view,
+               "#workspace-member-#{member_scope.user.id}-ban-form input[name='cleanup_window'][value='24_hours']"
+             )
+
+      refute has_element?(
+               admin_view,
+               "#workspace-member-#{member_scope.user.id}-ban-form input[name='cleanup_window'][value='all']"
+             )
+    end
+
     test "renders durable members offline after workspace presence runtime loss", %{
       conn: conn,
       scope: member_scope
@@ -5016,6 +5094,36 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert member_flash["error"] =~ "Only workspace owners can view the audit log"
 
       {:ok, _view, _html} = live(owner_conn, ~p"/workspaces/#{workspace.id}/audit-log")
+    end
+
+    test "owners can view banned members and unban them from the audit log", %{
+      conn: conn,
+      scope: owner_scope
+    } do
+      banned_scope =
+        DiscordClone.AccountsFixtures.user_fixture(%{username: "banished_user"})
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, banned_scope, "member")
+
+      assert {:ok, _ban} =
+               Workspaces.ban_member(owner_scope, workspace.id, banned_scope.user.id, %{
+                 "reason" => "Persistent spam"
+               })
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/audit-log")
+
+      assert has_element?(view, "#workspace-banned-members")
+      assert has_element?(view, "#workspace-banned-members", "banished_user")
+
+      view
+      |> element("#workspace-banned-members button[phx-value-user_id='#{banned_scope.user.id}']")
+      |> render_click()
+
+      refute Workspaces.workspace_banned?(workspace.id, banned_scope.user.id)
+      refute has_element?(view, "#workspace-banned-members", "banished_user")
+      assert has_element?(view, "#workspace-banned-members-empty-state")
     end
   end
 

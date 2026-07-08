@@ -12,6 +12,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
            Workspaces.fetch_workspace(socket.assigns.current_scope, workspace_id),
          {:ok, audit_events} <-
            Workspaces.list_audit_events(socket.assigns.current_scope, workspace.id),
+         {:ok, banned_members} <-
+           Workspaces.list_banned_members(socket.assigns.current_scope, workspace.id),
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
          {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace.id),
          {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace.id) do
@@ -27,6 +29,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
         |> assign(:show_channel_form?, false)
         |> assign(:context_menu_position, nil)
         |> assign(:audit_events, audit_events)
+        |> assign(:banned_members, banned_members)
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
         |> Presence.prepare_workspace(workspace.id, members)
@@ -66,6 +69,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
         context_menu_position={@context_menu_position}
         current_scope={@current_scope}
         audit_events={@audit_events}
+        banned_members={@banned_members}
         main_state={:audit}
         online_user_ids={@online_user_ids}
       />
@@ -200,11 +204,13 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
   def handle_event("ban_member", %{"user_id" => user_id} = params, socket) do
     user_id = String.to_integer(user_id)
     workspace_id = socket.assigns.selected_workspace.id
-    reason = Map.get(params, "reason", "")
 
-    case Workspaces.ban_member(socket.assigns.current_scope, workspace_id, user_id, %{
-           "reason" => reason
-         }) do
+    ban_attrs = %{
+      "reason" => Map.get(params, "reason", ""),
+      "cleanup_window" => Map.get(params, "cleanup_window")
+    }
+
+    case Workspaces.ban_member(socket.assigns.current_scope, workspace_id, user_id, ban_attrs) do
       {:ok, _ban} ->
         {:ok, members} = Workspaces.list_members(socket.assigns.current_scope, workspace_id)
 
@@ -225,6 +231,32 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
 
       {:error, _reason, _detail} ->
         {:noreply, put_flash(socket, :error, "Member could not be banned.")}
+    end
+  end
+
+  def handle_event("unban_member", %{"user_id" => user_id}, socket) do
+    user_id = String.to_integer(user_id)
+    workspace_id = socket.assigns.selected_workspace.id
+
+    case Workspaces.unban_member(socket.assigns.current_scope, workspace_id, user_id) do
+      {:ok, _unban} ->
+        {:ok, audit_events} =
+          Workspaces.list_audit_events(socket.assigns.current_scope, workspace_id)
+
+        {:ok, banned_members} =
+          Workspaces.list_banned_members(socket.assigns.current_scope, workspace_id)
+
+        {:noreply,
+         socket
+         |> put_flash(:info, "Member unbanned.")
+         |> assign(:audit_events, audit_events)
+         |> assign(:banned_members, banned_members)}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Member could not be unbanned.")}
+
+      {:error, _reason, _detail} ->
+        {:noreply, put_flash(socket, :error, "Member could not be unbanned.")}
     end
   end
 

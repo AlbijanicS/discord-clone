@@ -887,13 +887,17 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   def handle_event("ban_member", %{"user_id" => user_id} = params, socket) do
     user_id = String.to_integer(user_id)
-    reason = Map.get(params, "reason", "")
+
+    ban_attrs = %{
+      "reason" => Map.get(params, "reason", ""),
+      "cleanup_window" => Map.get(params, "cleanup_window")
+    }
 
     case Workspaces.ban_member(
            socket.assigns.current_scope,
            socket.assigns.selected_workspace.id,
            user_id,
-           %{"reason" => reason}
+           ban_attrs
          ) do
       {:ok, _ban} ->
         payload = %{workspace_id: socket.assigns.selected_workspace.id, target_user_id: user_id}

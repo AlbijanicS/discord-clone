@@ -258,11 +258,13 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
   def handle_event("ban_member", %{"user_id" => user_id} = params, socket) do
     user_id = String.to_integer(user_id)
     workspace_id = socket.assigns.selected_workspace.id
-    reason = Map.get(params, "reason", "")
 
-    case Workspaces.ban_member(socket.assigns.current_scope, workspace_id, user_id, %{
-           "reason" => reason
-         }) do
+    ban_attrs = %{
+      "reason" => Map.get(params, "reason", ""),
+      "cleanup_window" => Map.get(params, "cleanup_window")
+    }
+
+    case Workspaces.ban_member(socket.assigns.current_scope, workspace_id, user_id, ban_attrs) do
       {:ok, _ban} ->
         {:ok, members} = Workspaces.list_members(socket.assigns.current_scope, workspace_id)
 
