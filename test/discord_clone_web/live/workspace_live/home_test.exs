@@ -7,7 +7,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
   alias DiscordClone.Workspaces
   alias DiscordClone.Chat
   alias DiscordClone.Chat.{ChannelReadState, Message}
-  alias DiscordClone.Chat.{ChannelServer, WorkspaceServer}
+  alias DiscordClone.Chat.Runtime
   alias DiscordCloneWeb.WorkspaceLive.Shell
   alias DiscordClone.Workspaces.{Channel, WorkspaceInvite, WorkspaceMembership}
   alias DiscordClone.Repo
@@ -1071,12 +1071,12 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
     } do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
 
-      assert ChannelServer.whereis(workspace.default_channel_id) == nil
+      assert Runtime.channel_pid(workspace.default_channel_id) == nil
 
       {:ok, _view, _html} =
         live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
 
-      assert is_pid(ChannelServer.whereis(workspace.default_channel_id))
+      assert is_pid(Runtime.channel_pid(workspace.default_channel_id))
     end
 
     test "does not start a channel runtime during disconnected static render", %{
@@ -1088,7 +1088,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       conn = get(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
 
       assert html_response(conn, 200)
-      assert ChannelServer.whereis(workspace.default_channel_id) == nil
+      assert Runtime.channel_pid(workspace.default_channel_id) == nil
     end
 
     test "renders durable workspace members in the channel shell", %{
@@ -1724,7 +1724,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       other_live_view_pid = start_live_view_process()
       assert :ok = Chat.join_workspace_presence(other_scope, workspace.id, other_live_view_pid)
-      workspace_pid = WorkspaceServer.whereis(workspace.id)
+      workspace_pid = Runtime.workspace_presence_pid(workspace.id)
       assert is_pid(workspace_pid)
 
       ref = Process.monitor(workspace_pid)
@@ -1851,7 +1851,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
                "live_presence_leaver"
              )
 
-      workspace_server = WorkspaceServer.whereis(workspace.id)
+      workspace_server = Runtime.workspace_presence_pid(workspace.id)
       _ = :sys.get_state(workspace_server)
 
       ref = Process.monitor(sender_view.pid)
@@ -1913,7 +1913,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
                "workspace-member-#{sender_scope.user.id}"
              ]
 
-      workspace_server = WorkspaceServer.whereis(workspace.id)
+      workspace_server = Runtime.workspace_presence_pid(workspace.id)
       _ = :sys.get_state(workspace_server)
 
       Process.flag(:trap_exit, true)
@@ -1999,7 +1999,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
         |> render_click()
         |> follow_redirect(sender_conn, other_channel_path)
 
-      workspace_server = WorkspaceServer.whereis(workspace.id)
+      workspace_server = Runtime.workspace_presence_pid(workspace.id)
       _ = :sys.get_state(workspace_server)
 
       refute_receive {:workspace_user_left,
@@ -2796,7 +2796,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#message-#{first_message.id}-content", "before runtime loss")
       assert has_element?(view, "#message-#{second_message.id}-content", "after runtime loss")
 
-      replacement_pid = ChannelServer.whereis(channel_id)
+      replacement_pid = Runtime.channel_pid(channel_id)
       assert is_pid(replacement_pid)
       assert replacement_pid != first_pid
     end
@@ -2832,7 +2832,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
                "👍 1"
              )
 
-      replacement_pid = ChannelServer.whereis(channel_id)
+      replacement_pid = Runtime.channel_pid(channel_id)
       assert is_pid(replacement_pid)
       assert replacement_pid != first_pid
     end
@@ -3367,7 +3367,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
                "typing_sender"
              )
 
-      assert pid = ChannelServer.whereis(channel_id)
+      assert pid = Runtime.channel_pid(channel_id)
       assert %{typing_users: %{^sender_id => deadline}} = :sys.get_state(pid)
 
       send(pid, {:typing_expired, sender_id, deadline})
@@ -3409,7 +3409,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
                "typing_sender"
              )
 
-      runtime_pid = ChannelServer.whereis(channel_id)
+      runtime_pid = Runtime.channel_pid(channel_id)
       ref = Process.monitor(runtime_pid)
       Process.exit(runtime_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^runtime_pid, :killed}
@@ -3429,7 +3429,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
                "typing_sender"
              )
 
-      restarted_runtime_pid = ChannelServer.whereis(channel_id)
+      restarted_runtime_pid = Runtime.channel_pid(channel_id)
       restarted_ref = Process.monitor(restarted_runtime_pid)
       Process.exit(restarted_runtime_pid, :kill)
       assert_receive {:DOWN, ^restarted_ref, :process, ^restarted_runtime_pid, :killed}
@@ -4999,6 +4999,44 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert {:ok, %{muted?: true}} =
                Workspaces.member_moderation_state(owner_scope, workspace.id, target_scope.user.id)
+    end
+
+    test "mute from a message context menu refreshes every rendered author row", %{
+      conn: owner_conn,
+      scope: owner_scope
+    } do
+      target_scope =
+        %{username: "msg_multi_row_mute_target"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope, "member")
+
+      {:ok, first_message} =
+        Chat.send_message(target_scope, workspace.default_channel_id, %{
+          "content" => "first noisy"
+        })
+
+      {:ok, second_message} =
+        Chat.send_message(target_scope, workspace.default_channel_id, %{
+          "content" => "second noisy"
+        })
+
+      {:ok, owner_view, _html} =
+        live(owner_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(owner_view, "#message-#{first_message.id}-mute")
+      assert has_element?(owner_view, "#message-#{second_message.id}-mute")
+
+      owner_view
+      |> element("#message-#{first_message.id}-mute")
+      |> render_click()
+
+      assert has_element?(owner_view, "#message-#{first_message.id}-unmute")
+      assert has_element?(owner_view, "#message-#{second_message.id}-unmute")
+      refute has_element?(owner_view, "#message-#{first_message.id}-mute")
+      refute has_element?(owner_view, "#message-#{second_message.id}-mute")
     end
 
     test "timeout applies after selecting a preset from a message context menu", %{

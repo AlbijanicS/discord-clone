@@ -7,11 +7,10 @@ defmodule DiscordClone.ChatTest do
   alias DiscordClone.Chat.{
     ChannelRead,
     ChannelReadState,
-    ChannelServer,
     ChannelUnreadSpan,
     Message,
     MessageReaction,
-    WorkspaceServer
+    Runtime
   }
 
   alias DiscordClone.Workspaces
@@ -172,329 +171,6 @@ defmodule DiscordClone.ChatTest do
     end
   end
 
-  describe "backfill_unread_ranges_from_channel_reads/1" do
-    test "backfills unread read state and spans from cursor reads" do
-      scope = user_scope_fixture()
-      other_scope = user_scope_fixture()
-      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
-      add_workspace_member!(workspace, other_scope)
-
-      cursor_message =
-        insert_message!(
-          workspace.default_channel_id,
-          other_scope.user.id,
-          "already read",
-          ~U[2026-06-19 10:00:00Z]
-        )
-
-      first_unread =
-        insert_message!(
-          workspace.default_channel_id,
-          other_scope.user.id,
-          "please review",
-          ~U[2026-06-19 10:01:00Z]
-        )
-
-      last_unread =
-        insert_message!(
-          workspace.default_channel_id,
-          other_scope.user.id,
-          "one more thing",
-          ~U[2026-06-19 10:02:00Z]
-        )
-
-      put_channel_read!(workspace.default_channel_id, scope.user.id, cursor_message.id)
-
-      assert :ok = Chat.backfill_unread_ranges_from_channel_reads(workspace.id)
-
-      assert %ChannelReadState{} =
-               read_state =
-               Repo.get_by(ChannelReadState,
-                 channel_id: workspace.default_channel_id,
-                 user_id: scope.user.id
-               )
-
-      assert read_state.unread_count == 2
-      assert read_state.first_unread_seq == first_unread.seq
-      assert read_state.last_unread_seq == last_unread.seq
-
-      assert [
-               %ChannelUnreadSpan{
-                 from_seq: from_seq,
-                 to_seq: to_seq
-               }
-             ] =
-               Repo.all(
-                 from span in ChannelUnreadSpan,
-                   where:
-                     span.channel_id == ^workspace.default_channel_id and
-                       span.user_id == ^scope.user.id
-               )
-
-      assert {from_seq, to_seq} == {first_unread.seq, last_unread.seq}
-    end
-
-    test "creates zero-unread read states for cursor-after-latest and empty channels" do
-      scope = user_scope_fixture()
-      other_scope = user_scope_fixture()
-      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
-      {:ok, empty_channel} = Workspaces.create_channel(scope, workspace.id, %{name: "empty"})
-      add_workspace_member!(workspace, other_scope)
-
-      latest_message =
-        insert_message!(
-          workspace.default_channel_id,
-          other_scope.user.id,
-          "already read",
-          ~U[2026-06-19 10:00:00Z]
-        )
-
-      put_channel_read!(workspace.default_channel_id, scope.user.id, latest_message.id)
-      put_channel_read!(empty_channel.id, scope.user.id, nil)
-
-      assert :ok = Chat.backfill_unread_ranges_from_channel_reads(workspace.id)
-
-      read_states =
-        Repo.all(
-          from read_state in ChannelReadState,
-            where: read_state.user_id == ^scope.user.id,
-            order_by: [asc: read_state.channel_id],
-            select:
-              {read_state.channel_id, read_state.unread_count, read_state.first_unread_seq,
-               read_state.last_unread_seq}
-        )
-
-      assert {workspace.default_channel_id, 0, nil, nil} in read_states
-      assert {empty_channel.id, 0, nil, nil} in read_states
-
-      refute Repo.exists?(
-               from span in ChannelUnreadSpan,
-                 where: span.user_id == ^scope.user.id
-             )
-    end
-
-    test "excludes own messages and includes nil-author messages after the cursor" do
-      scope = user_scope_fixture()
-      other_scope = user_scope_fixture()
-      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
-      add_workspace_member!(workspace, other_scope)
-
-      cursor_message =
-        insert_message!(
-          workspace.default_channel_id,
-          other_scope.user.id,
-          "read",
-          ~U[2026-06-19 10:00:00Z]
-        )
-
-      first_unread =
-        insert_message!(
-          workspace.default_channel_id,
-          other_scope.user.id,
-          "from someone else",
-          ~U[2026-06-19 10:01:00Z]
-        )
-
-      own_message =
-        insert_message!(
-          workspace.default_channel_id,
-          scope.user.id,
-          "my reply",
-          ~U[2026-06-19 10:02:00Z]
-        )
-
-      nil_author_message =
-        insert_message!(
-          workspace.default_channel_id,
-          nil,
-          "deleted author",
-          ~U[2026-06-19 10:03:00Z]
-        )
-
-      latest_unread =
-        insert_message!(
-          workspace.default_channel_id,
-          other_scope.user.id,
-          "still unread",
-          ~U[2026-06-19 10:04:00Z]
-        )
-
-      put_channel_read!(workspace.default_channel_id, scope.user.id, cursor_message.id)
-
-      assert :ok = Chat.backfill_unread_ranges_from_channel_reads(workspace.id)
-
-      assert %ChannelReadState{} =
-               read_state =
-               Repo.get_by(ChannelReadState,
-                 channel_id: workspace.default_channel_id,
-                 user_id: scope.user.id
-               )
-
-      assert read_state.unread_count == 3
-      assert read_state.first_unread_seq == first_unread.seq
-      assert read_state.last_unread_seq == latest_unread.seq
-
-      spans =
-        Repo.all(
-          from span in ChannelUnreadSpan,
-            where:
-              span.channel_id == ^workspace.default_channel_id and
-                span.user_id == ^scope.user.id,
-            order_by: [asc: span.from_seq],
-            select: {span.from_seq, span.to_seq}
-        )
-
-      assert spans == [
-               {first_unread.seq, first_unread.seq},
-               {nil_author_message.seq, latest_unread.seq}
-             ]
-
-      refute own_message.seq in Enum.flat_map(spans, fn {from_seq, to_seq} ->
-               Enum.to_list(from_seq..to_seq)
-             end)
-    end
-
-    test "uses membership time for missing and nil cursor rows without counting pre-join history" do
-      owner_scope = user_scope_fixture()
-      member_scope = user_scope_fixture()
-      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
-
-      {:ok, release_channel} =
-        Workspaces.create_channel(owner_scope, workspace.id, %{name: "release"})
-
-      old_general =
-        insert_message!(
-          workspace.default_channel_id,
-          owner_scope.user.id,
-          "old general",
-          ~U[2026-06-19 09:59:00Z]
-        )
-
-      old_release =
-        insert_message!(
-          release_channel.id,
-          owner_scope.user.id,
-          "old release",
-          ~U[2026-06-19 09:59:30Z]
-        )
-
-      membership =
-        workspace
-        |> add_workspace_member!(member_scope)
-        |> Ecto.Changeset.change(
-          inserted_at: ~U[2026-06-19 10:00:00Z],
-          updated_at: ~U[2026-06-19 10:00:00Z]
-        )
-        |> Repo.update!()
-
-      new_general =
-        insert_message!(
-          workspace.default_channel_id,
-          owner_scope.user.id,
-          "new general",
-          ~U[2026-06-19 10:01:00Z]
-        )
-
-      new_release =
-        insert_message!(
-          release_channel.id,
-          owner_scope.user.id,
-          "new release",
-          ~U[2026-06-19 10:02:00Z]
-        )
-
-      put_channel_read!(release_channel.id, member_scope.user.id, nil)
-
-      assert membership.inserted_at == ~U[2026-06-19 10:00:00Z]
-      assert :ok = Chat.backfill_unread_ranges_from_channel_reads(workspace.id)
-
-      spans =
-        Repo.all(
-          from span in ChannelUnreadSpan,
-            where: span.user_id == ^member_scope.user.id,
-            order_by: [asc: span.channel_id],
-            select: {span.channel_id, span.from_seq, span.to_seq}
-        )
-
-      assert spans == [
-               {workspace.default_channel_id, new_general.seq, new_general.seq},
-               {release_channel.id, new_release.seq, new_release.seq}
-             ]
-
-      read_states =
-        Repo.all(
-          from read_state in ChannelReadState,
-            where: read_state.user_id == ^member_scope.user.id,
-            select:
-              {read_state.channel_id, read_state.unread_count, read_state.first_unread_seq,
-               read_state.last_unread_seq}
-        )
-        |> Map.new(fn {channel_id, unread_count, first_seq, last_seq} ->
-          {channel_id, {unread_count, first_seq, last_seq}}
-        end)
-
-      assert read_states[workspace.default_channel_id] == {1, new_general.seq, new_general.seq}
-      assert read_states[release_channel.id] == {1, new_release.seq, new_release.seq}
-
-      refute old_general.seq in Enum.map(spans, fn {_channel_id, from_seq, _to_seq} ->
-               from_seq
-             end)
-
-      refute old_release.seq in Enum.map(spans, fn {_channel_id, from_seq, _to_seq} ->
-               from_seq
-             end)
-    end
-
-    test "can be run repeatedly without duplicating migrated read states or spans" do
-      scope = user_scope_fixture()
-      other_scope = user_scope_fixture()
-      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
-      add_workspace_member!(workspace, other_scope)
-
-      cursor_message =
-        insert_message!(
-          workspace.default_channel_id,
-          other_scope.user.id,
-          "read",
-          ~U[2026-06-19 10:00:00Z]
-        )
-
-      unread_message =
-        insert_message!(
-          workspace.default_channel_id,
-          other_scope.user.id,
-          "unread",
-          ~U[2026-06-19 10:01:00Z]
-        )
-
-      put_channel_read!(workspace.default_channel_id, scope.user.id, cursor_message.id)
-
-      assert :ok = Chat.backfill_unread_ranges_from_channel_reads(workspace.id)
-      assert :ok = Chat.backfill_unread_ranges_from_channel_reads(workspace.id)
-
-      assert Repo.aggregate(
-               from(read_state in ChannelReadState,
-                 where:
-                   read_state.channel_id == ^workspace.default_channel_id and
-                     read_state.user_id == ^scope.user.id
-               ),
-               :count
-             ) == 1
-
-      assert [
-               %ChannelUnreadSpan{from_seq: from_seq, to_seq: to_seq}
-             ] =
-               Repo.all(
-                 from span in ChannelUnreadSpan,
-                   where:
-                     span.channel_id == ^workspace.default_channel_id and
-                       span.user_id == ^scope.user.id
-               )
-
-      assert {from_seq, to_seq} == {unread_message.seq, unread_message.seq}
-    end
-  end
-
   describe "unread range workflows" do
     test "adds an unread range and updates the read-state summary" do
       scope = user_scope_fixture()
@@ -604,6 +280,37 @@ defmodule DiscordClone.ChatTest do
       assert is_nil(read_state.first_unread_seq)
       assert is_nil(read_state.last_unread_seq)
       assert [] = unread_spans(workspace.default_channel_id, scope.user.id)
+    end
+
+    test "marking a channel read clears unread state and publishes the read-state change" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      assert :ok = Chat.subscribe_to_channel_read_state(scope, channel_id)
+      assert {:ok, _read_state} = Chat.add_channel_unread_range(scope, channel_id, 2, 4)
+
+      assert_receive {:channel_read_state_changed,
+                      %{
+                        channel_id: ^channel_id,
+                        unread_count: 3,
+                        first_unread_seq: 2,
+                        last_unread_seq: 4
+                      }}
+
+      assert :ok = Chat.mark_channel_read(scope, channel_id)
+
+      assert_receive {:channel_read_state_changed,
+                      %{
+                        workspace_id: workspace_id,
+                        channel_id: ^channel_id,
+                        unread_count: 0,
+                        first_unread_seq: nil,
+                        last_unread_seq: nil
+                      }}
+
+      assert workspace_id == workspace.id
+      assert [] = unread_spans(channel_id, scope.user.id)
     end
 
     test "broadcasts read-state changes but not duplicate visible-read no-ops" do
@@ -1956,7 +1663,7 @@ defmodule DiscordClone.ChatTest do
       Process.exit(first_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
       _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
-      assert ChannelServer.whereis(channel_id) == nil
+      assert Runtime.channel_pid(channel_id) == nil
 
       assert {:ok, summaries} = Chat.list_reaction_summaries(scope, [message.id])
 
@@ -2113,7 +1820,7 @@ defmodule DiscordClone.ChatTest do
       assert user_id == scope.user.id
       assert {:ok, [^user_id]} = Chat.list_typing_user_ids(scope, channel_id)
 
-      first_pid = ChannelServer.whereis(channel_id)
+      first_pid = Runtime.channel_pid(channel_id)
       ref = Process.monitor(first_pid)
       Process.exit(first_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
@@ -2125,7 +1832,7 @@ defmodule DiscordClone.ChatTest do
       assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: ^user_id}}
       assert {:ok, [^user_id]} = Chat.list_typing_user_ids(scope, channel_id)
 
-      second_pid = ChannelServer.whereis(channel_id)
+      second_pid = Runtime.channel_pid(channel_id)
       assert is_pid(second_pid)
       assert second_pid != first_pid
     end
@@ -2137,7 +1844,7 @@ defmodule DiscordClone.ChatTest do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
 
       assert :ok = Chat.subscribe_to_workspace_presence(scope, workspace.id)
-      assert WorkspaceServer.whereis(workspace.id) == nil
+      assert Runtime.workspace_presence_pid(workspace.id) == nil
     end
 
     test "rejects anonymous scopes" do
@@ -2167,7 +1874,7 @@ defmodule DiscordClone.ChatTest do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
 
       assert {:ok, []} = Chat.list_online_workspace_user_ids(scope, workspace.id)
-      assert WorkspaceServer.whereis(workspace.id) == nil
+      assert Runtime.workspace_presence_pid(workspace.id) == nil
     end
 
     test "rejects anonymous scopes" do
@@ -2199,7 +1906,7 @@ defmodule DiscordClone.ChatTest do
 
       assert :ok = Chat.join_workspace_presence(scope, workspace.id, live_view_pid)
 
-      assert is_pid(WorkspaceServer.whereis(workspace.id))
+      assert is_pid(Runtime.workspace_presence_pid(workspace.id))
       assert {:ok, [user_id]} = Chat.list_online_workspace_user_ids(scope, workspace.id)
       assert user_id == scope.user.id
     end
@@ -2247,7 +1954,7 @@ defmodule DiscordClone.ChatTest do
       assert :ok =
                Chat.join_workspace_presence(owner_scope, workspace.id, start_live_view_process())
 
-      pid = WorkspaceServer.whereis(workspace.id)
+      pid = Runtime.workspace_presence_pid(workspace.id)
       state = :sys.get_state(pid)
 
       assert Map.has_key?(state.timeout_timers, moderation.id)
@@ -2262,7 +1969,7 @@ defmodule DiscordClone.ChatTest do
       assert :ok =
                Chat.join_workspace_presence(owner_scope, workspace.id, start_live_view_process())
 
-      pid = WorkspaceServer.whereis(workspace.id)
+      pid = Runtime.workspace_presence_pid(workspace.id)
 
       assert {:ok, moderation} =
                Workspaces.timeout_member(
@@ -2298,7 +2005,7 @@ defmodule DiscordClone.ChatTest do
       {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
 
       assert Chat.join_workspace_presence(non_member_scope, workspace.id) == {:error, :not_found}
-      assert WorkspaceServer.whereis(workspace.id) == nil
+      assert Runtime.workspace_presence_pid(workspace.id) == nil
     end
 
     test "runtime crash does not interrupt persisted chat workflows or rejoining presence" do
@@ -2307,7 +2014,7 @@ defmodule DiscordClone.ChatTest do
       live_view_pid = start_live_view_process()
 
       assert :ok = Chat.join_workspace_presence(scope, workspace.id, live_view_pid)
-      workspace_pid = WorkspaceServer.whereis(workspace.id)
+      workspace_pid = Runtime.workspace_presence_pid(workspace.id)
       assert is_pid(workspace_pid)
 
       ref = Process.monitor(workspace_pid)

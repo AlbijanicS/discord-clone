@@ -3,8 +3,6 @@ defmodule DiscordClone.Chat.ChannelServer do
 
   use GenServer
 
-  alias DiscordClone.Chat.ChannelRegistry
-
   @inactivity_timeout_ms :timer.minutes(15)
   @typing_timeout_ms :timer.seconds(5)
 
@@ -40,16 +38,9 @@ defmodule DiscordClone.Chat.ChannelServer do
     }
   end
 
-  @spec start_link({any(), any()}) :: :ignore | {:error, any()} | {:ok, pid()}
-  def start_link({channel_id, recent_messages}) do
-    GenServer.start_link(__MODULE__, {channel_id, recent_messages}, name: via_tuple(channel_id))
-  end
-
-  def whereis(channel_id) do
-    case Registry.lookup(ChannelRegistry, channel_id) do
-      [{pid, _value}] -> if Process.alive?(pid), do: pid
-      [] -> nil
-    end
+  @spec start_link({any(), any(), any()}) :: :ignore | {:error, any()} | {:ok, pid()}
+  def start_link({channel_id, recent_messages, name}) do
+    GenServer.start_link(__MODULE__, {channel_id, recent_messages}, name: name)
   end
 
   @impl true
@@ -165,10 +156,6 @@ defmodule DiscordClone.Chat.ChannelServer do
       _stale_or_missing ->
         {:noreply, state}
     end
-  end
-
-  defp via_tuple(channel_id) do
-    {:via, Registry, {ChannelRegistry, channel_id}}
   end
 
   defp refresh_activity(state) do

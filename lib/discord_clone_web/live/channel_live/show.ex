@@ -3,8 +3,9 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   alias DiscordClone.{Chat, Workspaces}
   alias DiscordClone.Chat.Emoji
-  alias DiscordClone.Chat.WorkspacePresence, as: PresenceEvents
+  alias DiscordClone.Chat.PresenceEvents
   alias DiscordCloneWeb.ChannelLive.MessageRows
+  alias DiscordCloneWeb.WorkspaceLive.MemberActions
   alias DiscordCloneWeb.WorkspaceLive.MemberActionsMenu
   alias DiscordCloneWeb.WorkspaceLive.Presence
   alias DiscordCloneWeb.WorkspaceLive.Shell
@@ -867,7 +868,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
-  def handle_event("member_action", %{"action" => action, "user_id" => user_id} = params, socket)
+  def handle_event("member_action", %{"action" => action, "user_id" => _user_id} = params, socket)
       when action in [
              "promote_to_admin",
              "demote_to_member",
@@ -876,130 +877,19 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
              "timeout",
              "remove_timeout"
            ] do
-    user_id = String.to_integer(user_id)
     workspace_id = socket.assigns.selected_workspace.id
 
-    result =
-      case action do
-        "promote_to_admin" ->
-          Workspaces.change_member_role(
-            socket.assigns.current_scope,
-            workspace_id,
-            user_id,
-            "admin"
-          )
-
-        "demote_to_member" ->
-          Workspaces.change_member_role(
-            socket.assigns.current_scope,
-            workspace_id,
-            user_id,
-            "member"
-          )
-
-        "mute" ->
-          Workspaces.mute_member(
-            socket.assigns.current_scope,
-            socket.assigns.selected_workspace.id,
-            user_id
-          )
-
-        "timeout" ->
-          Workspaces.timeout_member(
-            socket.assigns.current_scope,
-            workspace_id,
-            user_id,
-            Map.fetch!(params, "timeout_duration")
-          )
-
-        "remove_timeout" ->
-          Workspaces.remove_member_timeout(
-            socket.assigns.current_scope,
-            workspace_id,
-            user_id
-          )
-
-        "unmute" ->
-          Workspaces.unmute_member(
-            socket.assigns.current_scope,
-            socket.assigns.selected_workspace.id,
-            user_id
-          )
-      end
-
-    case result do
-      {:ok, _moderation} ->
-        payload = %{workspace_id: socket.assigns.selected_workspace.id, target_user_id: user_id}
-        {:noreply, refresh_workspace_moderation(socket, payload)}
-
-      {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "Member action could not be completed.")}
-
-      {:error, _reason, _detail} ->
-        {:noreply, put_flash(socket, :error, "Member action could not be completed.")}
-    end
+    MemberActions.run(socket, params, workspace_id, &refresh_workspace_moderation/2)
   end
 
-  def handle_event("kick_member", %{"user_id" => user_id} = params, socket) do
-    user_id = String.to_integer(user_id)
-    reason = Map.get(params, "reason", "")
-
-    case Workspaces.kick_member(
-           socket.assigns.current_scope,
-           socket.assigns.selected_workspace.id,
-           user_id,
-           %{"reason" => reason}
-         ) do
-      {:ok, _membership} ->
-        payload = %{workspace_id: socket.assigns.selected_workspace.id, target_user_id: user_id}
-
-        {:noreply,
-         socket
-         |> put_flash(:info, "Member removed from the workspace.")
-         |> refresh_workspace_moderation(payload)}
-
-      {:error, :reason_required} ->
-        {:noreply, put_flash(socket, :error, "A reason is required to kick a member.")}
-
-      {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "Member could not be kicked.")}
-
-      {:error, _reason, _detail} ->
-        {:noreply, put_flash(socket, :error, "Member could not be kicked.")}
-    end
+  def handle_event("kick_member", %{"user_id" => _user_id} = params, socket) do
+    workspace_id = socket.assigns.selected_workspace.id
+    MemberActions.kick(socket, params, workspace_id, &refresh_workspace_moderation/2)
   end
 
-  def handle_event("ban_member", %{"user_id" => user_id} = params, socket) do
-    user_id = String.to_integer(user_id)
-
-    ban_attrs = %{
-      "reason" => Map.get(params, "reason", ""),
-      "cleanup_window" => Map.get(params, "cleanup_window")
-    }
-
-    case Workspaces.ban_member(
-           socket.assigns.current_scope,
-           socket.assigns.selected_workspace.id,
-           user_id,
-           ban_attrs
-         ) do
-      {:ok, _ban} ->
-        payload = %{workspace_id: socket.assigns.selected_workspace.id, target_user_id: user_id}
-
-        {:noreply,
-         socket
-         |> put_flash(:info, "Member banned from the workspace.")
-         |> refresh_workspace_moderation(payload)}
-
-      {:error, :reason_required} ->
-        {:noreply, put_flash(socket, :error, "A reason is required to ban a member.")}
-
-      {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "Member could not be banned.")}
-
-      {:error, _reason, _detail} ->
-        {:noreply, put_flash(socket, :error, "Member could not be banned.")}
-    end
+  def handle_event("ban_member", %{"user_id" => _user_id} = params, socket) do
+    workspace_id = socket.assigns.selected_workspace.id
+    MemberActions.ban(socket, params, workspace_id, &refresh_workspace_moderation/2)
   end
 
   def handle_event("open_workspace_actions", %{"workspace_id" => workspace_id}, socket) do

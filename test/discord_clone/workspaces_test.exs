@@ -8,7 +8,7 @@ defmodule DiscordClone.WorkspacesTest do
     ChannelReadState,
     ChannelUnreadSpan,
     Message,
-    WorkspaceServer
+    Runtime
   }
 
   alias DiscordClone.Workspaces
@@ -2902,7 +2902,7 @@ defmodule DiscordClone.WorkspacesTest do
       {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Team Space"})
 
       assert :ok = DiscordClone.Chat.join_workspace_presence(owner_scope, workspace.id)
-      presence_pid = WorkspaceServer.whereis(workspace.id)
+      presence_pid = Runtime.workspace_presence_pid(workspace.id)
       assert is_pid(presence_pid)
 
       ref = Process.monitor(presence_pid)
@@ -2911,7 +2911,7 @@ defmodule DiscordClone.WorkspacesTest do
 
       assert deleted_workspace.id == workspace.id
       assert_receive {:DOWN, ^ref, :process, ^presence_pid, :shutdown}
-      assert WorkspaceServer.whereis(workspace.id) == nil
+      assert Runtime.workspace_presence_pid(workspace.id) == nil
     end
 
     test "rejects non-owners, missing workspaces, and unauthenticated scopes" do

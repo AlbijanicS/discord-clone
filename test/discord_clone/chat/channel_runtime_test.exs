@@ -1,25 +1,20 @@
 defmodule DiscordClone.Chat.ChannelRuntimeTest do
   use DiscordClone.DataCase, async: false
 
-  alias DiscordClone.Chat.{ChannelServer, ChannelSupervisor, Message}
+  alias DiscordClone.Chat.{Message, Runtime}
   alias DiscordClone.{Repo, Workspaces}
   alias DiscordClone.Workspaces.Channel
 
   import DiscordClone.AccountsFixtures
 
   describe "channel runtime supervision" do
-    test "application starts the channel registry and supervisor" do
-      assert is_pid(Process.whereis(DiscordClone.Chat.ChannelRegistry))
-      assert is_pid(Process.whereis(DiscordClone.Chat.ChannelSupervisor))
-    end
-
     test "starts and finds a channel runtime by durable channel ID" do
       channel_id = System.unique_integer([:positive])
 
-      assert {:ok, pid} = ChannelSupervisor.start_channel(channel_id)
+      assert {:ok, pid} = Runtime.ensure_channel(channel_id)
 
-      assert ChannelServer.whereis(channel_id) == pid
-      assert %{channel_id: ^channel_id} = :sys.get_state(pid)
+      assert Runtime.channel_pid(channel_id) == pid
+      assert Runtime.list_recent_messages(channel_id) == {:ok, []}
     end
 
     test "starts with a bounded recent message cache for rendering" do
@@ -37,8 +32,8 @@ defmodule DiscordClone.Chat.ChannelRuntimeTest do
           )
         end
 
-      assert {:ok, pid} = ChannelSupervisor.start_channel(workspace.default_channel_id)
-      assert {:ok, cached_messages} = ChannelServer.list_recent_messages(pid)
+      assert {:ok, _pid} = Runtime.ensure_channel(workspace.default_channel_id)
+      assert {:ok, cached_messages} = Runtime.list_recent_messages(workspace.default_channel_id)
 
       assert Enum.map(cached_messages, & &1.id) == messages |> Enum.drop(5) |> Enum.map(& &1.id)
       assert Enum.map(cached_messages, & &1.content) == Enum.map(6..55, &"message #{&1}")
@@ -57,7 +52,7 @@ defmodule DiscordClone.Chat.ChannelRuntimeTest do
       ref = Process.monitor(pid)
 
       assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
-      assert ChannelServer.whereis(channel_id) == nil
+      assert Runtime.channel_pid(channel_id) == nil
     end
 
     test "restarts after idle shutdown and reloads recent persisted messages" do
@@ -73,7 +68,7 @@ defmodule DiscordClone.Chat.ChannelRuntimeTest do
       assert {:ok, first_pid} = DiscordClone.Chat.ensure_channel_runtime(scope, channel_id)
       ref = Process.monitor(first_pid)
       assert_receive {:DOWN, ^ref, :process, ^first_pid, :normal}
-      assert ChannelServer.whereis(channel_id) == nil
+      assert Runtime.channel_pid(channel_id) == nil
 
       Application.put_env(
         :discord_clone,
@@ -89,30 +84,24 @@ defmodule DiscordClone.Chat.ChannelRuntimeTest do
 
       assert {:ok, second_pid} = DiscordClone.Chat.ensure_channel_runtime(scope, channel_id)
       assert second_pid != first_pid
-      assert %{channel_id: ^channel_id} = :sys.get_state(second_pid)
+      assert Runtime.channel_pid(channel_id) == second_pid
     end
 
-    test "stores typing state as user IDs mapped to deadlines and refreshes activity" do
+    test "tracks typing user IDs and broadcasts typing started" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
       channel_id = workspace.default_channel_id
       user_id = scope.user.id
 
-      assert {:ok, pid} = DiscordClone.Chat.ensure_channel_runtime(scope, channel_id)
-      %{last_activity_at: initial_activity_at} = :sys.get_state(pid)
+      assert :ok = DiscordClone.Chat.subscribe_to_channel_typing(scope, channel_id)
 
       assert :ok = DiscordClone.Chat.user_started_typing(scope, channel_id)
+      assert {:ok, [^user_id]} = DiscordClone.Chat.list_typing_user_ids(scope, channel_id)
 
-      state = :sys.get_state(pid)
-      assert %{^user_id => deadline} = state.typing_users
-      assert is_integer(deadline)
-      refute match?(%{^user_id => %{id: _id}}, state.typing_users)
-      refute Map.has_key?(state, :online_user_ids)
-      refute Map.has_key?(state, :online_users)
-      assert state.last_activity_at >= initial_activity_at
+      assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: ^user_id}}
     end
 
-    test "repeated typing starts refresh the typing deadline" do
+    test "repeated typing starts keep one typing user and do not rebroadcast started" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
       channel_id = workspace.default_channel_id
@@ -120,16 +109,14 @@ defmodule DiscordClone.Chat.ChannelRuntimeTest do
 
       put_channel_typing_timeout(1_000)
 
-      assert {:ok, pid} = DiscordClone.Chat.ensure_channel_runtime(scope, channel_id)
+      assert :ok = DiscordClone.Chat.subscribe_to_channel_typing(scope, channel_id)
       assert :ok = DiscordClone.Chat.user_started_typing(scope, channel_id)
-      %{typing_users: %{^user_id => first_deadline}} = :sys.get_state(pid)
-
-      Application.put_env(:discord_clone, :channel_runtime_typing_timeout_ms, 2_000)
+      assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: ^user_id}}
 
       assert :ok = DiscordClone.Chat.user_started_typing(scope, channel_id)
-      %{typing_users: %{^user_id => refreshed_deadline}} = :sys.get_state(pid)
 
-      assert refreshed_deadline > first_deadline
+      assert {:ok, [^user_id]} = DiscordClone.Chat.list_typing_user_ids(scope, channel_id)
+      refute_receive {:typing_started, _payload}, 50
     end
   end
 

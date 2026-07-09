@@ -3,20 +3,13 @@ defmodule DiscordClone.Chat.WorkspaceServer do
 
   use GenServer
 
-  alias DiscordClone.Chat.{WorkspacePresence, WorkspaceRegistry}
+  alias DiscordClone.Chat.Runtime
   alias DiscordClone.Workspaces.WorkspaceModeration
 
   @disconnect_grace_ms 50
 
-  def start_link(workspace_id) do
-    GenServer.start_link(__MODULE__, workspace_id, name: via_tuple(workspace_id))
-  end
-
-  def whereis(workspace_id) do
-    case Registry.lookup(WorkspaceRegistry, workspace_id) do
-      [{pid, _value}] -> if Process.alive?(pid), do: pid
-      [] -> nil
-    end
+  def start_link({workspace_id, name}) do
+    GenServer.start_link(__MODULE__, workspace_id, name: name)
   end
 
   def join(server, user_id, live_view_pid) when is_pid(live_view_pid) do
@@ -73,7 +66,7 @@ defmodule DiscordClone.Chat.WorkspaceServer do
       end
 
     if !user_was_online? and Map.has_key?(state.users, user_id) do
-      :ok = WorkspacePresence.broadcast_user_joined(state.workspace_id, user_id)
+      :ok = Runtime.broadcast_user_joined(state.workspace_id, user_id)
     end
 
     {:reply, :ok, state}
@@ -126,7 +119,7 @@ defmodule DiscordClone.Chat.WorkspaceServer do
         if Map.has_key?(state.users, user_id) do
           {:noreply, state}
         else
-          :ok = WorkspacePresence.broadcast_user_left(state.workspace_id, user_id)
+          :ok = Runtime.broadcast_user_left(state.workspace_id, user_id)
           {:noreply, state}
         end
 
@@ -144,10 +137,6 @@ defmodule DiscordClone.Chat.WorkspaceServer do
       _other_timer ->
         {:noreply, state}
     end
-  end
-
-  defp via_tuple(workspace_id) do
-    {:via, Registry, {WorkspaceRegistry, workspace_id}}
   end
 
   defp tracked_pid?(state, user_id, live_view_pid) do

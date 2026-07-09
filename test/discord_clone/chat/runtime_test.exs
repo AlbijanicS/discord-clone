@@ -1,58 +1,49 @@
-defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
+defmodule DiscordClone.Chat.RuntimeTest do
   use DiscordClone.DataCase, async: false
 
   alias DiscordClone.Chat.{
-    WorkspacePresence,
-    WorkspacePresenceRuntime,
-    WorkspaceServer,
-    WorkspaceSupervisor
+    PresenceEvents,
+    Runtime
   }
 
   describe "workspace presence runtime supervision" do
-    test "application starts the workspace presence registry and supervisor" do
-      assert is_pid(Process.whereis(DiscordClone.Chat.WorkspaceRegistry))
-      assert is_pid(Process.whereis(DiscordClone.Chat.WorkspaceSupervisor))
-    end
-
     test "starts and finds a workspace presence runtime by durable workspace ID" do
       workspace_id = System.unique_integer([:positive])
 
-      assert {:ok, pid} = WorkspaceSupervisor.start_workspace(workspace_id)
-      assert WorkspaceServer.whereis(workspace_id) == pid
-      assert WorkspaceServer.online_user_ids(pid) == []
+      assert {:ok, pid} = Runtime.ensure_workspace_presence(workspace_id)
+      assert Runtime.online_user_ids(workspace_id) == []
+      assert is_pid(pid)
     end
 
     test "starting the same workspace runtime twice returns the active process" do
       workspace_id = System.unique_integer([:positive])
 
-      assert {:ok, first_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
-      assert {:ok, second_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
+      assert {:ok, first_pid} = Runtime.ensure_workspace_presence(workspace_id)
+      assert {:ok, second_pid} = Runtime.ensure_workspace_presence(workspace_id)
 
       assert second_pid == first_pid
-      assert WorkspaceServer.whereis(workspace_id) == first_pid
+      assert Runtime.workspace_presence_pid(workspace_id) == first_pid
     end
 
     test "runtime online user listing does not start an absent workspace runtime" do
       workspace_id = System.unique_integer([:positive])
 
-      assert WorkspacePresenceRuntime.online_user_ids(workspace_id) == []
-      assert WorkspaceServer.whereis(workspace_id) == nil
+      assert Runtime.online_user_ids(workspace_id) == []
+      assert Runtime.workspace_presence_pid(workspace_id) == nil
     end
 
-    test "supervision restarts a workspace runtime under the same workspace ID" do
+    test "facade recovers workspace presence after runtime loss" do
       workspace_id = System.unique_integer([:positive])
-      assert {:ok, pid} = WorkspaceSupervisor.start_workspace(workspace_id)
+      user_id = System.unique_integer([:positive])
+      assert {:ok, pid} = Runtime.ensure_workspace_presence(workspace_id)
 
       ref = Process.monitor(pid)
       Process.exit(pid, :kill)
 
       assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
-      _ = :sys.get_state(DiscordClone.Chat.WorkspaceSupervisor)
 
-      restarted_pid = WorkspaceServer.whereis(workspace_id)
-      assert is_pid(restarted_pid)
-      assert restarted_pid != pid
-      assert WorkspaceServer.online_user_ids(restarted_pid) == []
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, self())
+      assert Runtime.online_user_ids(workspace_id) == [user_id]
     end
   end
 
@@ -62,10 +53,8 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
       user_id = System.unique_integer([:positive])
       live_view_pid = self()
 
-      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
-
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, live_view_pid)
-      assert WorkspaceServer.online_user_ids(workspace_pid) == [user_id]
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, live_view_pid)
+      assert Runtime.online_user_ids(workspace_id) == [user_id]
     end
 
     test "joining presence for the same user and same pid is idempotent" do
@@ -73,12 +62,10 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
       user_id = System.unique_integer([:positive])
       live_view_pid = self()
 
-      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, live_view_pid)
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, live_view_pid)
 
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, live_view_pid)
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, live_view_pid)
-
-      assert WorkspaceServer.online_user_ids(workspace_pid) == [user_id]
+      assert Runtime.online_user_ids(workspace_id) == [user_id]
     end
 
     test "joining presence for the same user from multiple pids keeps one online user id" do
@@ -87,12 +74,10 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
       first_live_view_pid = self()
       second_live_view_pid = start_live_view_process()
 
-      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, first_live_view_pid)
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, second_live_view_pid)
 
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, first_live_view_pid)
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, second_live_view_pid)
-
-      assert WorkspaceServer.online_user_ids(workspace_pid) == [user_id]
+      assert Runtime.online_user_ids(workspace_id) == [user_id]
     end
 
     test "joining presence for different users tracks each user independently" do
@@ -102,12 +87,13 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
       first_live_view_pid = self()
       second_live_view_pid = start_live_view_process()
 
-      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
+      assert :ok =
+               Runtime.join_workspace_presence(workspace_id, second_user_id, second_live_view_pid)
 
-      assert :ok = WorkspaceServer.join(workspace_pid, second_user_id, second_live_view_pid)
-      assert :ok = WorkspaceServer.join(workspace_pid, first_user_id, first_live_view_pid)
+      assert :ok =
+               Runtime.join_workspace_presence(workspace_id, first_user_id, first_live_view_pid)
 
-      assert WorkspaceServer.online_user_ids(workspace_pid) ==
+      assert Runtime.online_user_ids(workspace_id) ==
                Enum.sort([first_user_id, second_user_id])
     end
 
@@ -116,11 +102,11 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
       user_id = System.unique_integer([:positive])
       live_view_pid = start_live_view_process()
 
-      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
-      assert :ok = WorkspacePresence.subscribe(workspace_id)
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, live_view_pid)
+      assert :ok = Runtime.subscribe_workspace_presence(workspace_id)
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, live_view_pid)
+      workspace_pid = Runtime.workspace_presence_pid(workspace_id)
       assert_receive {:workspace_user_joined, %{workspace_id: ^workspace_id, user_id: ^user_id}}
-      assert WorkspaceServer.online_user_ids(workspace_pid) == [user_id]
+      assert Runtime.online_user_ids(workspace_id) == [user_id]
 
       ref = Process.monitor(live_view_pid)
       send(live_view_pid, :stop)
@@ -129,7 +115,7 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
       _ = :sys.get_state(workspace_pid)
       assert_receive {:workspace_user_left, %{workspace_id: ^workspace_id, user_id: ^user_id}}
 
-      assert WorkspaceServer.online_user_ids(workspace_pid) == []
+      assert Runtime.online_user_ids(workspace_id) == []
     end
 
     test "when one of several pids for a user exits the user remains online" do
@@ -138,10 +124,10 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
       first_live_view_pid = start_live_view_process()
       second_live_view_pid = start_live_view_process()
 
-      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, first_live_view_pid)
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, second_live_view_pid)
-      assert WorkspaceServer.online_user_ids(workspace_pid) == [user_id]
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, first_live_view_pid)
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, second_live_view_pid)
+      workspace_pid = Runtime.workspace_presence_pid(workspace_id)
+      assert Runtime.online_user_ids(workspace_id) == [user_id]
 
       ref = Process.monitor(first_live_view_pid)
       send(first_live_view_pid, :stop)
@@ -149,7 +135,7 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
       assert_receive {:DOWN, ^ref, :process, ^first_live_view_pid, :normal}
       _ = :sys.get_state(workspace_pid)
 
-      assert WorkspaceServer.online_user_ids(workspace_pid) == [user_id]
+      assert Runtime.online_user_ids(workspace_id) == [user_id]
     end
 
     test "listing online user ids does not change runtime state" do
@@ -157,11 +143,10 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
       user_id = System.unique_integer([:positive])
       live_view_pid = self()
 
-      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, live_view_pid)
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, live_view_pid)
 
-      assert WorkspaceServer.online_user_ids(workspace_pid) == [user_id]
-      assert WorkspaceServer.online_user_ids(workspace_pid) == [user_id]
+      assert Runtime.online_user_ids(workspace_id) == [user_id]
+      assert Runtime.online_user_ids(workspace_id) == [user_id]
     end
   end
 
@@ -170,18 +155,18 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
       workspace_id = System.unique_integer([:positive])
       user_id = System.unique_integer([:positive])
 
-      assert WorkspacePresence.user_joined_event(workspace_id, user_id) ==
+      assert PresenceEvents.user_joined_event(workspace_id, user_id) ==
                {:workspace_user_joined, %{workspace_id: workspace_id, user_id: user_id}}
 
-      assert WorkspacePresence.user_left_event(workspace_id, user_id) ==
+      assert PresenceEvents.user_left_event(workspace_id, user_id) ==
                {:workspace_user_left, %{workspace_id: workspace_id, user_id: user_id}}
 
-      assert WorkspacePresence.to_presence_event(
-               WorkspacePresence.user_joined_event(workspace_id, user_id)
+      assert PresenceEvents.to_presence_event(
+               PresenceEvents.user_joined_event(workspace_id, user_id)
              ) == {:ok, :user_joined, %{workspace_id: workspace_id, user_id: user_id}}
 
-      assert WorkspacePresence.to_presence_event(
-               WorkspacePresence.user_left_event(workspace_id, user_id)
+      assert PresenceEvents.to_presence_event(
+               PresenceEvents.user_left_event(workspace_id, user_id)
              ) == {:ok, :user_left, %{workspace_id: workspace_id, user_id: user_id}}
     end
 
@@ -190,10 +175,9 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
       user_id = System.unique_integer([:positive])
       live_view_pid = self()
 
-      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
-      assert :ok = WorkspacePresence.subscribe(workspace_id)
+      assert :ok = Runtime.subscribe_workspace_presence(workspace_id)
 
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, live_view_pid)
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, live_view_pid)
 
       assert_receive {:workspace_user_joined,
                       %{workspace_id: ^workspace_id, user_id: ^user_id} = payload}
@@ -207,12 +191,11 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
       user_id = System.unique_integer([:positive])
       live_view_pid = self()
 
-      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
-      assert :ok = WorkspacePresence.subscribe(workspace_id)
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, live_view_pid)
+      assert :ok = Runtime.subscribe_workspace_presence(workspace_id)
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, live_view_pid)
       assert_receive {:workspace_user_joined, %{workspace_id: ^workspace_id, user_id: ^user_id}}
 
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, live_view_pid)
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, live_view_pid)
 
       refute_receive {:workspace_user_joined, _payload}, 50
     end
@@ -223,12 +206,11 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
       first_live_view_pid = self()
       second_live_view_pid = start_live_view_process()
 
-      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
-      assert :ok = WorkspacePresence.subscribe(workspace_id)
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, first_live_view_pid)
+      assert :ok = Runtime.subscribe_workspace_presence(workspace_id)
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, first_live_view_pid)
       assert_receive {:workspace_user_joined, %{workspace_id: ^workspace_id, user_id: ^user_id}}
 
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, second_live_view_pid)
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, second_live_view_pid)
 
       refute_receive {:workspace_user_joined, _payload}, 50
     end
@@ -238,9 +220,9 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
       user_id = System.unique_integer([:positive])
       live_view_pid = start_live_view_process()
 
-      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
-      assert :ok = WorkspacePresence.subscribe(workspace_id)
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, live_view_pid)
+      assert :ok = Runtime.subscribe_workspace_presence(workspace_id)
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, live_view_pid)
+      workspace_pid = Runtime.workspace_presence_pid(workspace_id)
       assert_receive {:workspace_user_joined, %{workspace_id: ^workspace_id, user_id: ^user_id}}
 
       ref = Process.monitor(live_view_pid)
@@ -262,11 +244,11 @@ defmodule DiscordClone.Chat.WorkspacePresenceRuntimeTest do
       first_live_view_pid = start_live_view_process()
       second_live_view_pid = start_live_view_process()
 
-      assert {:ok, workspace_pid} = WorkspaceSupervisor.start_workspace(workspace_id)
-      assert :ok = WorkspacePresence.subscribe(workspace_id)
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, first_live_view_pid)
+      assert :ok = Runtime.subscribe_workspace_presence(workspace_id)
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, first_live_view_pid)
+      workspace_pid = Runtime.workspace_presence_pid(workspace_id)
       assert_receive {:workspace_user_joined, %{workspace_id: ^workspace_id, user_id: ^user_id}}
-      assert :ok = WorkspaceServer.join(workspace_pid, user_id, second_live_view_pid)
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, second_live_view_pid)
 
       ref = Process.monitor(first_live_view_pid)
       send(first_live_view_pid, :stop)

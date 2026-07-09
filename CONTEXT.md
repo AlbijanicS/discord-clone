@@ -41,6 +41,16 @@ _Avoid_: Main channel, default page
 The workflow of opening a workspace and navigating to its landing channel.
 _Avoid_: Workspace details page
 
+**Read State**:
+A Workspace Member's per-Channel read position and cached unread summary,
+including unread count and first/last unread message sequence bounds.
+_Avoid_: Read receipt
+
+**Unread Span**:
+An inclusive `{from_seq, to_seq}` interval of unread message sequences for one
+User and Channel.
+_Avoid_: Unread range
+
 ## Relationships
 
 - A **User** may own many **Workspaces**
@@ -69,6 +79,9 @@ _Avoid_: Workspace details page
 - **Workspace Entry** redirects to the **Landing Channel**
 - Resolving a **Landing Channel** is a scoped **Workspace Entry** workflow, not
   part of **Channel** creation
+- A **Read State** belongs to one **User** and one **Channel**
+- A **Read State** summarizes zero or more **Unread Spans**
+- An **Unread Span** belongs to one **User** and one **Channel**
 
 ## Example Dialogue
 
