@@ -5546,6 +5546,174 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
     end
   end
 
+  describe "moderation live refresh and access-loss hardening" do
+    setup :register_and_log_in_user
+
+    test "re-enables the timed-out user's composer live when the timeout expires", %{
+      conn: owner_conn,
+      scope: owner_scope
+    } do
+      target_scope =
+        %{username: "expiring_timeout_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope, "member")
+
+      {:ok, owner_view, _html} =
+        live(owner_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      owner_view
+      |> element("#workspace-member-#{target_scope.user.id}-timeout-5-minutes")
+      |> render_click()
+
+      target_conn = build_conn() |> log_in_user(target_scope.user)
+
+      {:ok, target_view, _html} =
+        live(
+          target_conn,
+          ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+        )
+
+      assert has_element?(target_view, "#message_content[disabled]")
+
+      expire_active_timeout!(workspace.id, target_scope.user.id)
+
+      render(target_view)
+      refute has_element?(target_view, "#message_content[disabled]")
+      refute has_element?(target_view, "#message-composer-muted-feedback")
+    end
+
+    test "re-enables the timed-out user's composer live when a moderator removes the timeout", %{
+      conn: owner_conn,
+      scope: owner_scope
+    } do
+      target_scope =
+        %{username: "manual_removed_timeout_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope, "member")
+
+      {:ok, owner_view, _html} =
+        live(owner_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      owner_view
+      |> element("#workspace-member-#{target_scope.user.id}-timeout-5-minutes")
+      |> render_click()
+
+      target_conn = build_conn() |> log_in_user(target_scope.user)
+
+      {:ok, target_view, _html} =
+        live(
+          target_conn,
+          ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+        )
+
+      assert has_element?(target_view, "#message_content[disabled]")
+
+      owner_view
+      |> element("#workspace-member-#{target_scope.user.id}-remove-timeout")
+      |> render_click()
+
+      render(target_view)
+      refute has_element?(target_view, "#message_content[disabled]")
+      refute has_element?(target_view, "#message-composer-muted-feedback")
+    end
+
+    test "keeps the composer blocked after timeout expiry when a mute is still active", %{
+      conn: owner_conn,
+      scope: owner_scope
+    } do
+      target_scope =
+        %{username: "muted_and_timed_out_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope, "member")
+
+      {:ok, owner_view, _html} =
+        live(owner_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      owner_view
+      |> element("#workspace-member-#{target_scope.user.id}-timeout-5-minutes")
+      |> render_click()
+
+      owner_view
+      |> element("#workspace-member-#{target_scope.user.id}-mute")
+      |> render_click()
+
+      target_conn = build_conn() |> log_in_user(target_scope.user)
+
+      {:ok, target_view, _html} =
+        live(
+          target_conn,
+          ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+        )
+
+      assert has_element?(target_view, "#message_content[disabled]")
+
+      expire_active_timeout!(workspace.id, target_scope.user.id)
+
+      render(target_view)
+      assert has_element?(target_view, "#message_content[disabled]")
+      assert has_element?(target_view, "#message-composer-muted-feedback", "muted")
+    end
+
+    test "moderation broadcasts to regular members carry no private moderation details", %{
+      scope: owner_scope
+    } do
+      member_scope =
+        %{username: "plain_member_subscriber"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      target_scope =
+        %{username: "reported_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope, "member")
+      add_workspace_member!(workspace, target_scope, "member")
+
+      :ok = Workspaces.subscribe_to_workspace_moderation(member_scope, workspace.id)
+
+      {:ok, _moderation} =
+        Workspaces.mute_member(owner_scope, workspace.id, target_scope.user.id, %{
+          "reason" => "leaking private channel secrets"
+        })
+
+      assert_receive {:workspace_moderation_changed, payload}
+
+      assert payload == %{workspace_id: workspace.id, target_user_id: target_scope.user.id}
+    end
+  end
+
+  # Simulates the runtime timer firing on a naturally expired timeout: backdate
+  # the active timeout's expiry into the past, then run the same expiry the
+  # WorkspaceServer timer invokes.
+  defp expire_active_timeout!(workspace_id, target_user_id) do
+    moderation =
+      Repo.one!(
+        from moderation in DiscordClone.Workspaces.WorkspaceModeration,
+          where:
+            moderation.workspace_id == ^workspace_id and
+              moderation.target_user_id == ^target_user_id and
+              moderation.type == "timeout" and
+              moderation.active? == true
+      )
+
+    moderation
+    |> Ecto.Changeset.change(expires_at: DateTime.add(DateTime.utc_now(:second), -1, :second))
+    |> Repo.update!()
+
+    {:ok, _expired} = Workspaces.expire_member_timeout(moderation.id)
+  end
+
   defp add_workspace_member!(workspace, scope, role \\ "member") do
     %WorkspaceMembership{}
     |> WorkspaceMembership.changeset(%{
