@@ -819,6 +819,34 @@ defmodule DiscordClone.Chat do
 
   def delete_message(_scope, _message_id), do: {:error, :unauthenticated}
 
+  @doc """
+  Answers whether the scoped user may delete `message`, reading roles from a
+  `member_by_user_id` map the caller already holds (no DB round-trip).
+
+  This is the UI-facing twin of the context's delete enforcement: both route
+  through the same `deletable?/2` rule, so the affordance the channel view shows
+  can never drift from what `delete_message/2` will accept.
+  """
+  def can_delete_message?(
+        %Scope{user: %User{id: user_id}},
+        %Message{} = message,
+        member_by_user_id
+      ) do
+    actor_role = role_of(member_by_user_id, user_id)
+    author_role = role_of(member_by_user_id, message.user_id)
+
+    message.user_id == user_id or deletable?(actor_role, author_role)
+  end
+
+  def can_delete_message?(_scope, _message, _member_by_user_id), do: false
+
+  defp role_of(member_by_user_id, user_id) do
+    case Map.get(member_by_user_id, user_id) do
+      %{role: role} -> role
+      _no_membership -> nil
+    end
+  end
+
   def list_reaction_summaries(%Scope{user: %User{}}, []), do: {:ok, %{}}
 
   def list_reaction_summaries(%Scope{user: %User{id: user_id}}, message_ids)
@@ -942,14 +970,27 @@ defmodule DiscordClone.Chat do
   defp authorize_delete_message(%Message{user_id: user_id}, user_id), do: :ok
 
   defp authorize_delete_message(%Message{} = message, user_id) do
-    message.channel.workspace_id
-    |> actor_target_roles(user_id, message.user_id)
-    |> case do
-      {%{role: "owner"}, %{role: role}} when role in ["admin", "member"] -> :ok
-      {%{role: "admin"}, %{role: role}} when role in ["admin", "member"] -> :ok
-      _roles -> {:error, :unauthorized}
+    {actor, author} = actor_target_roles(message.channel.workspace_id, user_id, message.user_id)
+
+    if deletable?(role_of_membership(actor), role_of_membership(author)) do
+      :ok
+    else
+      {:error, :unauthorized}
     end
   end
+
+  # Single source of truth for the moderation delete rule: an actor with an
+  # owner/admin role may delete a message authored by an admin/member. Deleting
+  # one's own message is not a moderation decision — it is handled by the
+  # author clause of `authorize_delete_message/2` and `can_delete_message?/3`.
+  defp deletable?(actor_role, author_role)
+       when actor_role in ["owner", "admin"] and author_role in ["admin", "member"],
+       do: true
+
+  defp deletable?(_actor_role, _author_role), do: false
+
+  defp role_of_membership(%{role: role}), do: role
+  defp role_of_membership(_no_membership), do: nil
 
   defp delete_message_with_optional_audit(%Message{} = message, user_id) do
     deleted_at = DateTime.utc_now(:second)

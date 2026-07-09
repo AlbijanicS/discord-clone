@@ -311,7 +311,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                   </summary>
                   <div class="absolute right-0 z-30 mt-1 w-44 rounded border border-base-300 bg-base-100 p-1 shadow-lg">
                     <button
-                      :if={can_delete_message?(row, @member_by_user_id, @current_scope)}
+                      :if={Chat.can_delete_message?(@current_scope, row.message, @member_by_user_id)}
                       id={"#{dom_id}-delete"}
                       type="button"
                       class="block w-full rounded px-3 py-2 text-left text-xs font-medium text-error transition hover:bg-error/10"
@@ -1498,36 +1498,9 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     Map.get(member_actions_by_user_id, user_id, [])
   end
 
-  defp own_message?(%{message: %{user_id: user_id}}, %{user: %{id: current_user_id}}),
-    do: user_id == current_user_id
-
   defp message_menu?(row, member_by_user_id, member_actions_by_user_id, current_scope) do
-    can_delete_message?(row, member_by_user_id, current_scope) or
+    Chat.can_delete_message?(current_scope, row.message, member_by_user_id) or
       message_author_actions(member_actions_by_user_id, row) != []
-  end
-
-  defp can_delete_message?(row, member_by_user_id, current_scope) do
-    own_message?(row, current_scope) or
-      moderator_can_delete_message?(row, member_by_user_id, current_scope)
-  end
-
-  defp moderator_can_delete_message?(row, member_by_user_id, current_scope) do
-    current_workspace_role(member_by_user_id, current_scope) in ["owner", "admin"] and
-      author_role_deletable?(member_by_user_id, row.message.user_id)
-  end
-
-  defp author_role_deletable?(member_by_user_id, author_user_id) do
-    case Map.get(member_by_user_id, author_user_id) do
-      %{role: role} -> role in ["admin", "member"]
-      _no_membership -> false
-    end
-  end
-
-  defp current_workspace_role(member_by_user_id, current_scope) do
-    case Map.get(member_by_user_id, current_scope.user.id) do
-      %{role: role} -> role
-      _no_membership -> nil
-    end
   end
 
   defp reaction_option_id(message_id, index), do: "message-#{message_id}-reaction-option-#{index}"

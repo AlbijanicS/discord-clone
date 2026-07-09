@@ -3133,6 +3133,79 @@ defmodule DiscordClone.ChatTest do
     end
   end
 
+  describe "can_delete_message?/3" do
+    setup do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      other_member_scope = user_scope_fixture()
+      outsider_scope = user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      admin_membership = add_workspace_member!(workspace, admin_scope, "admin")
+      member_membership = add_workspace_member!(workspace, member_scope, "member")
+      other_member_membership = add_workspace_member!(workspace, other_member_scope, "member")
+
+      {:ok, members} = Workspaces.list_members(owner_scope, workspace.id)
+      member_by_user_id = Map.new(members, &{&1.user_id, &1})
+
+      %{
+        owner_scope: owner_scope,
+        admin_scope: admin_scope,
+        member_scope: member_scope,
+        other_member_scope: other_member_scope,
+        outsider_scope: outsider_scope,
+        member_by_user_id: member_by_user_id,
+        admin_membership: admin_membership,
+        member_membership: member_membership,
+        other_member_membership: other_member_membership
+      }
+    end
+
+    test "an author may delete their own message regardless of role", ctx do
+      message = %Message{user_id: ctx.member_scope.user.id}
+      assert Chat.can_delete_message?(ctx.member_scope, message, ctx.member_by_user_id)
+    end
+
+    test "an owner may delete admin- and member-authored messages", ctx do
+      admin_message = %Message{user_id: ctx.admin_scope.user.id}
+      member_message = %Message{user_id: ctx.member_scope.user.id}
+
+      assert Chat.can_delete_message?(ctx.owner_scope, admin_message, ctx.member_by_user_id)
+      assert Chat.can_delete_message?(ctx.owner_scope, member_message, ctx.member_by_user_id)
+    end
+
+    test "an admin may delete admin- and member-authored messages", ctx do
+      admin_message = %Message{user_id: ctx.admin_scope.user.id}
+      member_message = %Message{user_id: ctx.member_scope.user.id}
+
+      assert Chat.can_delete_message?(ctx.admin_scope, admin_message, ctx.member_by_user_id)
+      assert Chat.can_delete_message?(ctx.admin_scope, member_message, ctx.member_by_user_id)
+    end
+
+    test "a moderator may not delete an owner-authored message", ctx do
+      owner_message = %Message{user_id: ctx.owner_scope.user.id}
+
+      refute Chat.can_delete_message?(ctx.admin_scope, owner_message, ctx.member_by_user_id)
+    end
+
+    test "a member may not delete another member's message", ctx do
+      member_message = %Message{user_id: ctx.member_scope.user.id}
+
+      refute Chat.can_delete_message?(
+               ctx.other_member_scope,
+               member_message,
+               ctx.member_by_user_id
+             )
+    end
+
+    test "a user without a membership in the map may not delete another's message", ctx do
+      member_message = %Message{user_id: ctx.member_scope.user.id}
+
+      refute Chat.can_delete_message?(ctx.outsider_scope, member_message, ctx.member_by_user_id)
+    end
+  end
+
   describe "soft_delete_user_workspace_messages/4" do
     test "soft-deletes only the target's messages inside the time window and removes their reactions" do
       owner_scope = user_scope_fixture()
