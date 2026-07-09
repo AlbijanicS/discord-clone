@@ -3047,6 +3047,7 @@ defmodule DiscordClone.ChatTest do
       assert audit_event.target_user_id == member_scope.user.id
       assert audit_event.metadata["message_id"] == message.id
       assert audit_event.metadata["channel_id"] == workspace.default_channel_id
+      assert audit_event.metadata["channel_name"] == "general"
     end
 
     test "enforces moderator delete boundaries by role" do

@@ -785,22 +785,48 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
     target = audit_user_name(event.target_user)
 
     case event.event_type do
-      "member_role_promoted" -> "#{actor} promoted #{target} to admin"
-      "member_role_demoted" -> "#{actor} demoted #{target} to member"
-      "member_muted" -> "#{actor} muted #{target}"
-      "member_unmuted" -> "#{actor} unmuted #{target}"
-      "member_timed_out" -> "#{actor} timed out #{target}"
-      "member_timeout_removed" -> "#{actor} removed timeout from #{target}"
-      "member_timeout_expired" -> "Timeout expired for #{target}"
-      "member_kicked" -> "#{actor} kicked #{target}"
-      "member_banned" -> "#{actor} banned #{target}"
-      "moderator_message_deleted" -> "#{actor} deleted a message by #{target}"
-      _event_type -> "#{actor} changed #{target}"
+      "member_role_promoted" ->
+        "#{actor} promoted #{target} to admin"
+
+      "member_role_demoted" ->
+        "#{actor} demoted #{target} to member"
+
+      "member_muted" ->
+        "#{actor} muted #{target}"
+
+      "member_unmuted" ->
+        "#{actor} unmuted #{target}"
+
+      "member_timed_out" ->
+        "#{actor} timed out #{target}"
+
+      "member_timeout_removed" ->
+        "#{actor} removed timeout from #{target}"
+
+      "member_timeout_expired" ->
+        "Timeout expired for #{target}"
+
+      "member_kicked" ->
+        "#{actor} kicked #{target}"
+
+      "member_banned" ->
+        "#{actor} banned #{target}"
+
+      "moderator_message_deleted" ->
+        "#{actor} deleted a message by #{target}#{audit_channel_context(event)}"
+
+      _event_type ->
+        "#{actor} changed #{target}"
     end
   end
 
   defp audit_user_name(%{username: username}) when is_binary(username), do: username
   defp audit_user_name(_user), do: "Unknown user"
+
+  defp audit_channel_context(%{metadata: %{"channel_name" => name}}) when is_binary(name),
+    do: " in ##{name}"
+
+  defp audit_channel_context(_event), do: ""
 
   defp audit_event_time(%DateTime{} = datetime),
     do: Calendar.strftime(datetime, "%b %-d, %Y %H:%M")

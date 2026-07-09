@@ -126,12 +126,35 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
   end
 
   def handle_event("member_action", %{"action" => action, "user_id" => user_id} = params, socket)
-      when action in ["mute", "unmute", "timeout", "remove_timeout"] do
+      when action in [
+             "promote_to_admin",
+             "demote_to_member",
+             "mute",
+             "unmute",
+             "timeout",
+             "remove_timeout"
+           ] do
     user_id = String.to_integer(user_id)
     workspace_id = socket.assigns.selected_workspace.id
 
     result =
       case action do
+        "promote_to_admin" ->
+          Workspaces.change_member_role(
+            socket.assigns.current_scope,
+            workspace_id,
+            user_id,
+            "admin"
+          )
+
+        "demote_to_member" ->
+          Workspaces.change_member_role(
+            socket.assigns.current_scope,
+            workspace_id,
+            user_id,
+            "member"
+          )
+
         "mute" ->
           Workspaces.mute_member(socket.assigns.current_scope, workspace_id, user_id)
 

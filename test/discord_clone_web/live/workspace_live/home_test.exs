@@ -1376,6 +1376,76 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(owner_view, "#workspace-member-#{target_scope.user.id}-mute")
     end
 
+    test "promotes a member to admin from the member menu and refreshes the controls", %{
+      conn: owner_conn,
+      scope: owner_scope
+    } do
+      target_scope =
+        %{username: "promotable_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope, "member")
+
+      {:ok, owner_view, _html} =
+        live(owner_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      owner_view
+      |> element("#workspace-member-#{target_scope.user.id}-promote-to-admin")
+      |> render_click()
+
+      assert Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: target_scope.user.id
+             ).role == "admin"
+
+      assert has_element?(
+               owner_view,
+               "#workspace-member-#{target_scope.user.id}-demote-to-member"
+             )
+
+      refute has_element?(
+               owner_view,
+               "#workspace-member-#{target_scope.user.id}-promote-to-admin"
+             )
+    end
+
+    test "demotes an admin to member from the member menu and refreshes the controls", %{
+      conn: owner_conn,
+      scope: owner_scope
+    } do
+      target_scope =
+        %{username: "demotable_admin"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope, "admin")
+
+      {:ok, owner_view, _html} =
+        live(owner_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      owner_view
+      |> element("#workspace-member-#{target_scope.user.id}-demote-to-member")
+      |> render_click()
+
+      assert Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: target_scope.user.id
+             ).role == "member"
+
+      assert has_element?(
+               owner_view,
+               "#workspace-member-#{target_scope.user.id}-promote-to-admin"
+             )
+
+      refute has_element?(
+               owner_view,
+               "#workspace-member-#{target_scope.user.id}-demote-to-member"
+             )
+    end
+
     test "shows timeout preset controls and disables the timed-out user's composer", %{
       conn: owner_conn,
       scope: owner_scope
@@ -5443,6 +5513,31 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert path == ~p"/workspaces"
       assert flash["error"] =~ "Workspace not found or you do not have access"
     end
+
+    test "promotes a member from the invite-surface member menu", %{
+      conn: conn,
+      scope: owner_scope
+    } do
+      target_scope =
+        DiscordClone.AccountsFixtures.user_fixture(%{username: "invite_promotable"})
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope, "member")
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/invites/new")
+
+      view
+      |> element("#workspace-member-#{target_scope.user.id}-promote-to-admin")
+      |> render_click()
+
+      assert Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: target_scope.user.id
+             ).role == "admin"
+
+      assert has_element?(view, "#workspace-member-#{target_scope.user.id}-demote-to-member")
+    end
   end
 
   describe "/workspaces/:workspace_id/audit-log" do
@@ -5485,6 +5580,33 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       assert has_element?(view, "#workspace-audit-events article:first-child", "demoted")
       assert has_element?(view, "#workspace-audit-events article:last-child", "member_user")
       assert has_element?(view, "#workspace-audit-events article:last-child", "promoted")
+    end
+
+    test "shows the channel context for a moderator message delete", %{
+      conn: conn,
+      scope: owner_scope
+    } do
+      member_scope =
+        DiscordClone.AccountsFixtures.user_fixture(%{username: "member_user"})
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope, "member")
+
+      {:ok, message} =
+        Chat.send_message(member_scope, workspace.default_channel_id, %{
+          "content" => "needs moderation"
+        })
+
+      assert {:ok, _deleted} = Chat.delete_message(owner_scope, message.id)
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/audit-log")
+
+      assert has_element?(
+               view,
+               "#workspace-audit-events article:first-child",
+               "deleted a message by member_user in #general"
+             )
     end
 
     test "redirects admins and members away from the audit log", %{
@@ -5543,6 +5665,32 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute Workspaces.workspace_banned?(workspace.id, banned_scope.user.id)
       refute has_element?(view, "#workspace-banned-members", "banished_user")
       assert has_element?(view, "#workspace-banned-members-empty-state")
+    end
+
+    test "promotes a member from the audit-log member menu and logs the event", %{
+      conn: conn,
+      scope: owner_scope
+    } do
+      target_scope =
+        DiscordClone.AccountsFixtures.user_fixture(%{username: "audit_promotable"})
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope, "member")
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/audit-log")
+
+      view
+      |> element("#workspace-member-#{target_scope.user.id}-promote-to-admin")
+      |> render_click()
+
+      assert Repo.get_by(WorkspaceMembership,
+               workspace_id: workspace.id,
+               user_id: target_scope.user.id
+             ).role == "admin"
+
+      assert has_element?(view, "#workspace-member-#{target_scope.user.id}-demote-to-member")
+      assert has_element?(view, "#workspace-audit-events article:first-child", "promoted")
     end
   end
 

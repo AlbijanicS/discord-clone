@@ -20,23 +20,54 @@ reloads and process restarts.
 
 ## Acceptance criteria
 
-- [ ] Owner/admin/member capabilities match the PRD across context APIs.
-- [ ] LiveView controls match context-level authorization for all actor/target
+- [x] Owner/admin/member capabilities match the PRD across context APIs.
+- [x] LiveView controls match context-level authorization for all actor/target
       pairs.
-- [ ] Forged events and direct route visits are rejected safely.
-- [ ] Mute and timeout enforcement is consistent across send, reaction, typing,
+- [x] Forged events and direct route visits are rejected safely.
+- [x] Mute and timeout enforcement is consistent across send, reaction, typing,
       and future participation hooks noted by the PRD.
-- [ ] Kick and ban cleanup does not leave stale read/unread or active
+- [x] Kick and ban cleanup does not leave stale read/unread or active
       moderation state.
-- [ ] Invite preview and acceptance correctly handle banned, kicked, existing,
+- [x] Invite preview and acceptance correctly handle banned, kicked, existing,
       and unbanned users.
-- [ ] Deleted messages remain placeholders and cannot receive reactions.
-- [ ] Audit history is owner-only and complete for moderation events.
-- [ ] Connected LiveViews remain consistent after moderation broadcasts.
-- [ ] Tests cover public context boundaries before LiveView behavior.
-- [ ] Relevant documentation reflects any final implementation decisions.
-- [ ] Focused tests pass.
-- [ ] `mix precommit` passes.
+- [x] Deleted messages remain placeholders and cannot receive reactions.
+- [x] Audit history is owner-only and complete for moderation events.
+- [x] Connected LiveViews remain consistent after moderation broadcasts.
+- [x] Tests cover public context boundaries before LiveView behavior.
+- [x] Relevant documentation reflects any final implementation decisions.
+- [x] Focused tests pass.
+- [x] `mix precommit` passes.
+
+## Known findings to resolve
+
+- **RESOLVED — role change UI is now wired.** The phantom promote/demote
+  controls are connected to `Workspaces.change_member_role/4`. Fix:
+  `member_action_click/1` in `member_actions_menu.ex` now returns
+  `"member_action"` for `:promote_to_admin` / `:demote_to_member`, and the
+  `handle_event("member_action", …)` clause in all three surfaces
+  (`channel_live/show.ex`, `audit_log.ex`, `invite_new.ex`) now maps those
+  actions to `change_member_role/4` with `"admin"` / `"member"` and the same
+  member-list refresh the other moderation actions use. Owners can promote a
+  member to admin and demote an admin to member from the sidebar and message
+  menus; the change is audited (`member_role_promoted` / `member_role_demoted`)
+  and the controls refresh live. Covered by promote/demote LiveView tests on all
+  three surfaces in `home_test.exs`.
+
+- **Role change is a phantom UI path (found during issue 12).** The context
+  function `Workspaces.change_member_role/4` works and writes a
+  `member_role_promoted` / `member_role_demoted` audit event, but the
+  `promote_to_admin` / `demote_to_member` menu items are **not wired to any
+  LiveView handler**: `member_action_click/1` in `member_actions_menu.ex`
+  returns `nil` for those actions (buttons render with no `phx-click`), and every
+  `handle_event("member_action", …)` clause only matches
+  `["mute","unmute","timeout","remove_timeout"]` (`channel_live/show.ex`,
+  `audit_log.ex`, `invite_new.ex`). So an owner sees promote/demote controls that
+  do nothing. This is exactly the acceptance criterion "LiveView controls match
+  context-level authorization for all actor/target pairs." Resolve by either
+  wiring promote/demote to `change_member_role/4` (with the same broadcast +
+  member-list refresh the other actions use) or removing the dead controls —
+  decide with the user. Issue 13 only proves the role-change *audit row* at the
+  context level; the UI wiring is deferred here.
 
 ## Blocked by
 

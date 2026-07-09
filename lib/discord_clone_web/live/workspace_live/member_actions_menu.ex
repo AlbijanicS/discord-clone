@@ -159,8 +159,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.MemberActionsMenu do
 
   defp member_action_destructive?(action), do: action in [:kick, :ban]
 
-  defp member_action_click(action) when action in [:mute, :unmute, :remove_timeout],
-    do: "member_action"
+  defp member_action_click(action)
+       when action in [:promote_to_admin, :demote_to_member, :mute, :unmute, :remove_timeout],
+       do: "member_action"
 
   defp member_action_click(_action), do: nil
 

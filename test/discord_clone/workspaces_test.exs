@@ -1306,6 +1306,36 @@ defmodule DiscordClone.WorkspacesTest do
     end
   end
 
+  describe "moderation does not post channel system messages" do
+    test "mute, kick, and ban create no new channel messages" do
+      owner_scope = user_scope_fixture()
+      muted_scope = user_scope_fixture()
+      kicked_scope = user_scope_fixture()
+      banned_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, muted_scope, "member")
+      add_workspace_member!(workspace, kicked_scope, "member")
+      add_workspace_member!(workspace, banned_scope, "member")
+
+      message_count_before = Repo.aggregate(Message, :count)
+
+      assert {:ok, _moderation} =
+               Workspaces.mute_member(owner_scope, workspace.id, muted_scope.user.id, %{})
+
+      assert {:ok, _membership} =
+               Workspaces.kick_member(owner_scope, workspace.id, kicked_scope.user.id, %{
+                 "reason" => "Spamming"
+               })
+
+      assert {:ok, _ban} =
+               Workspaces.ban_member(owner_scope, workspace.id, banned_scope.user.id, %{
+                 "reason" => "Repeated abuse"
+               })
+
+      assert Repo.aggregate(Message, :count) == message_count_before
+    end
+  end
+
   describe "unban_member/3" do
     test "owners can unban a member, appending an audit event without restoring access" do
       owner_scope = user_scope_fixture()

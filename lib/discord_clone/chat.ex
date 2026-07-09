@@ -997,7 +997,8 @@ defmodule DiscordClone.Chat do
         event_type: "moderator_message_deleted",
         metadata: %{
           "message_id" => deleted_message.id,
-          "channel_id" => deleted_message.channel_id
+          "channel_id" => deleted_message.channel_id,
+          "channel_name" => message.channel.name
         }
       })
     end)
