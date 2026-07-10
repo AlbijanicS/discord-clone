@@ -54,6 +54,12 @@ defmodule DiscordClone.Workspaces do
   @invite_code_bytes 24
   @default_invite_ttl_minutes 30
 
+  @type reason :: atom()
+  @type context_result(value) ::
+          {:ok, value} | {:error, reason()} | {:error, atom(), Ecto.Changeset.t()}
+  @type member_action ::
+          :mute | :unmute | :timeout | :remove_timeout | :kick | :ban | :promote | :demote
+
   def list_workspaces(%Scope{user: %User{id: user_id}}) do
     workspaces =
       Repo.all(
@@ -134,6 +140,13 @@ defmodule DiscordClone.Workspaces do
 
   def change_workspace(_scope, _attrs), do: Workspace.create_changeset(%Workspace{}, %{})
 
+  @doc """
+  Creates a workspace, its owner membership, default channel, and initial read states.
+
+  Returns the created workspace, a tagged validation changeset, or a normalized reason.
+  Transaction internals remain inside the context.
+  """
+  @spec create_workspace(term(), map()) :: context_result(struct())
   def create_workspace(%Scope{user: %User{} = user}, attrs) when is_map(attrs) do
     user
     |> create_workspace_multi(attrs)
@@ -246,6 +259,13 @@ defmodule DiscordClone.Workspaces do
     |> Channel.create_changeset(channel_attrs(workspace_id, attrs))
   end
 
+  @doc """
+  Creates a channel and initializes read states for existing workspace members.
+
+  Returns the channel, a tagged validation changeset, or a normalized reason without
+  exposing `Ecto.Multi` failure details.
+  """
+  @spec create_channel(term(), Ecto.UUID.t(), map()) :: context_result(struct())
   def create_channel(%Scope{user: %User{}} = scope, workspace_id, attrs) when is_map(attrs) do
     with {:ok, workspace} <- get_workspace(workspace_id),
          :ok <- authorize_create_channel(scope, workspace) do
@@ -342,9 +362,17 @@ defmodule DiscordClone.Workspaces do
   enforcement and the channel view's delete affordance. Deleting one's own
   message is not a moderation decision and is handled by the caller.
   """
+  @spec can_delete_message?(String.t() | nil, String.t() | nil) :: boolean()
   def can_delete_message?(actor_role, author_role),
     do: Roles.can_moderate?(actor_role, author_role)
 
+  @doc """
+  Returns the moderation and Role actions available to an actor for one workspace member.
+
+  Self, owner, foreign-workspace, and unauthorized targets return an empty action list.
+  Active mute and timeout actions are represented by their corresponding removal actions.
+  """
+  @spec available_member_actions(term(), struct(), struct()) :: [member_action()]
   def available_member_actions(
         %Scope{user: %User{id: actor_user_id}},
         %Workspace{id: workspace_id},
@@ -380,6 +408,8 @@ defmodule DiscordClone.Workspaces do
   `available_member_actions/3`, including the mute→unmute and
   timeout→remove-timeout swaps and the empty sets for self and owner targets.
   """
+  @spec available_member_actions_by_user_id(term(), struct(), [struct()]) ::
+          %{Ecto.UUID.t() => [member_action()]}
   def available_member_actions_by_user_id(scope, workspace, members)
 
   def available_member_actions_by_user_id(
@@ -402,6 +432,13 @@ defmodule DiscordClone.Workspaces do
     Map.new(members, &{&1.user_id, []})
   end
 
+  @doc """
+  Applies a mute and its audit event atomically, then broadcasts the committed change.
+
+  Returns the moderation record, a tagged validation changeset, or a normalized reason.
+  """
+  @spec mute_member(term(), Ecto.UUID.t(), Ecto.UUID.t()) :: context_result(term())
+  @spec mute_member(term(), Ecto.UUID.t(), Ecto.UUID.t(), map()) :: context_result(term())
   def mute_member(scope, workspace_id, target_user_id, attrs \\ %{})
 
   def mute_member(%Scope{user: %User{}} = scope, workspace_id, target_user_id, attrs)
@@ -419,6 +456,12 @@ defmodule DiscordClone.Workspaces do
   def mute_member(_scope, _workspace_id, _target_user_id, _attrs),
     do: {:error, :unauthenticated}
 
+  @doc """
+  Ends an active mute and records the audit event in one transaction.
+
+  Returns the ended moderation record or a normalized error reason.
+  """
+  @spec unmute_member(term(), Ecto.UUID.t(), Ecto.UUID.t()) :: context_result(term())
   def unmute_member(%Scope{user: %User{}} = scope, workspace_id, target_user_id) do
     with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
          {:ok, target_membership} <- get_workspace_membership(workspace.id, target_user_id),
@@ -430,6 +473,15 @@ defmodule DiscordClone.Workspaces do
 
   def unmute_member(_scope, _workspace_id, _target_user_id), do: {:error, :unauthenticated}
 
+  @doc """
+  Applies a timed moderation and its audit event atomically, then schedules expiry.
+
+  Returns the moderation record, a tagged validation changeset, or a normalized reason.
+  """
+  @spec timeout_member(term(), Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          context_result(term())
+  @spec timeout_member(term(), Ecto.UUID.t(), Ecto.UUID.t(), String.t(), map()) ::
+          context_result(term())
   def timeout_member(scope, workspace_id, target_user_id, duration, attrs \\ %{})
 
   def timeout_member(
@@ -455,6 +507,12 @@ defmodule DiscordClone.Workspaces do
   def timeout_member(_scope, _workspace_id, _target_user_id, _duration, _attrs),
     do: {:error, :unauthenticated}
 
+  @doc """
+  Ends an active timeout, records the audit event, and cancels scheduled expiry.
+
+  Returns the ended moderation record or a normalized error reason.
+  """
+  @spec remove_member_timeout(term(), Ecto.UUID.t(), Ecto.UUID.t()) :: context_result(term())
   def remove_member_timeout(%Scope{user: %User{}} = scope, workspace_id, target_user_id) do
     with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
          {:ok, target_membership} <- get_workspace_membership(workspace.id, target_user_id),
@@ -539,6 +597,12 @@ defmodule DiscordClone.Workspaces do
     end)
   end
 
+  @doc """
+  Expires a timeout by id and records the automatic audit event atomically.
+
+  Returns the ended moderation record or a normalized error reason.
+  """
+  @spec expire_member_timeout(Ecto.UUID.t()) :: context_result(term())
   def expire_member_timeout(moderation_id) do
     moderation =
       UUIDIdentifier.cast_or(moderation_id, nil, fn moderation_id ->
@@ -605,6 +669,8 @@ defmodule DiscordClone.Workspaces do
   single owner of the "blocked from participating" rule; the Chat context calls
   it instead of reading the moderation table directly.
   """
+  @spec member_participation_status(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          :ok | {:error, :muted | :timeout}
   def member_participation_status(workspace_id, user_id) do
     cond do
       match?(%WorkspaceModeration{}, get_active_moderation(workspace_id, user_id, @mute_type)) ->
@@ -780,6 +846,13 @@ defmodule DiscordClone.Workspaces do
 
   def delete_channel(_scope, _workspace_id, _channel_id), do: {:error, :unauthenticated}
 
+  @doc """
+  Removes the current member and their workspace-scoped read state atomically.
+
+  Returns the removed membership or a normalized reason. Transaction internals remain
+  logged inside the context and are not part of the public contract.
+  """
+  @spec leave_workspace(term(), Ecto.UUID.t()) :: context_result(struct())
   def leave_workspace(%Scope{user: %User{id: user_id}}, workspace_id) do
     with {:ok, _workspace} <- get_workspace(workspace_id),
          {:ok, membership} <- get_workspace_membership(workspace_id, user_id),

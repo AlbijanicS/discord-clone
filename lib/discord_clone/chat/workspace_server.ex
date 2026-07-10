@@ -99,10 +99,10 @@ defmodule DiscordClone.Chat.WorkspaceServer do
         users = remove_user_pid(state.users, user_id, live_view_pid)
         state = %{state | users: users, monitors: monitors}
 
-        if !Map.has_key?(state.users, user_id) do
-          state = schedule_pending_left(state, user_id)
+        if Map.has_key?(state.users, user_id) do
           {:noreply, state}
         else
+          state = schedule_pending_left(state, user_id)
           {:noreply, state}
         end
 

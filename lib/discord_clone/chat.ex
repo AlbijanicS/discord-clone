@@ -35,12 +35,26 @@ defmodule DiscordClone.Chat do
   @small_unread_landing_limit 50
   @large_unread_landing_backtrack div(@message_page_size, 2) - 5
 
+  @type reason :: atom()
+  @type window_result :: {:ok, map()} | {:error, reason()}
+
   def change_message(attrs \\ %{}) do
     Message.changeset(%Message{}, attrs)
   end
 
+  @doc "Initializes zero-unread read states for a user across a workspace's channels."
+  @spec initialize_workspace_reads_for_user(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          :ok | {:error, reason()}
   defdelegate initialize_workspace_reads_for_user(user_id, workspace_id), to: Unread
+
+  @doc "Initializes zero-unread read states for all existing members of a channel."
+  @spec initialize_channel_reads_for_workspace_members(Ecto.UUID.t()) ::
+          :ok | {:error, reason()}
   defdelegate initialize_channel_reads_for_workspace_members(channel_id), to: Unread
+
+  @doc "Deletes a user's read states for every channel in a workspace."
+  @spec delete_workspace_reads_for_user(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          :ok | {:error, reason()}
   defdelegate delete_workspace_reads_for_user(user_id, workspace_id), to: Unread
 
   @doc """
@@ -130,6 +144,12 @@ defmodule DiscordClone.Chat do
   defdelegate list_unread_counts(scope, workspace_id), to: Unread
   defdelegate list_channel_read_summaries(scope, workspace_id), to: Unread
 
+  @doc """
+  Opens an accessible channel and returns its persisted read state and landing target.
+
+  Returns a normalized error when the scope is unauthenticated or the channel is inaccessible.
+  """
+  @spec open_channel(term(), Ecto.UUID.t()) :: {:ok, map()} | {:error, reason()}
   def open_channel(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
       now = DateTime.utc_now(:second)
@@ -158,6 +178,12 @@ defmodule DiscordClone.Chat do
 
   defdelegate jump_to_oldest_unread(scope, channel_id), to: Unread
 
+  @doc """
+  Marks an accessible channel read, persists its latest anchor, and returns the latest message window.
+
+  Returns a normalized error when the scope is unauthenticated or the channel is inaccessible.
+  """
+  @spec jump_to_latest(term(), Ecto.UUID.t()) :: window_result()
   def jump_to_latest(%Scope{user: %User{id: user_id}} = scope, channel_id) do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id),
          :ok <- mark_channel_read(scope, channel_id),
@@ -183,6 +209,13 @@ defmodule DiscordClone.Chat do
 
   def jump_to_latest(_scope, _channel_id), do: {:error, :unauthenticated}
 
+  @doc """
+  Persists a validated rendered-message sequence as the user's channel scroll anchor.
+
+  Invalid sequences and inaccessible channels return normalized error reasons.
+  """
+  @spec persist_channel_anchor(term(), Ecto.UUID.t(), term()) ::
+          {:ok, struct()} | {:error, reason()}
   def persist_channel_anchor(%Scope{user: %User{id: user_id}}, channel_id, anchor_seq)
       when is_integer(anchor_seq) do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id),
@@ -235,6 +268,14 @@ defmodule DiscordClone.Chat do
   # span. In production, unread spans arise solely from `send_message/3` fanout.
   @doc false
   defdelegate add_channel_unread_range(scope, channel_id, from_seq, to_seq), to: Unread
+
+  @doc """
+  Marks a visible sequence range read after authoritative validation in the Unread boundary.
+
+  Returns `:ok` or a normalized error reason for invalid ranges, access, or authentication.
+  """
+  @spec subtract_visible_read_range(term(), Ecto.UUID.t(), term(), term()) ::
+          :ok | {:error, reason()}
   defdelegate subtract_visible_read_range(scope, channel_id, from_seq, to_seq), to: Unread
   defdelegate subscribe_to_channel_read_state(scope, channel_id), to: Unread
 
@@ -335,6 +376,12 @@ defmodule DiscordClone.Chat do
 
   def fetch_message(_scope, _message_id), do: {:error, :unauthenticated}
 
+  @doc """
+  Loads the newest bounded message window for a channel visible to the current scope.
+
+  Returns `{:ok, window}` or a normalized authorization/not-found reason.
+  """
+  @spec load_latest_message_window(term(), Ecto.UUID.t()) :: window_result()
   def load_latest_message_window(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
       latest_seq = channel.last_message_seq
@@ -347,6 +394,12 @@ defmodule DiscordClone.Chat do
 
   def load_latest_message_window(_scope, _channel_id), do: {:error, :unauthenticated}
 
+  @doc """
+  Loads a bounded message window centered around a sequence visible to the current scope.
+
+  Invalid sequences and inaccessible channels return normalized error reasons.
+  """
+  @spec load_message_window_around(term(), Ecto.UUID.t(), term()) :: window_result()
   def load_message_window_around(%Scope{user: %User{id: user_id}}, channel_id, target_seq)
       when is_integer(target_seq) do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
@@ -362,6 +415,12 @@ defmodule DiscordClone.Chat do
   def load_message_window_around(_scope, _channel_id, _target_seq),
     do: {:error, :unauthenticated}
 
+  @doc """
+  Loads the message window immediately before `before_seq` for an accessible channel.
+
+  Invalid cursors and inaccessible channels return normalized error reasons.
+  """
+  @spec load_older_message_window(term(), Ecto.UUID.t(), term()) :: window_result()
   def load_older_message_window(%Scope{user: %User{id: user_id}}, channel_id, before_seq)
       when is_integer(before_seq) do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
@@ -379,6 +438,12 @@ defmodule DiscordClone.Chat do
   def load_older_message_window(_scope, _channel_id, _before_seq),
     do: {:error, :unauthenticated}
 
+  @doc """
+  Loads the message window immediately after `after_seq` for an accessible channel.
+
+  Invalid cursors and inaccessible channels return normalized error reasons.
+  """
+  @spec load_newer_message_window(term(), Ecto.UUID.t(), term()) :: window_result()
   def load_newer_message_window(%Scope{user: %User{id: user_id}}, channel_id, after_seq)
       when is_integer(after_seq) do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
@@ -573,6 +638,7 @@ defmodule DiscordClone.Chat do
   through the same `Workspaces.can_delete_message?/2` rule, so the affordance the
   channel view shows can never drift from what `delete_message/2` will accept.
   """
+  @spec can_delete_message?(term(), struct(), map()) :: boolean()
   def can_delete_message?(
         %Scope{user: %User{id: user_id}},
         %Message{} = message,
