@@ -3,6 +3,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Home do
 
   alias DiscordClone.Workspaces
   alias DiscordCloneWeb.WorkspaceLive.Shell
+  alias DiscordCloneWeb.WorkspaceLive.WorkspaceManagementEvents
 
   @impl true
   def mount(_params, _session, socket) do
@@ -10,7 +11,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.Home do
 
     socket =
       socket
-      |> assign(:workspace_form, workspace_form(socket.assigns.current_scope))
+      |> assign(
+        :workspace_form,
+        WorkspaceManagementEvents.workspace_form(socket.assigns.current_scope)
+      )
       |> assign(:show_workspace_form?, workspaces == [])
       |> stream(:workspaces, workspaces)
 
@@ -34,43 +38,14 @@ defmodule DiscordCloneWeb.WorkspaceLive.Home do
 
   @impl true
   def handle_event("show_workspace_form", _params, socket) do
-    {:noreply, assign(socket, :show_workspace_form?, true)}
+    WorkspaceManagementEvents.show_workspace_form(socket)
   end
 
   def handle_event("cancel_workspace_form", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:show_workspace_form?, false)
-     |> assign(:workspace_form, workspace_form(socket.assigns.current_scope))}
+    WorkspaceManagementEvents.cancel_workspace_form(socket)
   end
 
-  def handle_event("create_workspace", %{"workspace" => workspace_params}, socket) do
-    case Workspaces.create_workspace(socket.assigns.current_scope, workspace_params) do
-      {:ok, workspace} ->
-        {:ok, workspaces} = Workspaces.list_workspaces(socket.assigns.current_scope)
-
-        socket =
-          socket
-          |> assign(:workspace_form, workspace_form(socket.assigns.current_scope))
-          |> assign(:show_workspace_form?, workspaces == [])
-          |> stream(:workspaces, workspaces, reset: true)
-
-        {:noreply, push_navigate(socket, to: ~p"/workspaces/#{workspace.id}")}
-
-      {:error, :invalid_workspace, changeset} ->
-        {:noreply,
-         socket
-         |> assign(:show_workspace_form?, true)
-         |> assign(:workspace_form, to_form(changeset, as: :workspace, action: :insert))}
-
-      {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "Workspace could not be created.")}
-    end
-  end
-
-  defp workspace_form(scope, attrs \\ %{}) do
-    scope
-    |> Workspaces.change_workspace(attrs)
-    |> to_form(as: :workspace)
+  def handle_event("create_workspace", params, socket) do
+    WorkspaceManagementEvents.create_workspace(socket, params)
   end
 end

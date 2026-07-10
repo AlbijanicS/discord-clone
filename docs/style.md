@@ -162,6 +162,42 @@ Do not add presence and typing in the same slice as the initial process
 foundation. Those should come after process startup, lookup, and recovery are
 boring.
 
+## Runtime Timers and Lazy Expiry
+
+The runtime processes hold timers, but the database — not a timer firing on time —
+is the source of truth. Timers are an optimization for the online case; the
+correct state is always recoverable from Postgres.
+
+**Member-timeout expiry (`WorkspaceServer`).** When a member timeout is created,
+its expiry is scheduled as an active future timer inside that workspace's
+presence process. Because the presence process only runs while someone is online,
+the timer exists only when it can. Timers are re-scheduled whenever presence
+starts — `join_workspace_presence/3` calls `schedule_existing_timeout_expiries/1`,
+which reloads the active future timeouts from Postgres and re-arms them. If no one
+is online when a timeout elapses, no timer fires at the deadline; the timeout is
+instead expired lazily on the next relevant action (moderation queries treat a
+timeout whose `expires_at` has passed as already inactive, and the next check
+writes the expiry audit event). So a timeout's *effect* ends exactly at its
+`expires_at`; only the audit-writing side effect may lag until the next action or
+the next time presence starts. `expire_member_timeout/1` re-checks `expires_at`
+before writing, so a stale or duplicate timer cannot expire a timeout early.
+
+**Channel runtime (`ChannelServer`).** A channel process caches recent messages
+and transient typing indicators. Both are in-memory only: on the 15-minute idle
+shutdown or on a crash they reset, and the supervisor reloads recent messages
+from Postgres on next start. Durable messages, reactions, and read state survive;
+the cache and typing set do not, and that is intentional.
+
+**Disconnect-grace window (`@disconnect_grace_ms 50`).** When a member's LiveView
+process goes `:DOWN`, the presence server does not broadcast "user left"
+immediately — it schedules a 50 ms grace timer and keeps the user in
+`online_user_ids` meanwhile. This is intentional: navigating between channels in
+the same workspace unmounts one LiveView a few milliseconds before the next one
+joins, and without the grace window presence would flicker offline→online on
+every navigation. A rejoin within the window cancels the pending-left timer, so a
+genuine disconnect still resolves to "left" after ~50 ms while an in-app
+navigation stays continuously online.
+
 ## PubSub Style
 
 `DiscordClone.Chat` owns PubSub topic construction and broadcasting decisions.

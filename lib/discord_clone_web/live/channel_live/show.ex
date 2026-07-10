@@ -12,6 +12,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   alias DiscordCloneWeb.WorkspaceLive.Presence
   alias DiscordCloneWeb.WorkspaceLive.Shell
   alias DiscordCloneWeb.WorkspaceLive.WorkspaceEvents
+  alias DiscordCloneWeb.WorkspaceLive.WorkspaceManagementEvents
 
   @reaction_palette [
     {"👍", "React with 👍 to message"},
@@ -51,7 +52,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         socket
         |> assign(:selected_workspace, workspace)
         |> assign(:selected_channel, channel)
-        |> assign(:workspace_form, workspace_form(socket.assigns.current_scope))
+        |> assign(
+          :workspace_form,
+          WorkspaceManagementEvents.workspace_form(socket.assigns.current_scope)
+        )
         |> assign(:show_workspace_form?, false)
         |> assign(:channel_form, channel_form(workspace.id))
         |> assign(:show_channel_form?, false)
@@ -592,30 +596,15 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   @impl true
   def handle_event("show_workspace_form", _params, socket) do
-    {:noreply, assign(socket, :show_workspace_form?, true)}
+    WorkspaceManagementEvents.show_workspace_form(socket)
   end
 
   def handle_event("cancel_workspace_form", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:show_workspace_form?, false)
-     |> assign(:workspace_form, workspace_form(socket.assigns.current_scope))}
+    WorkspaceManagementEvents.cancel_workspace_form(socket)
   end
 
-  def handle_event("create_workspace", %{"workspace" => workspace_params}, socket) do
-    case Workspaces.create_workspace(socket.assigns.current_scope, workspace_params) do
-      {:ok, workspace} ->
-        {:noreply, push_navigate(socket, to: ~p"/workspaces/#{workspace.id}")}
-
-      {:error, :invalid_workspace, changeset} ->
-        {:noreply,
-         socket
-         |> assign(:show_workspace_form?, true)
-         |> assign(:workspace_form, to_form(changeset, as: :workspace, action: :insert))}
-
-      {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "Workspace could not be created.")}
-    end
+  def handle_event("create_workspace", params, socket) do
+    WorkspaceManagementEvents.create_workspace(socket, params)
   end
 
   def handle_event("show_channel_form", _params, socket) do
@@ -931,96 +920,20 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
      |> assign(:context_menu_position, nil)}
   end
 
-  def handle_event("begin_workspace_rename", %{"workspace_id" => workspace_id}, socket) do
-    with {:ok, workspace} <-
-           Workspaces.fetch_workspace(socket.assigns.current_scope, workspace_id),
-         {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope) do
-      socket =
-        socket
-        |> assign(:workspace_action_menu_id, nil)
-        |> assign(:renaming_workspace_id, workspace.id)
-        |> assign(
-          :workspace_rename_form,
-          workspace_form(socket.assigns.current_scope, %{
-            name: workspace.name
-          })
-        )
-        |> stream(:workspaces, workspaces, reset: true)
-
-      {:noreply, socket}
-    else
-      {:error, _reason} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Workspace could not be renamed.")
-         |> push_navigate(to: ~p"/workspaces")}
-    end
+  def handle_event("begin_workspace_rename", params, socket) do
+    WorkspaceManagementEvents.begin_workspace_rename(socket, params)
   end
 
-  def handle_event(
-        "rename_workspace",
-        %{"workspace_id" => workspace_id, "workspace" => workspace_params},
-        socket
-      ) do
-    case Workspaces.rename_workspace(socket.assigns.current_scope, workspace_id, workspace_params) do
-      {:ok, workspace} ->
-        {:ok, workspaces} = Workspaces.list_workspaces(socket.assigns.current_scope)
-
-        selected_workspace =
-          if socket.assigns.selected_workspace.id == workspace.id,
-            do: workspace,
-            else: socket.assigns.selected_workspace
-
-        socket =
-          socket
-          |> assign(:selected_workspace, selected_workspace)
-          |> assign(:renaming_workspace_id, nil)
-          |> assign(:workspace_rename_form, nil)
-          |> assign(:workspace_action_menu_id, nil)
-          |> stream(:workspaces, workspaces, reset: true)
-
-        {:noreply, socket}
-
-      {:error, :invalid_workspace, changeset} ->
-        {:noreply,
-         socket
-         |> assign(:renaming_workspace_id, workspace_id)
-         |> assign(:workspace_rename_form, to_form(changeset, as: :workspace, action: :insert))
-         |> assign(:workspace_action_menu_id, nil)
-         |> restream_workspaces()}
-
-      {:error, _reason} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Workspace could not be renamed.")
-         |> push_navigate(to: ~p"/workspaces")}
-    end
+  def handle_event("rename_workspace", params, socket) do
+    WorkspaceManagementEvents.rename_workspace(socket, params)
   end
 
-  def handle_event("delete_workspace", %{"workspace_id" => workspace_id}, socket) do
-    case Workspaces.delete_workspace(socket.assigns.current_scope, workspace_id) do
-      {:ok, _workspace} ->
-        {:noreply, push_navigate(socket, to: ~p"/workspaces")}
-
-      {:error, _reason} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Workspace could not be deleted.")
-         |> push_navigate(to: ~p"/workspaces")}
-    end
+  def handle_event("delete_workspace", params, socket) do
+    WorkspaceManagementEvents.delete_workspace(socket, params)
   end
 
-  def handle_event("leave_workspace", %{"workspace_id" => workspace_id}, socket) do
-    case Workspaces.leave_workspace(socket.assigns.current_scope, workspace_id) do
-      {:ok, _membership} ->
-        {:noreply, push_navigate(socket, to: ~p"/workspaces")}
-
-      {:error, _reason} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Workspace could not be left.")
-         |> push_navigate(to: ~p"/workspaces")}
-    end
+  def handle_event("leave_workspace", params, socket) do
+    WorkspaceManagementEvents.leave_workspace(socket, params)
   end
 
   def handle_event("open_channel_actions", %{"channel_id" => channel_id}, socket) do
@@ -1049,7 +962,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       socket
       |> assign(:channel_action_menu_id, channel_id)
       |> assign(:workspace_action_menu_id, nil)
-      |> assign(:context_menu_position, %{x: coordinate_integer(x), y: coordinate_integer(y)})
+      |> assign(:context_menu_position, %{
+        x: WorkspaceManagementEvents.coordinate_integer(x),
+        y: WorkspaceManagementEvents.coordinate_integer(y)
+      })
       |> refresh_channel_sidebar(workspace_id, channels)
 
     {:noreply, socket}
@@ -1064,7 +980,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
      socket
      |> assign(:workspace_action_menu_id, workspace_id)
      |> assign(:channel_action_menu_id, nil)
-     |> assign(:context_menu_position, %{x: coordinate_integer(x), y: coordinate_integer(y)})}
+     |> assign(:context_menu_position, %{
+       x: WorkspaceManagementEvents.coordinate_integer(x),
+       y: WorkspaceManagementEvents.coordinate_integer(y)
+     })}
   end
 
   def handle_event("close_context_menu", _params, socket) do
@@ -1243,12 +1162,6 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     workspace_id
     |> Workspaces.change_channel(attrs)
     |> to_form(as: :channel)
-  end
-
-  defp workspace_form(scope, attrs \\ %{}) do
-    scope
-    |> Workspaces.change_workspace(attrs)
-    |> to_form(as: :workspace)
   end
 
   defp message_form(attrs \\ %{}) do
@@ -1533,6 +1446,13 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
+  # Only the web-only concerns live here: that the reported ranges are ordered
+  # and non-overlapping, and that every seq they cover is actually rendered in
+  # this client's window (something the context cannot know). The numeric bounds
+  # — lower bound, size cap, and last-message ceiling — are validated
+  # authoritatively by `Chat.subtract_visible_read_range/4`, so they are not
+  # re-checked here. `from_seq <= to_seq` is kept as the guard that makes the
+  # ascending `from_seq..to_seq` enumeration below meaningful.
   defp valid_visible_read_ranges?(_socket, :invalid), do: false
   defp valid_visible_read_ranges?(_socket, []), do: false
 
@@ -1544,7 +1464,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
     ranges_ordered?(ranges) and
       Enum.all?(ranges, fn {from_seq, to_seq} ->
-        from_seq >= 1 and from_seq <= to_seq and to_seq - from_seq + 1 <= 50 and
+        from_seq <= to_seq and
           Enum.all?(from_seq..to_seq, &MapSet.member?(rendered_seqs, &1))
       end)
   end
@@ -1955,11 +1875,6 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
-  defp restream_workspaces(socket) do
-    {:ok, workspaces} = Workspaces.list_workspaces(socket.assigns.current_scope)
-    stream(socket, :workspaces, workspaces, reset: true)
-  end
-
   defp refresh_channel_sidebar(socket, workspace_id) do
     {:ok, channels} = Workspaces.list_channels(socket.assigns.current_scope, workspace_id)
     refresh_channel_sidebar(socket, workspace_id, channels)
@@ -2020,17 +1935,6 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   defp skip_to_latest_action?(%{has_newer?: has_newer?}), do: has_newer?
   defp skip_to_latest_action?(_meta), do: false
-
-  defp coordinate_integer(value) when is_integer(value), do: value
-
-  defp coordinate_integer(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {integer, _rest} -> integer
-      :error -> 0
-    end
-  end
-
-  defp coordinate_integer(_value), do: 0
 
   defp compact_time(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%H:%M")
 
