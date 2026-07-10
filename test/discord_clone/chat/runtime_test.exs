@@ -7,6 +7,18 @@ defmodule DiscordClone.Chat.RuntimeTest do
   }
 
   describe "workspace presence runtime supervision" do
+    test "malformed identifiers do not start or subscribe runtime processes" do
+      assert Runtime.ensure_workspace_presence("not-a-uuid") == {:error, :not_found}
+      assert Runtime.subscribe_workspace_presence("not-a-uuid") == {:error, :not_found}
+
+      assert Runtime.join_workspace_presence("not-a-uuid", "also-invalid", self()) ==
+               {:error, :not_found}
+
+      assert Runtime.ensure_channel("not-a-uuid") == {:error, :not_found}
+      assert Runtime.workspace_presence_pid("not-a-uuid") == nil
+      assert Runtime.channel_pid("not-a-uuid") == nil
+    end
+
     test "starts and finds a workspace presence runtime by durable workspace ID" do
       workspace_id = Ecto.UUID.generate()
 

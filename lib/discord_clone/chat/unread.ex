@@ -19,7 +19,7 @@ defmodule DiscordClone.Chat.Unread do
     Unread.Spans
   }
 
-  alias DiscordClone.{Identifier, Repo}
+  alias DiscordClone.{Repo, UUIDIdentifier}
   alias DiscordClone.Workspaces.{Channel, WorkspaceMembership}
 
   @message_page_size 50
@@ -56,7 +56,8 @@ defmodule DiscordClone.Chat.Unread do
   end
 
   def initialize_channel_reads_for_workspace_members(channel_id) do
-    if Repo.exists?(from channel in Channel, where: channel.id == ^channel_id) do
+    with {:ok, channel_id} <- UUIDIdentifier.cast(channel_id),
+         true <- Repo.exists?(from channel in Channel, where: channel.id == ^channel_id) do
       now = DateTime.utc_now(:microsecond)
 
       read_rows =
@@ -85,36 +86,41 @@ defmodule DiscordClone.Chat.Unread do
 
       :ok
     else
-      {:error, :not_found}
+      _not_found -> {:error, :not_found}
     end
   end
 
   def delete_workspace_reads_for_user(user_id, workspace_id) do
-    Repo.delete_all(
-      from span in ChannelUnreadSpan,
-        join: channel in Channel,
-        on: channel.id == span.channel_id,
-        where: channel.workspace_id == ^workspace_id,
-        where: span.user_id == ^user_id
-    )
+    with {:ok, user_id} <- UUIDIdentifier.cast(user_id),
+         {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id) do
+      Repo.delete_all(
+        from span in ChannelUnreadSpan,
+          join: channel in Channel,
+          on: channel.id == span.channel_id,
+          where: channel.workspace_id == ^workspace_id,
+          where: span.user_id == ^user_id
+      )
 
-    Repo.delete_all(
-      from read_state in ChannelReadState,
-        join: channel in Channel,
-        on: channel.id == read_state.channel_id,
-        where: channel.workspace_id == ^workspace_id,
-        where: read_state.user_id == ^user_id
-    )
+      Repo.delete_all(
+        from read_state in ChannelReadState,
+          join: channel in Channel,
+          on: channel.id == read_state.channel_id,
+          where: channel.workspace_id == ^workspace_id,
+          where: read_state.user_id == ^user_id
+      )
 
-    Repo.delete_all(
-      from read in ChannelRead,
-        join: channel in Channel,
-        on: channel.id == read.channel_id,
-        where: channel.workspace_id == ^workspace_id,
-        where: read.user_id == ^user_id
-    )
+      Repo.delete_all(
+        from read in ChannelRead,
+          join: channel in Channel,
+          on: channel.id == read.channel_id,
+          where: channel.workspace_id == ^workspace_id,
+          where: read.user_id == ^user_id
+      )
 
-    :ok
+      :ok
+    else
+      :error -> :ok
+    end
   end
 
   def list_unread_counts(%Scope{user: %User{id: user_id}}, workspace_id) do
@@ -293,7 +299,7 @@ defmodule DiscordClone.Chat.Unread do
   end
 
   defp get_member_channel(channel_id, user_id) do
-    with {:ok, channel_id} <- Identifier.cast(channel_id) do
+    with {:ok, channel_id} <- UUIDIdentifier.cast(channel_id) do
       Repo.one(
         from channel in Channel,
           join: membership in WorkspaceMembership,
@@ -306,7 +312,7 @@ defmodule DiscordClone.Chat.Unread do
   end
 
   defp authorize_workspace_member(workspace_id, user_id) do
-    with {:ok, workspace_id} <- Identifier.cast(workspace_id) do
+    with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id) do
       if Repo.exists?(
            from membership in WorkspaceMembership,
              where: membership.workspace_id == ^workspace_id and membership.user_id == ^user_id

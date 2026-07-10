@@ -748,6 +748,12 @@ defmodule DiscordClone.ChatTest do
 
       assert {:ok, summaries} = Chat.list_channel_read_summaries(scope, workspace.id)
 
+      assert Enum.map(summaries, & &1.channel_id) == [
+               workspace.default_channel_id,
+               release_channel.id,
+               quiet_channel.id
+             ]
+
       assert %{
                workspace_id: workspace_id,
                channel_id: channel_id,
@@ -1283,7 +1289,12 @@ defmodule DiscordClone.ChatTest do
     test "rejects missing channels" do
       scope = user_scope_fixture()
 
-      assert Chat.subscribe_to_channel_messages(scope, -1) == {:error, :not_found}
+      assert Chat.subscribe_to_channel_messages(scope, "not-a-uuid") == {:error, :not_found}
+
+      assert Chat.initialize_channel_reads_for_workspace_members("not-a-uuid") ==
+               {:error, :not_found}
+
+      assert Chat.delete_workspace_reads_for_user("not-a-uuid", "also-invalid") == :ok
     end
 
     test "does not broadcast invalid message sends" do

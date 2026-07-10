@@ -1,4 +1,4 @@
-defmodule DiscordClone.Identifier do
+defmodule DiscordClone.UUIDIdentifier do
   @moduledoc false
 
   def cast(value) do

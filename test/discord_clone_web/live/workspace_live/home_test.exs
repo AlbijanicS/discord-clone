@@ -141,7 +141,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       conn: conn
     } do
       assert {:error, {:redirect, %{to: "/workspaces", flash: flash}}} =
-               live(conn, ~p"/workspaces/-1")
+               live(conn, ~p"/workspaces/not-a-uuid")
 
       assert flash["error"] =~ "Workspace not found"
     end
@@ -4027,7 +4027,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
 
       assert {:error, {:redirect, %{to: "/workspaces", flash: flash}}} =
-               live(conn, ~p"/workspaces/#{workspace.id}/channels/-1")
+               live(conn, ~p"/workspaces/#{workspace.id}/channels/not-a-uuid")
 
       assert flash["error"] =~ "Channel not found"
     end

@@ -4,7 +4,7 @@ defmodule DiscordClone.Accounts do
   """
 
   import Ecto.Query, warn: false
-  alias DiscordClone.{Identifier, Repo}
+  alias DiscordClone.{Repo, UUIDIdentifier}
 
   alias DiscordClone.Accounts.{User, UserToken, UserNotifier}
 
@@ -59,7 +59,7 @@ defmodule DiscordClone.Accounts do
 
   """
   def get_user!(id) do
-    case Identifier.cast(id) do
+    case UUIDIdentifier.cast(id) do
       {:ok, id} -> Repo.get!(User, id)
       :error -> raise Ecto.NoResultsError, queryable: User
     end

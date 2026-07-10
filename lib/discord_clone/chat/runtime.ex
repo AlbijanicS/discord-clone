@@ -14,26 +14,34 @@ defmodule DiscordClone.Chat.Runtime do
     WorkspaceSupervisor
   }
 
-  alias DiscordClone.Repo
+  alias DiscordClone.{Repo, UUIDIdentifier}
   alias DiscordClone.Workspaces.WorkspaceModeration
 
   @recent_message_limit 50
 
   def workspace_presence_pid(workspace_id) do
-    case Registry.lookup(WorkspaceRegistry, workspace_id) do
-      [{pid, _value}] -> if Process.alive?(pid), do: pid
-      [] -> nil
+    with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id) do
+      case Registry.lookup(WorkspaceRegistry, workspace_id) do
+        [{pid, _value}] -> if Process.alive?(pid), do: pid
+        [] -> nil
+      end
+    else
+      :error -> nil
     end
   end
 
   def ensure_workspace_presence(workspace_id) do
-    case DynamicSupervisor.start_child(
-           WorkspaceSupervisor,
-           {WorkspaceServer, {workspace_id, workspace_via_tuple(workspace_id)}}
-         ) do
-      {:ok, pid} -> {:ok, pid}
-      {:error, {:already_started, pid}} -> {:ok, pid}
-      {:error, reason} -> {:error, reason}
+    with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id) do
+      case DynamicSupervisor.start_child(
+             WorkspaceSupervisor,
+             {WorkspaceServer, {workspace_id, workspace_via_tuple(workspace_id)}}
+           ) do
+        {:ok, pid} -> {:ok, pid}
+        {:error, {:already_started, pid}} -> {:ok, pid}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      :error -> {:error, :not_found}
     end
   end
 
@@ -45,13 +53,21 @@ defmodule DiscordClone.Chat.Runtime do
   end
 
   def subscribe_workspace_presence(workspace_id) do
-    Phoenix.PubSub.subscribe(DiscordClone.PubSub, workspace_presence_topic(workspace_id))
+    with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id) do
+      Phoenix.PubSub.subscribe(DiscordClone.PubSub, workspace_presence_topic(workspace_id))
+    else
+      :error -> {:error, :not_found}
+    end
   end
 
   def join_workspace_presence(workspace_id, user_id, live_view_pid) when is_pid(live_view_pid) do
-    with {:ok, workspace_pid} <- ensure_workspace_presence(workspace_id),
+    with {:ok, user_id} <- UUIDIdentifier.cast(user_id),
+         {:ok, workspace_pid} <- ensure_workspace_presence(workspace_id),
          :ok <- WorkspaceServer.join(workspace_pid, user_id, live_view_pid) do
       schedule_existing_timeout_expiries(workspace_id)
+    else
+      :error -> {:error, :not_found}
+      error -> error
     end
   end
 
@@ -99,13 +115,25 @@ defmodule DiscordClone.Chat.Runtime do
   end
 
   def channel_pid(channel_id) do
-    case Registry.lookup(ChannelRegistry, channel_id) do
-      [{pid, _value}] -> if Process.alive?(pid), do: pid
-      [] -> nil
+    with {:ok, channel_id} <- UUIDIdentifier.cast(channel_id) do
+      case Registry.lookup(ChannelRegistry, channel_id) do
+        [{pid, _value}] -> if Process.alive?(pid), do: pid
+        [] -> nil
+      end
+    else
+      :error -> nil
     end
   end
 
   def ensure_channel(channel_id) do
+    with {:ok, channel_id} <- UUIDIdentifier.cast(channel_id) do
+      do_ensure_channel(channel_id)
+    else
+      :error -> {:error, :not_found}
+    end
+  end
+
+  defp do_ensure_channel(channel_id) do
     case channel_pid(channel_id) do
       pid when is_pid(pid) ->
         :ok = ChannelServer.touch(pid)

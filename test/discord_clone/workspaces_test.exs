@@ -1467,8 +1467,7 @@ defmodule DiscordClone.WorkspacesTest do
       assert {:ok, banned} = Workspaces.list_banned_members(owner_scope, workspace.id)
 
       banned_ids = Enum.map(banned, & &1.target_user_id)
-      assert first_scope.user.id in banned_ids
-      assert second_scope.user.id in banned_ids
+      assert banned_ids == [second_scope.user.id, first_scope.user.id]
 
       ban = Enum.find(banned, &(&1.target_user_id == first_scope.user.id))
       assert ban.reason == "First offense"
@@ -1565,7 +1564,9 @@ defmodule DiscordClone.WorkspacesTest do
     test "returns not found for a missing workspace" do
       scope = user_scope_fixture()
 
-      assert Workspaces.fetch_workspace(scope, -1) == {:error, :not_found}
+      assert Workspaces.fetch_workspace(scope, "not-a-uuid") == {:error, :not_found}
+      refute Workspaces.workspace_banned?("not-a-uuid", scope.user.id)
+      assert Workspaces.list_active_future_timeouts("not-a-uuid") == []
     end
 
     test "rejects logged-in users who are not workspace members" do
