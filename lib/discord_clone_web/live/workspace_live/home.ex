@@ -62,6 +62,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.Home do
          socket
          |> assign(:show_workspace_form?, true)
          |> assign(:workspace_form, to_form(changeset, as: :workspace, action: :insert))}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Workspace could not be created.")}
     end
   end
 

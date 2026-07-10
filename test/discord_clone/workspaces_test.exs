@@ -283,6 +283,99 @@ defmodule DiscordClone.WorkspacesTest do
     end
   end
 
+  describe "available_member_actions_by_user_id/3" do
+    setup do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      muted_member_scope = user_scope_fixture()
+      timed_out_member_scope = user_scope_fixture()
+      plain_member_scope = user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Batched Actions"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, muted_member_scope, "member")
+      add_workspace_member!(workspace, timed_out_member_scope, "member")
+      add_workspace_member!(workspace, plain_member_scope, "member")
+
+      {:ok, _mute} =
+        Workspaces.mute_member(owner_scope, workspace.id, muted_member_scope.user.id, %{})
+
+      {:ok, _timeout} =
+        Workspaces.timeout_member(
+          owner_scope,
+          workspace.id,
+          timed_out_member_scope.user.id,
+          "1_hour",
+          %{}
+        )
+
+      members =
+        Repo.all(
+          from membership in WorkspaceMembership,
+            where: membership.workspace_id == ^workspace.id
+        )
+
+      %{
+        owner_scope: owner_scope,
+        admin_scope: admin_scope,
+        muted_member_scope: muted_member_scope,
+        timed_out_member_scope: timed_out_member_scope,
+        plain_member_scope: plain_member_scope,
+        workspace: workspace,
+        members: members
+      }
+    end
+
+    test "matches per-member available_member_actions/3 across a mixed-state list", ctx do
+      batched =
+        Workspaces.available_member_actions_by_user_id(
+          ctx.owner_scope,
+          ctx.workspace,
+          ctx.members
+        )
+
+      for membership <- ctx.members do
+        assert Map.fetch!(batched, membership.user_id) ==
+                 Workspaces.available_member_actions(ctx.owner_scope, ctx.workspace, membership)
+      end
+    end
+
+    test "swaps mute→unmute and timeout→remove-timeout and empties self/owner targets", ctx do
+      batched =
+        Workspaces.available_member_actions_by_user_id(
+          ctx.owner_scope,
+          ctx.workspace,
+          ctx.members
+        )
+
+      assert :unmute in Map.fetch!(batched, ctx.muted_member_scope.user.id)
+      refute :mute in Map.fetch!(batched, ctx.muted_member_scope.user.id)
+
+      assert :remove_timeout in Map.fetch!(batched, ctx.timed_out_member_scope.user.id)
+      refute :timeout in Map.fetch!(batched, ctx.timed_out_member_scope.user.id)
+
+      assert Map.fetch!(batched, ctx.plain_member_scope.user.id) == [
+               :promote_to_admin,
+               :mute,
+               :timeout,
+               :kick,
+               :ban
+             ]
+
+      # The owner is their own actor here, so the self target yields no actions.
+      assert Map.fetch!(batched, ctx.owner_scope.user.id) == []
+    end
+
+    test "returns empty action sets for an unauthenticated scope", ctx do
+      batched =
+        Workspaces.available_member_actions_by_user_id(nil, ctx.workspace, ctx.members)
+
+      for membership <- ctx.members do
+        assert Map.fetch!(batched, membership.user_id) == []
+      end
+    end
+  end
+
   describe "can_delete_message?/2" do
     test "owners and admins may delete admin- and member-authored messages" do
       assert Workspaces.can_delete_message?("owner", "admin")

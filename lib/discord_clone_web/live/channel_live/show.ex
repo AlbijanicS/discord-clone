@@ -612,6 +612,9 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          socket
          |> assign(:show_workspace_form?, true)
          |> assign(:workspace_form, to_form(changeset, as: :workspace, action: :insert))}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Workspace could not be created.")}
     end
   end
 
@@ -1406,7 +1409,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   defp member_by_user_id(members), do: Map.new(members, &{&1.user_id, &1})
 
   defp member_actions_by_user_id(scope, workspace, members) do
-    Map.new(members, &{&1.user_id, Workspaces.available_member_actions(scope, workspace, &1)})
+    Workspaces.available_member_actions_by_user_id(scope, workspace, members)
   end
 
   defp message_author_actions(member_actions_by_user_id, %{message: %{user_id: user_id}}) do

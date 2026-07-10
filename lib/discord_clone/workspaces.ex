@@ -12,6 +12,8 @@ defmodule DiscordClone.Workspaces do
 
   import Ecto.Query
 
+  require Logger
+
   alias Ecto.Multi
   alias DiscordClone.Accounts.{Scope, User}
   alias DiscordClone.Chat
@@ -235,7 +237,8 @@ defmodule DiscordClone.Workspaces do
   end
 
   defp handle_create_workspace_result({:error, failed_operation, failed_value, changes_so_far}) do
-    {:error, :workspace_creation_failed, failed_operation, failed_value, changes_so_far}
+    log_transaction_failure("workspace creation", failed_operation, failed_value, changes_so_far)
+    {:error, :workspace_creation_failed}
   end
 
   def change_channel(workspace_id, attrs \\ %{}) when is_map(attrs) do
@@ -355,21 +358,49 @@ defmodule DiscordClone.Workspaces do
         %Workspace{id: workspace_id} = workspace,
         %WorkspaceMembership{workspace_id: workspace_id} = target_membership
       ) do
-    actor_role = workspace_role(scope, workspace)
-
-    actions =
-      cond do
-        Roles.owner?(actor_role) -> owner_member_actions(target_membership)
-        Roles.admin?(actor_role) -> admin_member_actions(target_membership)
-        true -> []
-      end
-
-    actions
+    scope
+    |> workspace_role(workspace)
+    |> role_member_actions(target_membership)
     |> active_mute_actions(target_membership)
     |> active_timeout_actions(target_membership)
   end
 
   def available_member_actions(_scope, _workspace, _target_membership), do: []
+
+  @doc """
+  Batched twin of `available_member_actions/3`. Given the actor's scope, the
+  workspace, and the list of target Workspace Memberships, returns a map of
+  `target_user_id => action_set`.
+
+  Calling `available_member_actions/3` per member issues roughly three queries
+  each (actor role, active mute, active timeout). This instead fetches the
+  actor's Role once and loads every target's active moderations in a single
+  query, deriving each action set in memory, so the query count does not grow
+  with the number of members. The action sets are identical to
+  `available_member_actions/3`, including the mute→unmute and
+  timeout→remove-timeout swaps and the empty sets for self and owner targets.
+  """
+  def available_member_actions_by_user_id(scope, workspace, members)
+
+  def available_member_actions_by_user_id(
+        %Scope{user: %User{id: actor_user_id}} = scope,
+        %Workspace{id: workspace_id} = workspace,
+        members
+      )
+      when is_list(members) do
+    actor_role = workspace_role(scope, workspace)
+    target_user_ids = for %WorkspaceMembership{} = membership <- members, do: membership.user_id
+    moderation = active_moderation_flags(workspace_id, target_user_ids)
+
+    Map.new(members, fn %WorkspaceMembership{} = membership ->
+      {membership.user_id,
+       batched_member_actions(actor_role, actor_user_id, workspace_id, membership, moderation)}
+    end)
+  end
+
+  def available_member_actions_by_user_id(_scope, _workspace, members) when is_list(members) do
+    Map.new(members, &{&1.user_id, []})
+  end
 
   def mute_member(scope, workspace_id, target_user_id, attrs \\ %{})
 
@@ -765,7 +796,14 @@ defmodule DiscordClone.Workspaces do
           {:ok, membership}
 
         {:error, failed_operation, failed_value, changes_so_far} ->
-          {:error, :leave_workspace_failed, failed_operation, failed_value, changes_so_far}
+          log_transaction_failure(
+            "leave workspace",
+            failed_operation,
+            failed_value,
+            changes_so_far
+          )
+
+          {:error, :leave_workspace_failed}
       end
     end
   end
@@ -1691,14 +1729,7 @@ defmodule DiscordClone.Workspaces do
   end
 
   defp active_mute_actions(actions, %WorkspaceMembership{} = target_membership) do
-    if :mute in actions and active_mute?(target_membership) do
-      Enum.map(actions, fn
-        :mute -> :unmute
-        action -> action
-      end)
-    else
-      actions
-    end
+    apply_mute_swap(actions, :mute in actions and active_mute?(target_membership))
   end
 
   defp active_mute?(%WorkspaceMembership{workspace_id: workspace_id, user_id: user_id}) do
@@ -1706,19 +1737,114 @@ defmodule DiscordClone.Workspaces do
   end
 
   defp active_timeout_actions(actions, %WorkspaceMembership{} = target_membership) do
-    if :timeout in actions and active_timeout?(target_membership) do
-      Enum.map(actions, fn
-        :timeout -> :remove_timeout
-        action -> action
-      end)
-    else
-      actions
-    end
+    apply_timeout_swap(actions, :timeout in actions and active_timeout?(target_membership))
   end
 
   defp active_timeout?(%WorkspaceMembership{workspace_id: workspace_id, user_id: user_id}) do
     match?(%WorkspaceModeration{}, get_active_moderation(workspace_id, user_id, @timeout_type))
   end
+
+  # Shared mute/timeout swap applied by both the per-member and batched action
+  # builders. The boolean already folds in the `:mute`/`:timeout in actions`
+  # check, so a `true` value guarantees the action is present to swap.
+  defp apply_mute_swap(actions, false), do: actions
+
+  defp apply_mute_swap(actions, true) do
+    Enum.map(actions, fn
+      :mute -> :unmute
+      action -> action
+    end)
+  end
+
+  defp apply_timeout_swap(actions, false), do: actions
+
+  defp apply_timeout_swap(actions, true) do
+    Enum.map(actions, fn
+      :timeout -> :remove_timeout
+      action -> action
+    end)
+  end
+
+  defp role_member_actions(actor_role, %WorkspaceMembership{} = target_membership) do
+    cond do
+      Roles.owner?(actor_role) -> owner_member_actions(target_membership)
+      Roles.admin?(actor_role) -> admin_member_actions(target_membership)
+      true -> []
+    end
+  end
+
+  # Per-target twin of the `available_member_actions/3` clauses, reading the
+  # target's mute/timeout state from the batch-loaded `moderation` flags instead
+  # of querying per member. The three heads mirror the self, in-workspace, and
+  # foreign-membership cases exactly.
+  defp batched_member_actions(
+         _actor_role,
+         actor_user_id,
+         workspace_id,
+         %WorkspaceMembership{workspace_id: workspace_id, user_id: actor_user_id},
+         _moderation
+       ),
+       do: []
+
+  defp batched_member_actions(
+         actor_role,
+         _actor_user_id,
+         workspace_id,
+         %WorkspaceMembership{workspace_id: workspace_id} = target_membership,
+         moderation
+       ) do
+    actions = role_member_actions(actor_role, target_membership)
+    mute_swap = :mute in actions and moderation_mutes?(moderation, target_membership)
+    timeout_swap = :timeout in actions and moderation_times_out?(moderation, target_membership)
+
+    actions
+    |> apply_mute_swap(mute_swap)
+    |> apply_timeout_swap(timeout_swap)
+  end
+
+  defp batched_member_actions(
+         _actor_role,
+         _actor_user_id,
+         _workspace_id,
+         _membership,
+         _moderation
+       ),
+       do: []
+
+  # Loads the active mutes and unexpired active timeouts for every target user in
+  # one query, returning the two sets of affected user ids. Mirrors the type
+  # semantics of `get_active_moderation/3`: mutes have no expiry, timeouts must
+  # be active and not yet expired.
+  defp active_moderation_flags(_workspace_id, []) do
+    %{muted: MapSet.new(), timed_out: MapSet.new()}
+  end
+
+  defp active_moderation_flags(workspace_id, user_ids) do
+    now = DateTime.utc_now(:second)
+
+    rows =
+      Repo.all(
+        from moderation in WorkspaceModeration,
+          where:
+            moderation.workspace_id == ^workspace_id and
+              moderation.target_user_id in ^user_ids and
+              moderation.active? == true and
+              (moderation.type == ^@mute_type or
+                 (moderation.type == ^@timeout_type and moderation.expires_at > ^now)),
+          select: {moderation.target_user_id, moderation.type}
+      )
+
+    %{
+      muted: MapSet.new(for {user_id, @mute_type} <- rows, do: user_id),
+      timed_out: MapSet.new(for {user_id, @timeout_type} <- rows, do: user_id)
+    }
+  end
+
+  defp moderation_mutes?(%{muted: muted}, %WorkspaceMembership{user_id: user_id}),
+    do: MapSet.member?(muted, user_id)
+
+  defp moderation_times_out?(%{timed_out: timed_out}, %WorkspaceMembership{user_id: user_id}),
+    do: MapSet.member?(timed_out, user_id)
 
   defp broadcast_workspace_moderation_changed(workspace_id, target_user_id) do
     Phoenix.PubSub.broadcast(
@@ -1829,8 +1955,25 @@ defmodule DiscordClone.Workspaces do
         {:error, :invalid_channel, changeset}
 
       {:error, failed_operation, failed_value, changes_so_far} ->
-        {:error, :channel_creation_failed, failed_operation, failed_value, changes_so_far}
+        log_transaction_failure(
+          "channel creation",
+          failed_operation,
+          failed_value,
+          changes_so_far
+        )
+
+        {:error, :channel_creation_failed}
     end
+  end
+
+  # Logs the `Ecto.Multi` failure internals inside the context so callers receive
+  # only a normalized `{:error, reason}` instead of a five-element tuple leaking
+  # `failed_operation`/`failed_value`/`changes_so_far`.
+  defp log_transaction_failure(label, failed_operation, failed_value, changes_so_far) do
+    Logger.error(
+      "#{label} transaction failed at #{inspect(failed_operation)}: " <>
+        "#{inspect(failed_value)} (completed steps: #{inspect(Map.keys(changes_so_far))})"
+    )
   end
 
   defp reject_landing_channel_delete(
