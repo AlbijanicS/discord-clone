@@ -21,7 +21,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.MemberActionsMenu do
 
   attr :id_prefix, :string, required: true
   attr :actions, :list, required: true
-  attr :user_id, :integer, required: true
+  attr :user_id, :string, required: true
   attr :current_scope, :map, required: true
   attr :workspace, :map, required: true
 

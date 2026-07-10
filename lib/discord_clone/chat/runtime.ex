@@ -20,18 +20,16 @@ defmodule DiscordClone.Chat.Runtime do
   @recent_message_limit 50
 
   def workspace_presence_pid(workspace_id) do
-    with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id) do
+    UUIDIdentifier.cast_or(workspace_id, nil, fn workspace_id ->
       case Registry.lookup(WorkspaceRegistry, workspace_id) do
         [{pid, _value}] -> if Process.alive?(pid), do: pid
         [] -> nil
       end
-    else
-      :error -> nil
-    end
+    end)
   end
 
   def ensure_workspace_presence(workspace_id) do
-    with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id) do
+    UUIDIdentifier.cast_or(workspace_id, {:error, :not_found}, fn workspace_id ->
       case DynamicSupervisor.start_child(
              WorkspaceSupervisor,
              {WorkspaceServer, {workspace_id, workspace_via_tuple(workspace_id)}}
@@ -40,9 +38,7 @@ defmodule DiscordClone.Chat.Runtime do
         {:error, {:already_started, pid}} -> {:ok, pid}
         {:error, reason} -> {:error, reason}
       end
-    else
-      :error -> {:error, :not_found}
-    end
+    end)
   end
 
   def online_user_ids(workspace_id) do
@@ -53,11 +49,9 @@ defmodule DiscordClone.Chat.Runtime do
   end
 
   def subscribe_workspace_presence(workspace_id) do
-    with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id) do
+    UUIDIdentifier.cast_or(workspace_id, {:error, :not_found}, fn workspace_id ->
       Phoenix.PubSub.subscribe(DiscordClone.PubSub, workspace_presence_topic(workspace_id))
-    else
-      :error -> {:error, :not_found}
-    end
+    end)
   end
 
   def join_workspace_presence(workspace_id, user_id, live_view_pid) when is_pid(live_view_pid) do
@@ -115,22 +109,18 @@ defmodule DiscordClone.Chat.Runtime do
   end
 
   def channel_pid(channel_id) do
-    with {:ok, channel_id} <- UUIDIdentifier.cast(channel_id) do
+    UUIDIdentifier.cast_or(channel_id, nil, fn channel_id ->
       case Registry.lookup(ChannelRegistry, channel_id) do
         [{pid, _value}] -> if Process.alive?(pid), do: pid
         [] -> nil
       end
-    else
-      :error -> nil
-    end
+    end)
   end
 
   def ensure_channel(channel_id) do
-    with {:ok, channel_id} <- UUIDIdentifier.cast(channel_id) do
+    UUIDIdentifier.cast_or(channel_id, {:error, :not_found}, fn channel_id ->
       do_ensure_channel(channel_id)
-    else
-      :error -> {:error, :not_found}
-    end
+    end)
   end
 
   defp do_ensure_channel(channel_id) do

@@ -230,11 +230,17 @@ defmodule DiscordClone.Chat do
   end
 
   defdelegate mark_channel_read(scope, channel_id), to: Unread
+  # Deliberate test seam: the only public way to inject an arbitrary unread
+  # span. In production, unread spans arise solely from `send_message/3` fanout.
+  @doc false
   defdelegate add_channel_unread_range(scope, channel_id, from_seq, to_seq), to: Unread
   defdelegate subtract_visible_read_range(scope, channel_id, from_seq, to_seq), to: Unread
-  defdelegate clear_channel_unread(scope, channel_id), to: Unread
   defdelegate subscribe_to_channel_read_state(scope, channel_id), to: Unread
 
+  # Subscribes to a channel's message topic. Transient typing indicators
+  # (`:typing_started` / `:typing_stopped`, broadcast by the channel runtime)
+  # ride on this same topic, so a message subscriber also receives typing
+  # events — there is deliberately no separate typing subscription.
   def subscribe_to_channel_messages(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
       Phoenix.PubSub.subscribe(DiscordClone.PubSub, channel_messages_topic(channel_id))
@@ -262,16 +268,6 @@ defmodule DiscordClone.Chat do
   end
 
   def subscribe_to_workspace_messages(_scope, _workspace_id), do: {:error, :unauthenticated}
-
-  def subscribe_to_channel_typing(%Scope{user: %User{id: user_id}}, channel_id) do
-    with %Channel{} <- get_member_channel(channel_id, user_id) do
-      Phoenix.PubSub.subscribe(DiscordClone.PubSub, channel_messages_topic(channel_id))
-    else
-      nil -> {:error, :not_found}
-    end
-  end
-
-  def subscribe_to_channel_typing(_scope, _channel_id), do: {:error, :unauthenticated}
 
   def subscribe_to_workspace_presence(%Scope{user: %User{id: user_id}}, workspace_id) do
     with :ok <- authorize_workspace_member(workspace_id, user_id) do
@@ -315,6 +311,10 @@ defmodule DiscordClone.Chat do
 
   def ensure_channel_runtime(_scope, _channel_id), do: {:error, :unauthenticated}
 
+  # Deliberate test seam: the only public window into the runtime hot-message
+  # cache, used to assert cache warm-up and reload behavior. Production reads
+  # go through the message-window functions below.
+  @doc false
   def list_recent_messages(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
       Runtime.list_recent_messages(channel_id)
@@ -429,6 +429,11 @@ defmodule DiscordClone.Chat do
 
   def user_stopped_typing(_scope, _channel_id), do: {:error, :unauthenticated}
 
+  # Deliberate test seam: simple `%Message{}`-cursor pagination retained for
+  # message-loading tests. Production pagination uses the seq-based message
+  # window functions (`load_older_message_window/3` and friends), which return
+  # a `%{messages, meta}` window rather than a bare list.
+  @doc false
   def list_older_messages(
         %Scope{user: %User{id: user_id}},
         channel_id,
@@ -617,7 +622,7 @@ defmodule DiscordClone.Chat do
   def list_reaction_summaries(_scope, _message_ids), do: {:error, :unauthenticated}
 
   defp get_member_channel(channel_id, user_id) do
-    with {:ok, channel_id} <- UUIDIdentifier.cast(channel_id) do
+    UUIDIdentifier.cast_or(channel_id, nil, fn channel_id ->
       Repo.one(
         from channel in Channel,
           join: membership in WorkspaceMembership,
@@ -627,13 +632,11 @@ defmodule DiscordClone.Chat do
           where: channel.id == ^channel_id,
           limit: 1
       )
-    else
-      :error -> nil
-    end
+    end)
   end
 
   defp get_member_message(message_id, user_id) do
-    with {:ok, message_id} <- UUIDIdentifier.cast(message_id) do
+    UUIDIdentifier.cast_or(message_id, nil, fn message_id ->
       Repo.one(
         from message in Message,
           join: channel in Channel,
@@ -646,9 +649,7 @@ defmodule DiscordClone.Chat do
           limit: 1,
           preload: [channel: channel]
       )
-    else
-      :error -> nil
-    end
+    end)
   end
 
   defp authorize_unmuted(workspace_id, user_id) do
@@ -681,7 +682,7 @@ defmodule DiscordClone.Chat do
   end
 
   defp authorize_member_messages(message_ids, user_id) do
-    with {:ok, message_ids} <- UUIDIdentifier.cast_all(message_ids) do
+    UUIDIdentifier.cast_or(message_ids, {:error, :not_found}, fn message_ids ->
       accessible_message_count =
         Repo.one(
           from message in Message,
@@ -696,9 +697,7 @@ defmodule DiscordClone.Chat do
         )
 
       if accessible_message_count == length(message_ids), do: :ok, else: {:error, :not_found}
-    else
-      :error -> {:error, :not_found}
-    end
+    end)
   end
 
   defp authorize_delete_message(%Message{user_id: user_id}, user_id), do: :ok
@@ -796,7 +795,7 @@ defmodule DiscordClone.Chat do
   defp reject_deleted_message(%Message{}), do: :ok
 
   defp authorize_workspace_member(workspace_id, user_id) do
-    with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id) do
+    UUIDIdentifier.cast_or(workspace_id, {:error, :not_found}, fn workspace_id ->
       if Repo.exists?(
            from membership in WorkspaceMembership,
              where: membership.workspace_id == ^workspace_id and membership.user_id == ^user_id
@@ -805,9 +804,7 @@ defmodule DiscordClone.Chat do
       else
         {:error, :not_found}
       end
-    else
-      :error -> {:error, :not_found}
-    end
+    end)
   end
 
   defp messages_between_sequences(channel_id, from_seq, to_seq) do

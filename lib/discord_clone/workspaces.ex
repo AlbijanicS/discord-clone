@@ -106,8 +106,6 @@ defmodule DiscordClone.Workspaces do
     with {:ok, %Workspace{id: workspace_id}} <- fetch_workspace(scope, workspace_id),
          {:ok, %Channel{} = channel} <- get_channel(workspace_id, channel_id) do
       {:ok, channel}
-    else
-      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -463,15 +461,12 @@ defmodule DiscordClone.Workspaces do
     do: {:error, :unauthenticated}
 
   def workspace_banned?(workspace_id, user_id) do
-    with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id),
-         {:ok, user_id} <- UUIDIdentifier.cast(user_id) do
+    UUIDIdentifier.cast_or([workspace_id, user_id], false, fn [workspace_id, user_id] ->
       Repo.exists?(
         from ban in WorkspaceBan,
           where: ban.workspace_id == ^workspace_id and ban.target_user_id == ^user_id
       )
-    else
-      :error -> false
-    end
+    end)
   end
 
   def unban_member(%Scope{user: %User{}} = scope, workspace_id, target_user_id) do
@@ -487,7 +482,7 @@ defmodule DiscordClone.Workspaces do
   def list_active_future_timeouts(workspace_id) do
     now = DateTime.utc_now(:second)
 
-    with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id) do
+    UUIDIdentifier.cast_or(workspace_id, [], fn workspace_id ->
       Repo.all(
         from moderation in WorkspaceModeration,
           where:
@@ -497,18 +492,14 @@ defmodule DiscordClone.Workspaces do
               moderation.expires_at > ^now,
           order_by: [asc: moderation.expires_at, asc: moderation.id]
       )
-    else
-      :error -> []
-    end
+    end)
   end
 
   def expire_member_timeout(moderation_id) do
     moderation =
-      with {:ok, moderation_id} <- UUIDIdentifier.cast(moderation_id) do
+      UUIDIdentifier.cast_or(moderation_id, nil, fn moderation_id ->
         Repo.get(WorkspaceModeration, moderation_id)
-      else
-        :error -> nil
-      end
+      end)
 
     case moderation do
       %WorkspaceModeration{
@@ -808,11 +799,9 @@ defmodule DiscordClone.Workspaces do
 
   defp get_workspace(workspace_id) do
     workspace =
-      with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id) do
+      UUIDIdentifier.cast_or(workspace_id, nil, fn workspace_id ->
         Repo.get(Workspace, workspace_id)
-      else
-        :error -> nil
-      end
+      end)
 
     case workspace do
       %Workspace{} = workspace -> {:ok, workspace}
@@ -822,12 +811,9 @@ defmodule DiscordClone.Workspaces do
 
   defp get_channel(workspace_id, channel_id) do
     channel =
-      with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id),
-           {:ok, channel_id} <- UUIDIdentifier.cast(channel_id) do
+      UUIDIdentifier.cast_or([workspace_id, channel_id], nil, fn [workspace_id, channel_id] ->
         Repo.get_by(Channel, id: channel_id, workspace_id: workspace_id)
-      else
-        :error -> nil
-      end
+      end)
 
     case channel do
       %Channel{} = channel -> {:ok, channel}
@@ -1031,12 +1017,9 @@ defmodule DiscordClone.Workspaces do
 
   defp get_workspace_membership(workspace_id, user_id) do
     membership =
-      with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id),
-           {:ok, user_id} <- UUIDIdentifier.cast(user_id) do
+      UUIDIdentifier.cast_or([workspace_id, user_id], nil, fn [workspace_id, user_id] ->
         Repo.get_by(WorkspaceMembership, workspace_id: workspace_id, user_id: user_id)
-      else
-        :error -> nil
-      end
+      end)
 
     case membership do
       %WorkspaceMembership{} = membership -> {:ok, membership}
@@ -1475,12 +1458,13 @@ defmodule DiscordClone.Workspaces do
 
   defp get_workspace_ban(workspace_id, target_user_id) do
     ban =
-      with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id),
-           {:ok, target_user_id} <- UUIDIdentifier.cast(target_user_id) do
-        Repo.get_by(WorkspaceBan, workspace_id: workspace_id, target_user_id: target_user_id)
-      else
-        :error -> nil
-      end
+      UUIDIdentifier.cast_or(
+        [workspace_id, target_user_id],
+        nil,
+        fn [workspace_id, target_user_id] ->
+          Repo.get_by(WorkspaceBan, workspace_id: workspace_id, target_user_id: target_user_id)
+        end
+      )
 
     case ban do
       %WorkspaceBan{} = ban -> {:ok, ban}
@@ -1656,35 +1640,37 @@ defmodule DiscordClone.Workspaces do
   defp get_active_moderation(workspace_id, target_user_id, @timeout_type) do
     now = DateTime.utc_now(:second)
 
-    with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id),
-         {:ok, target_user_id} <- UUIDIdentifier.cast(target_user_id) do
-      Repo.one(
-        from moderation in WorkspaceModeration,
-          where:
-            moderation.workspace_id == ^workspace_id and
-              moderation.target_user_id == ^target_user_id and
-              moderation.type == ^@timeout_type and
-              moderation.active? == true and
-              moderation.expires_at > ^now,
-          limit: 1
-      )
-    else
-      :error -> nil
-    end
+    UUIDIdentifier.cast_or(
+      [workspace_id, target_user_id],
+      nil,
+      fn [workspace_id, target_user_id] ->
+        Repo.one(
+          from moderation in WorkspaceModeration,
+            where:
+              moderation.workspace_id == ^workspace_id and
+                moderation.target_user_id == ^target_user_id and
+                moderation.type == ^@timeout_type and
+                moderation.active? == true and
+                moderation.expires_at > ^now,
+            limit: 1
+        )
+      end
+    )
   end
 
   defp get_active_moderation(workspace_id, target_user_id, type) do
-    with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id),
-         {:ok, target_user_id} <- UUIDIdentifier.cast(target_user_id) do
-      Repo.get_by(WorkspaceModeration,
-        workspace_id: workspace_id,
-        target_user_id: target_user_id,
-        type: type,
-        active?: true
-      )
-    else
-      :error -> nil
-    end
+    UUIDIdentifier.cast_or(
+      [workspace_id, target_user_id],
+      nil,
+      fn [workspace_id, target_user_id] ->
+        Repo.get_by(WorkspaceModeration,
+          workspace_id: workspace_id,
+          target_user_id: target_user_id,
+          type: type,
+          active?: true
+        )
+      end
+    )
   end
 
   defp fetch_active_moderation(workspace_id, target_user_id, type) do

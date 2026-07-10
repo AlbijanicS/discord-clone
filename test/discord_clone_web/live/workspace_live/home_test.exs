@@ -3399,7 +3399,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       sender_conn = build_conn() |> log_in_user(sender_scope.user)
       sender_id = sender_scope.user.id
 
-      assert :ok = Chat.subscribe_to_channel_typing(receiver_scope, channel_id)
+      assert :ok = Chat.subscribe_to_channel_messages(receiver_scope, channel_id)
 
       {:ok, receiver_view, _html} = live(conn, channel_path)
       {:ok, sender_view, _html} = live(sender_conn, channel_path)
@@ -4256,6 +4256,30 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
              )
 
       assert has_element?(view, "#channel-#{workspace.default_channel_id}-rename")
+    end
+
+    test "tolerates a context menu event with non-numeric coordinates", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      render_hook(view, "open_context_menu", %{
+        "type" => "channel",
+        "id" => workspace.default_channel_id,
+        "x" => "not-a-number",
+        "y" => "also-bad"
+      })
+
+      assert Process.alive?(view.pid)
+
+      assert has_element?(
+               view,
+               "#channel-#{workspace.default_channel_id}-menu[style='left: 0px; top: 0px;']"
+             )
     end
 
     test "refreshes unread badges when opening a channel context menu", %{

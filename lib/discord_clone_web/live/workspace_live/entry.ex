@@ -248,5 +248,13 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
   end
 
   defp coordinate_integer(value) when is_integer(value), do: value
-  defp coordinate_integer(value) when is_binary(value), do: String.to_integer(value)
+
+  defp coordinate_integer(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {integer, _rest} -> integer
+      :error -> 0
+    end
+  end
+
+  defp coordinate_integer(_value), do: 0
 end

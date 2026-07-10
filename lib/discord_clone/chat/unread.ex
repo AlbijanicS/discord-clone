@@ -91,8 +91,7 @@ defmodule DiscordClone.Chat.Unread do
   end
 
   def delete_workspace_reads_for_user(user_id, workspace_id) do
-    with {:ok, user_id} <- UUIDIdentifier.cast(user_id),
-         {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id) do
+    UUIDIdentifier.cast_or([user_id, workspace_id], :ok, fn [user_id, workspace_id] ->
       Repo.delete_all(
         from span in ChannelUnreadSpan,
           join: channel in Channel,
@@ -118,9 +117,7 @@ defmodule DiscordClone.Chat.Unread do
       )
 
       :ok
-    else
-      :error -> :ok
-    end
+    end)
   end
 
   def list_unread_counts(%Scope{user: %User{id: user_id}}, workspace_id) do
@@ -220,16 +217,6 @@ defmodule DiscordClone.Chat.Unread do
   def subtract_visible_read_range(_scope, _channel_id, _from_seq, _to_seq),
     do: {:error, :unauthenticated}
 
-  def clear_channel_unread(%Scope{user: %User{id: user_id}}, channel_id) do
-    with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
-      mutate_channel_unread_spans(user_id, channel, fn _spans -> [] end)
-    else
-      nil -> {:error, :not_found}
-    end
-  end
-
-  def clear_channel_unread(_scope, _channel_id), do: {:error, :unauthenticated}
-
   def subscribe_to_channel_read_state(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
       Phoenix.PubSub.subscribe(DiscordClone.PubSub, channel_read_state_topic(user_id, channel_id))
@@ -299,20 +286,18 @@ defmodule DiscordClone.Chat.Unread do
   end
 
   defp get_member_channel(channel_id, user_id) do
-    with {:ok, channel_id} <- UUIDIdentifier.cast(channel_id) do
+    UUIDIdentifier.cast_or(channel_id, nil, fn channel_id ->
       Repo.one(
         from channel in Channel,
           join: membership in WorkspaceMembership,
           on: membership.workspace_id == channel.workspace_id,
           where: channel.id == ^channel_id and membership.user_id == ^user_id
       )
-    else
-      :error -> nil
-    end
+    end)
   end
 
   defp authorize_workspace_member(workspace_id, user_id) do
-    with {:ok, workspace_id} <- UUIDIdentifier.cast(workspace_id) do
+    UUIDIdentifier.cast_or(workspace_id, {:error, :not_found}, fn workspace_id ->
       if Repo.exists?(
            from membership in WorkspaceMembership,
              where: membership.workspace_id == ^workspace_id and membership.user_id == ^user_id
@@ -321,9 +306,7 @@ defmodule DiscordClone.Chat.Unread do
       else
         {:error, :not_found}
       end
-    else
-      :error -> {:error, :not_found}
-    end
+    end)
   end
 
   defp list_channel_recipient_user_ids(%Channel{workspace_id: workspace_id}, sender_user_id) do

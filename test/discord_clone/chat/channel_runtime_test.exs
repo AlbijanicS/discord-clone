@@ -93,7 +93,7 @@ defmodule DiscordClone.Chat.ChannelRuntimeTest do
       channel_id = workspace.default_channel_id
       user_id = scope.user.id
 
-      assert :ok = DiscordClone.Chat.subscribe_to_channel_typing(scope, channel_id)
+      assert :ok = DiscordClone.Chat.subscribe_to_channel_messages(scope, channel_id)
 
       assert :ok = DiscordClone.Chat.user_started_typing(scope, channel_id)
       assert {:ok, [^user_id]} = DiscordClone.Chat.list_typing_user_ids(scope, channel_id)
@@ -109,7 +109,7 @@ defmodule DiscordClone.Chat.ChannelRuntimeTest do
 
       put_channel_typing_timeout(1_000)
 
-      assert :ok = DiscordClone.Chat.subscribe_to_channel_typing(scope, channel_id)
+      assert :ok = DiscordClone.Chat.subscribe_to_channel_messages(scope, channel_id)
       assert :ok = DiscordClone.Chat.user_started_typing(scope, channel_id)
       assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: ^user_id}}
 

@@ -264,7 +264,7 @@ defmodule DiscordClone.ChatTest do
       assert [{4, 4}, {7, 7}] = unread_spans(workspace.default_channel_id, scope.user.id)
     end
 
-    test "clears all unread ranges for a channel" do
+    test "marking a channel read clears all unread ranges" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
 
@@ -274,11 +274,18 @@ defmodule DiscordClone.ChatTest do
       assert {:ok, _read_state} =
                Chat.add_channel_unread_range(scope, workspace.default_channel_id, 8, 10)
 
-      assert {:ok, read_state} = Chat.clear_channel_unread(scope, workspace.default_channel_id)
+      assert :ok = Chat.mark_channel_read(scope, workspace.default_channel_id)
 
-      assert read_state.unread_count == 0
-      assert is_nil(read_state.first_unread_seq)
-      assert is_nil(read_state.last_unread_seq)
+      assert %ChannelReadState{
+               unread_count: 0,
+               first_unread_seq: nil,
+               last_unread_seq: nil
+             } =
+               Repo.get_by(ChannelReadState,
+                 channel_id: workspace.default_channel_id,
+                 user_id: scope.user.id
+               )
+
       assert [] = unread_spans(workspace.default_channel_id, scope.user.id)
     end
 
@@ -404,9 +411,6 @@ defmodule DiscordClone.ChatTest do
              ) ==
                {:error, :unauthenticated}
 
-      assert Chat.clear_channel_unread(nil, workspace.default_channel_id) ==
-               {:error, :unauthenticated}
-
       assert Chat.subscribe_to_channel_read_state(nil, workspace.default_channel_id) ==
                {:error, :unauthenticated}
 
@@ -419,9 +423,6 @@ defmodule DiscordClone.ChatTest do
                1,
                1
              ) ==
-               {:error, :not_found}
-
-      assert Chat.clear_channel_unread(non_member_scope, workspace.default_channel_id) ==
                {:error, :not_found}
 
       assert Chat.subscribe_to_channel_read_state(non_member_scope, workspace.default_channel_id) ==
@@ -1751,12 +1752,12 @@ defmodule DiscordClone.ChatTest do
       {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
       channel_id = workspace.default_channel_id
 
-      assert Chat.subscribe_to_channel_typing(nil, channel_id) == {:error, :unauthenticated}
+      assert Chat.subscribe_to_channel_messages(nil, channel_id) == {:error, :unauthenticated}
       assert Chat.user_started_typing(nil, channel_id) == {:error, :unauthenticated}
       assert Chat.user_stopped_typing(nil, channel_id) == {:error, :unauthenticated}
       assert Chat.list_typing_user_ids(nil, channel_id) == {:error, :unauthenticated}
 
-      assert Chat.subscribe_to_channel_typing(non_member_scope, channel_id) ==
+      assert Chat.subscribe_to_channel_messages(non_member_scope, channel_id) ==
                {:error, :not_found}
 
       assert Chat.user_started_typing(non_member_scope, channel_id) == {:error, :not_found}
@@ -1769,7 +1770,7 @@ defmodule DiscordClone.ChatTest do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
       channel_id = workspace.default_channel_id
 
-      assert :ok = Chat.subscribe_to_channel_typing(scope, channel_id)
+      assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
 
       assert :ok = Chat.user_started_typing(scope, channel_id)
       assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: user_id}}
@@ -1785,7 +1786,7 @@ defmodule DiscordClone.ChatTest do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
       channel_id = workspace.default_channel_id
 
-      assert :ok = Chat.subscribe_to_channel_typing(scope, channel_id)
+      assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
 
       assert :ok = Chat.user_started_typing(scope, channel_id)
       assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: user_id}}
@@ -1807,7 +1808,7 @@ defmodule DiscordClone.ChatTest do
 
       put_channel_typing_timeout(0)
 
-      assert :ok = Chat.subscribe_to_channel_typing(scope, channel_id)
+      assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
 
       assert :ok = Chat.user_started_typing(scope, channel_id)
       assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: user_id}}
@@ -1823,7 +1824,7 @@ defmodule DiscordClone.ChatTest do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
       channel_id = workspace.default_channel_id
 
-      assert :ok = Chat.subscribe_to_channel_typing(scope, channel_id)
+      assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
       assert :ok = Chat.user_started_typing(scope, channel_id)
       assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: user_id}}
       assert user_id == scope.user.id
@@ -3333,7 +3334,7 @@ defmodule DiscordClone.ChatTest do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
       channel_id = workspace.default_channel_id
 
-      assert :ok = Chat.subscribe_to_channel_typing(scope, channel_id)
+      assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
       assert :ok = Chat.user_started_typing(scope, channel_id)
       assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: user_id}}
 
@@ -3645,7 +3646,7 @@ defmodule DiscordClone.ChatTest do
     parent = self()
 
     spawn_link(fn ->
-      assert :ok = Chat.subscribe_to_channel_typing(scope, channel_id)
+      assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
       send(parent, {:subscribed, self()})
 
       receive do

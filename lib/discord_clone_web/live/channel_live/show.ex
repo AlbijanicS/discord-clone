@@ -44,8 +44,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          :ok <- subscribe_to_workspace_messages(socket, workspace.id),
          :ok <- subscribe_to_workspace_moderation(socket, workspace.id),
          :ok <- WorkspaceEvents.subscribe(socket, workspace.id),
-         :ok <- subscribe_to_channel_read_states(socket, channels),
-         :ok <- subscribe_to_channel_typing(socket, channel.id) do
+         :ok <- subscribe_to_channel_read_states(socket, channels) do
       message_rows = MessageRows.annotate(messages)
 
       socket =
@@ -1922,8 +1921,6 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
-  defp subscribe_to_channel_typing(_socket, _channel_id), do: :ok
-
   defp monitor_channel_runtime(socket, channel_id) do
     if connected?(socket) do
       case Chat.ensure_channel_runtime(socket.assigns.current_scope, channel_id) do
@@ -2277,7 +2274,15 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   defp scroll_number(_value), do: 0
 
   defp coordinate_integer(value) when is_integer(value), do: value
-  defp coordinate_integer(value) when is_binary(value), do: String.to_integer(value)
+
+  defp coordinate_integer(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {integer, _rest} -> integer
+      :error -> 0
+    end
+  end
+
+  defp coordinate_integer(_value), do: 0
 
   defp compact_time(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%H:%M")
 

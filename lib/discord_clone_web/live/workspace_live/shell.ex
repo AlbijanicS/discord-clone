@@ -11,13 +11,13 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   attr :member_stream, :any, default: []
   attr :workspace_form, :any, default: nil
   attr :show_workspace_form?, :boolean, default: false
-  attr :workspace_action_menu_id, :integer, default: nil
-  attr :renaming_workspace_id, :integer, default: nil
+  attr :workspace_action_menu_id, :string, default: nil
+  attr :renaming_workspace_id, :string, default: nil
   attr :workspace_rename_form, :any, default: nil
   attr :channel_form, :any, default: nil
   attr :show_channel_form?, :boolean, default: false
-  attr :channel_action_menu_id, :integer, default: nil
-  attr :renaming_channel_id, :integer, default: nil
+  attr :channel_action_menu_id, :string, default: nil
+  attr :renaming_channel_id, :string, default: nil
   attr :channel_rename_form, :any, default: nil
   attr :context_menu_position, :map, default: nil
   attr :current_scope, :any, default: nil
