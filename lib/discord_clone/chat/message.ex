@@ -2,6 +2,9 @@ defmodule DiscordClone.Chat.Message do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @primary_key {:id, :binary_id, autogenerate: true}
+  @foreign_key_type :binary_id
+
   schema "messages" do
     field :content, :string
     field :seq, :integer
@@ -13,7 +16,7 @@ defmodule DiscordClone.Chat.Message do
 
     has_many :message_reactions, DiscordClone.Chat.MessageReaction
 
-    timestamps(type: :utc_datetime)
+    timestamps(type: :utc_datetime_usec)
   end
 
   def changeset(message, attrs) do

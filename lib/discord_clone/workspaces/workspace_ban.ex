@@ -2,6 +2,9 @@ defmodule DiscordClone.Workspaces.WorkspaceBan do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @primary_key {:id, :binary_id, autogenerate: true}
+  @foreign_key_type :binary_id
+
   schema "workspace_bans" do
     field :reason, :string
 
@@ -9,7 +12,7 @@ defmodule DiscordClone.Workspaces.WorkspaceBan do
     belongs_to :target_user, DiscordClone.Accounts.User
     belongs_to :banned_by_user, DiscordClone.Accounts.User
 
-    timestamps(type: :utc_datetime)
+    timestamps(type: :utc_datetime_usec)
   end
 
   def create_changeset(ban, attrs) do

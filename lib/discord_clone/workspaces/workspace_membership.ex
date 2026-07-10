@@ -2,6 +2,9 @@ defmodule DiscordClone.Workspaces.WorkspaceMembership do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @primary_key {:id, :binary_id, autogenerate: true}
+  @foreign_key_type :binary_id
+
   @roles ~w(owner admin member)
 
   schema "workspace_memberships" do
@@ -10,7 +13,7 @@ defmodule DiscordClone.Workspaces.WorkspaceMembership do
     belongs_to :workspace, DiscordClone.Workspaces.Workspace
     belongs_to :user, DiscordClone.Accounts.User
 
-    timestamps(type: :utc_datetime)
+    timestamps(type: :utc_datetime_usec)
   end
 
   def changeset(membership, attrs) do

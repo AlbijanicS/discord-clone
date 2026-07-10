@@ -162,7 +162,7 @@ defmodule DiscordClone.Chat.Runtime do
   defp load_recent_messages(channel_id) do
     Message
     |> where([message], message.channel_id == ^channel_id)
-    |> order_by([message], desc: message.inserted_at, desc: message.id)
+    |> order_by([message], desc: message.seq)
     |> limit(^@recent_message_limit)
     |> preload(:user)
     |> Repo.all()

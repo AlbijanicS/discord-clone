@@ -1,6 +1,9 @@
 defmodule DiscordClone.Accounts.UserToken do
   use Ecto.Schema
   import Ecto.Query
+
+  @primary_key {:id, :binary_id, autogenerate: true}
+  @foreign_key_type :binary_id
   alias DiscordClone.Accounts.UserToken
 
   @hash_algorithm :sha256
@@ -19,7 +22,7 @@ defmodule DiscordClone.Accounts.UserToken do
     field :authenticated_at, :utc_datetime
     belongs_to :user, DiscordClone.Accounts.User
 
-    timestamps(type: :utc_datetime, updated_at: false)
+    timestamps(type: :utc_datetime_usec, updated_at: false)
   end
 
   @doc """

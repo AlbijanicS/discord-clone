@@ -745,8 +745,6 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   end
 
   def handle_event("mark_sidebar_channel_read", %{"channel_id" => channel_id}, socket) do
-    channel_id = to_integer(channel_id)
-
     case Chat.mark_channel_read(socket.assigns.current_scope, channel_id) do
       :ok ->
         socket =
@@ -873,8 +871,6 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   end
 
   def handle_event("toggle_reaction", %{"message-id" => message_id, "emoji" => emoji}, socket) do
-    message_id = to_integer(message_id)
-
     case Chat.toggle_reaction(socket.assigns.current_scope, message_id, emoji) do
       {:ok, _reaction_or_deleted_reaction} ->
         {:noreply, refresh_reaction_summary(socket, message_id)}
@@ -888,8 +884,6 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   end
 
   def handle_event("delete_message", %{"message-id" => message_id}, socket) do
-    message_id = to_integer(message_id)
-
     case Chat.delete_message(socket.assigns.current_scope, message_id) do
       {:ok, _message} ->
         payload = %{channel_id: socket.assigns.selected_channel.id, message_id: message_id}
@@ -927,7 +921,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   def handle_event("open_workspace_actions", %{"workspace_id" => workspace_id}, socket) do
     {:noreply,
      socket
-     |> assign(:workspace_action_menu_id, String.to_integer(workspace_id))
+     |> assign(:workspace_action_menu_id, workspace_id)
      |> assign(:channel_action_menu_id, nil)
      |> assign(:context_menu_position, nil)}
   end
@@ -985,7 +979,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       {:error, :invalid_workspace, changeset} ->
         {:noreply,
          socket
-         |> assign(:renaming_workspace_id, String.to_integer(workspace_id))
+         |> assign(:renaming_workspace_id, workspace_id)
          |> assign(:workspace_rename_form, to_form(changeset, as: :workspace, action: :insert))
          |> assign(:workspace_action_menu_id, nil)
          |> restream_workspaces()}
@@ -1030,7 +1024,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
     socket =
       socket
-      |> assign(:channel_action_menu_id, String.to_integer(channel_id))
+      |> assign(:channel_action_menu_id, channel_id)
       |> assign(:workspace_action_menu_id, nil)
       |> assign(:context_menu_position, nil)
       |> refresh_channel_sidebar(workspace_id, channels)
@@ -1048,9 +1042,9 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
     socket =
       socket
-      |> assign(:channel_action_menu_id, to_integer(channel_id))
+      |> assign(:channel_action_menu_id, channel_id)
       |> assign(:workspace_action_menu_id, nil)
-      |> assign(:context_menu_position, %{x: to_integer(x), y: to_integer(y)})
+      |> assign(:context_menu_position, %{x: coordinate_integer(x), y: coordinate_integer(y)})
       |> refresh_channel_sidebar(workspace_id, channels)
 
     {:noreply, socket}
@@ -1063,9 +1057,9 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       ) do
     {:noreply,
      socket
-     |> assign(:workspace_action_menu_id, to_integer(workspace_id))
+     |> assign(:workspace_action_menu_id, workspace_id)
      |> assign(:channel_action_menu_id, nil)
-     |> assign(:context_menu_position, %{x: to_integer(x), y: to_integer(y)})}
+     |> assign(:context_menu_position, %{x: coordinate_integer(x), y: coordinate_integer(y)})}
   end
 
   def handle_event("close_context_menu", _params, socket) do
@@ -1168,7 +1162,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       {:error, :invalid_channel, changeset} ->
         {:noreply,
          socket
-         |> assign(:renaming_channel_id, String.to_integer(channel_id))
+         |> assign(:renaming_channel_id, channel_id)
          |> assign(:channel_rename_form, to_form(changeset, as: :channel, action: :insert))
          |> assign(:channel_action_menu_id, nil)
          |> refresh_channel_sidebar(workspace_id)}
@@ -1185,7 +1179,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     workspace_id = socket.assigns.selected_workspace.id
 
     deleting_current_channel? =
-      socket.assigns.selected_channel.id == String.to_integer(channel_id)
+      socket.assigns.selected_channel.id == channel_id
 
     case Workspaces.delete_channel(socket.assigns.current_scope, workspace_id, channel_id) do
       {:ok, _channel} when deleting_current_channel? ->
@@ -2282,8 +2276,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   defp scroll_number(_value), do: 0
 
-  defp to_integer(value) when is_integer(value), do: value
-  defp to_integer(value) when is_binary(value), do: String.to_integer(value)
+  defp coordinate_integer(value) when is_integer(value), do: value
+  defp coordinate_integer(value) when is_binary(value), do: String.to_integer(value)
 
   defp compact_time(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%H:%M")
 

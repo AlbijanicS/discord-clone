@@ -2,13 +2,16 @@ defmodule DiscordClone.Chat.MessageReaction do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @primary_key {:id, :binary_id, autogenerate: true}
+  @foreign_key_type :binary_id
+
   schema "message_reactions" do
     field :emoji, :string
 
     belongs_to :message, DiscordClone.Chat.Message
     belongs_to :user, DiscordClone.Accounts.User
 
-    timestamps(type: :utc_datetime)
+    timestamps(type: :utc_datetime_usec)
   end
 
   def changeset(message_reaction, attrs) do

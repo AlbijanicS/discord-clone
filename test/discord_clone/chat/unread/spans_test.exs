@@ -102,6 +102,8 @@ defmodule DiscordClone.Chat.Unread.SpansTest do
   end
 
   defp insert_message!(channel_id, user_id, content, inserted_at) do
+    inserted_at = %{inserted_at | microsecond: {elem(inserted_at.microsecond, 0), 6}}
+
     {:ok, message} =
       Repo.transaction(fn ->
         channel =

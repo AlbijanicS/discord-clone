@@ -19,7 +19,7 @@ defmodule DiscordClone.Chat.Unread do
     Unread.Spans
   }
 
-  alias DiscordClone.Repo
+  alias DiscordClone.{Identifier, Repo}
   alias DiscordClone.Workspaces.{Channel, WorkspaceMembership}
 
   @message_page_size 50
@@ -57,7 +57,7 @@ defmodule DiscordClone.Chat.Unread do
 
   def initialize_channel_reads_for_workspace_members(channel_id) do
     if Repo.exists?(from channel in Channel, where: channel.id == ^channel_id) do
-      now = DateTime.utc_now(:second)
+      now = DateTime.utc_now(:microsecond)
 
       read_rows =
         Repo.all(
@@ -69,8 +69,8 @@ defmodule DiscordClone.Chat.Unread do
               channel_id: channel.id,
               user_id: membership.user_id,
               last_read_message_id: nil,
-              inserted_at: type(^now, :utc_datetime),
-              updated_at: type(^now, :utc_datetime)
+              inserted_at: type(^now, :utc_datetime_usec),
+              updated_at: type(^now, :utc_datetime_usec)
             }
         )
 
@@ -140,7 +140,7 @@ defmodule DiscordClone.Chat.Unread do
             on: channel.id == read_state.channel_id,
             where: channel.workspace_id == ^workspace_id,
             where: read_state.user_id == ^user_id,
-            order_by: [asc: channel.id],
+            order_by: [asc: channel.inserted_at, asc: channel.id],
             select: %{
               workspace_id: channel.workspace_id,
               channel_id: read_state.channel_id,
@@ -293,22 +293,30 @@ defmodule DiscordClone.Chat.Unread do
   end
 
   defp get_member_channel(channel_id, user_id) do
-    Repo.one(
-      from channel in Channel,
-        join: membership in WorkspaceMembership,
-        on: membership.workspace_id == channel.workspace_id,
-        where: channel.id == ^channel_id and membership.user_id == ^user_id
-    )
+    with {:ok, channel_id} <- Identifier.cast(channel_id) do
+      Repo.one(
+        from channel in Channel,
+          join: membership in WorkspaceMembership,
+          on: membership.workspace_id == channel.workspace_id,
+          where: channel.id == ^channel_id and membership.user_id == ^user_id
+      )
+    else
+      :error -> nil
+    end
   end
 
   defp authorize_workspace_member(workspace_id, user_id) do
-    if Repo.exists?(
-         from membership in WorkspaceMembership,
-           where: membership.workspace_id == ^workspace_id and membership.user_id == ^user_id
-       ) do
-      :ok
+    with {:ok, workspace_id} <- Identifier.cast(workspace_id) do
+      if Repo.exists?(
+           from membership in WorkspaceMembership,
+             where: membership.workspace_id == ^workspace_id and membership.user_id == ^user_id
+         ) do
+        :ok
+      else
+        {:error, :not_found}
+      end
     else
-      {:error, :not_found}
+      :error -> {:error, :not_found}
     end
   end
 
@@ -355,7 +363,7 @@ defmodule DiscordClone.Chat.Unread do
   end
 
   defp insert_zero_unread_read_states(channel_rows, user_id) do
-    now = DateTime.utc_now(:second)
+    now = DateTime.utc_now(:microsecond)
 
     read_state_rows =
       Enum.map(channel_rows, fn %{channel_id: channel_id} ->
@@ -377,7 +385,7 @@ defmodule DiscordClone.Chat.Unread do
   end
 
   defp insert_zero_unread_read_states(channel_user_rows) do
-    now = DateTime.utc_now(:second)
+    now = DateTime.utc_now(:microsecond)
 
     read_state_rows =
       Enum.map(channel_user_rows, fn %{channel_id: channel_id, user_id: user_id} ->
@@ -487,10 +495,11 @@ defmodule DiscordClone.Chat.Unread do
 
   defp latest_message_per_channel_query do
     from message in Message,
-      group_by: message.channel_id,
+      distinct: message.channel_id,
+      order_by: [asc: message.channel_id, desc: message.seq],
       select: %{
         channel_id: message.channel_id,
-        last_read_message_id: max(message.id)
+        last_read_message_id: message.id
       }
   end
 
@@ -505,20 +514,16 @@ defmodule DiscordClone.Chat.Unread do
         })
         |> Repo.insert()
 
+      %ChannelRead{last_read_message_id: nil} = channel_read
+      when not is_nil(last_read_message_id) ->
+        channel_read
+        |> ChannelRead.changeset(%{last_read_message_id: last_read_message_id})
+        |> Repo.update()
+
       %ChannelRead{} = channel_read ->
-        if cursor_after?(last_read_message_id, channel_read.last_read_message_id) do
-          channel_read
-          |> ChannelRead.changeset(%{last_read_message_id: last_read_message_id})
-          |> Repo.update()
-        else
-          {:ok, channel_read}
-        end
+        {:ok, channel_read}
     end
   end
-
-  defp cursor_after?(nil, _current_cursor), do: false
-  defp cursor_after?(_new_cursor, nil), do: true
-  defp cursor_after?(new_cursor, current_cursor), do: new_cursor > current_cursor
 
   defp messages_between_sequences(channel_id, from_seq, to_seq) do
     Message

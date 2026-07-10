@@ -2,6 +2,9 @@ defmodule DiscordClone.Workspaces.Workspace do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @primary_key {:id, :binary_id, autogenerate: true}
+  @foreign_key_type :binary_id
+
   @invite_policies ~w(owner_only members_can_invite)
 
   schema "workspaces" do
@@ -16,7 +19,7 @@ defmodule DiscordClone.Workspaces.Workspace do
     has_many :invites, DiscordClone.Workspaces.WorkspaceInvite
     has_many :audit_events, DiscordClone.Workspaces.WorkspaceAuditEvent
 
-    timestamps(type: :utc_datetime)
+    timestamps(type: :utc_datetime_usec)
   end
 
   def changeset(workspace, attrs) do

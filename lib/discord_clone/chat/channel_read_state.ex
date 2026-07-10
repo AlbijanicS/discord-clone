@@ -9,6 +9,9 @@ defmodule DiscordClone.Chat.ChannelReadState do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @primary_key {:id, :binary_id, autogenerate: true}
+  @foreign_key_type :binary_id
+
   schema "channel_read_states" do
     field :unread_count, :integer, default: 0
     field :first_unread_seq, :integer
@@ -19,7 +22,7 @@ defmodule DiscordClone.Chat.ChannelReadState do
     belongs_to :channel, DiscordClone.Workspaces.Channel
     belongs_to :user, DiscordClone.Accounts.User
 
-    timestamps(type: :utc_datetime)
+    timestamps(type: :utc_datetime_usec)
   end
 
   def changeset(read_state, attrs) do

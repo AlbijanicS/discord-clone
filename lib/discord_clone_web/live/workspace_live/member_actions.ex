@@ -18,7 +18,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.MemberActions do
 
   def run(socket, %{"action" => action, "user_id" => user_id} = params, workspace_id, refresh)
       when action in @member_actions do
-    target_user_id = String.to_integer(user_id)
+    target_user_id = user_id
 
     socket.assigns.current_scope
     |> dispatch_member_action(action, workspace_id, target_user_id, params)
@@ -35,7 +35,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.MemberActions do
   end
 
   def kick(socket, %{"user_id" => user_id} = params, workspace_id, refresh) do
-    target_user_id = String.to_integer(user_id)
+    target_user_id = user_id
     reason = Map.get(params, "reason", "")
 
     socket.assigns.current_scope
@@ -51,7 +51,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.MemberActions do
   end
 
   def ban(socket, %{"user_id" => user_id} = params, workspace_id, refresh) do
-    target_user_id = String.to_integer(user_id)
+    target_user_id = user_id
 
     ban_attrs = %{
       "reason" => Map.get(params, "reason", ""),
@@ -71,7 +71,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.MemberActions do
   end
 
   def unban(socket, %{"user_id" => user_id}, workspace_id, refresh) do
-    target_user_id = String.to_integer(user_id)
+    target_user_id = user_id
 
     socket.assigns.current_scope
     |> Workspaces.unban_member(workspace_id, target_user_id)

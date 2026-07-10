@@ -20,7 +20,7 @@ defmodule DiscordClone.Chat do
     Unread
   }
 
-  alias DiscordClone.Repo
+  alias DiscordClone.{Identifier, Repo}
 
   alias DiscordClone.Workspaces.{
     Channel,
@@ -432,18 +432,14 @@ defmodule DiscordClone.Chat do
   def list_older_messages(
         %Scope{user: %User{id: user_id}},
         channel_id,
-        %Message{id: cursor_id, inserted_at: cursor_inserted_at}
+        %Message{seq: cursor_seq}
       ) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
       messages =
         Message
         |> where([message], message.channel_id == ^channel_id)
-        |> where(
-          [message],
-          message.inserted_at < ^cursor_inserted_at or
-            (message.inserted_at == ^cursor_inserted_at and message.id < ^cursor_id)
-        )
-        |> order_by([message], desc: message.inserted_at, desc: message.id)
+        |> where([message], message.seq < ^cursor_seq)
+        |> order_by([message], desc: message.seq)
         |> limit(^@recent_message_limit)
         |> preload(:user)
         |> Repo.all()
@@ -600,14 +596,14 @@ defmodule DiscordClone.Chat do
     with :ok <- authorize_member_messages(message_ids, user_id) do
       summaries =
         MessageReaction
-        |> where([reaction], reaction.message_id in ^message_ids)
+        |> where([reaction], reaction.message_id in type(^message_ids, {:array, :binary_id}))
         |> group_by([reaction], [reaction.message_id, reaction.emoji])
         |> order_by([reaction], asc: reaction.message_id, asc: reaction.emoji)
         |> select([reaction], %{
           message_id: reaction.message_id,
           emoji: reaction.emoji,
           count: count(reaction.id),
-          reacted?: fragment("bool_or(? = ?)", reaction.user_id, ^user_id)
+          reacted?: fragment("bool_or(? = ?)", reaction.user_id, type(^user_id, :binary_id))
         })
         |> Repo.all()
         |> Enum.group_by(& &1.message_id, fn summary ->
@@ -621,30 +617,38 @@ defmodule DiscordClone.Chat do
   def list_reaction_summaries(_scope, _message_ids), do: {:error, :unauthenticated}
 
   defp get_member_channel(channel_id, user_id) do
-    Repo.one(
-      from channel in Channel,
-        join: membership in WorkspaceMembership,
-        on:
-          membership.workspace_id == channel.workspace_id and
-            membership.user_id == ^user_id,
-        where: channel.id == ^channel_id,
-        limit: 1
-    )
+    with {:ok, channel_id} <- Identifier.cast(channel_id) do
+      Repo.one(
+        from channel in Channel,
+          join: membership in WorkspaceMembership,
+          on:
+            membership.workspace_id == channel.workspace_id and
+              membership.user_id == ^user_id,
+          where: channel.id == ^channel_id,
+          limit: 1
+      )
+    else
+      :error -> nil
+    end
   end
 
   defp get_member_message(message_id, user_id) do
-    Repo.one(
-      from message in Message,
-        join: channel in Channel,
-        on: channel.id == message.channel_id,
-        join: membership in WorkspaceMembership,
-        on:
-          membership.workspace_id == channel.workspace_id and
-            membership.user_id == ^user_id,
-        where: message.id == ^message_id,
-        limit: 1,
-        preload: [channel: channel]
-    )
+    with {:ok, message_id} <- Identifier.cast(message_id) do
+      Repo.one(
+        from message in Message,
+          join: channel in Channel,
+          on: channel.id == message.channel_id,
+          join: membership in WorkspaceMembership,
+          on:
+            membership.workspace_id == channel.workspace_id and
+              membership.user_id == ^user_id,
+          where: message.id == ^message_id,
+          limit: 1,
+          preload: [channel: channel]
+      )
+    else
+      :error -> nil
+    end
   end
 
   defp authorize_unmuted(workspace_id, user_id) do
@@ -677,23 +681,23 @@ defmodule DiscordClone.Chat do
   end
 
   defp authorize_member_messages(message_ids, user_id) do
-    accessible_message_count =
-      Repo.one(
-        from message in Message,
-          join: channel in Channel,
-          on: channel.id == message.channel_id,
-          join: membership in WorkspaceMembership,
-          on:
-            membership.workspace_id == channel.workspace_id and
-              membership.user_id == ^user_id,
-          where: message.id in ^message_ids,
-          select: count(message.id)
-      )
+    with {:ok, message_ids} <- Identifier.cast_all(message_ids) do
+      accessible_message_count =
+        Repo.one(
+          from message in Message,
+            join: channel in Channel,
+            on: channel.id == message.channel_id,
+            join: membership in WorkspaceMembership,
+            on:
+              membership.workspace_id == channel.workspace_id and
+                membership.user_id == ^user_id,
+            where: message.id in type(^message_ids, {:array, :binary_id}),
+            select: count(message.id)
+        )
 
-    if accessible_message_count == length(message_ids) do
-      :ok
+      if accessible_message_count == length(message_ids), do: :ok, else: {:error, :not_found}
     else
-      {:error, :not_found}
+      :error -> {:error, :not_found}
     end
   end
 
@@ -792,13 +796,17 @@ defmodule DiscordClone.Chat do
   defp reject_deleted_message(%Message{}), do: :ok
 
   defp authorize_workspace_member(workspace_id, user_id) do
-    if Repo.exists?(
-         from membership in WorkspaceMembership,
-           where: membership.workspace_id == ^workspace_id and membership.user_id == ^user_id
-       ) do
-      :ok
+    with {:ok, workspace_id} <- Identifier.cast(workspace_id) do
+      if Repo.exists?(
+           from membership in WorkspaceMembership,
+             where: membership.workspace_id == ^workspace_id and membership.user_id == ^user_id
+         ) do
+        :ok
+      else
+        {:error, :not_found}
+      end
     else
-      {:error, :not_found}
+      :error -> {:error, :not_found}
     end
   end
 

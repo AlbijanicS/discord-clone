@@ -8,7 +8,7 @@ defmodule DiscordClone.Chat.RuntimeTest do
 
   describe "workspace presence runtime supervision" do
     test "starts and finds a workspace presence runtime by durable workspace ID" do
-      workspace_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
 
       assert {:ok, pid} = Runtime.ensure_workspace_presence(workspace_id)
       assert Runtime.online_user_ids(workspace_id) == []
@@ -16,7 +16,7 @@ defmodule DiscordClone.Chat.RuntimeTest do
     end
 
     test "starting the same workspace runtime twice returns the active process" do
-      workspace_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
 
       assert {:ok, first_pid} = Runtime.ensure_workspace_presence(workspace_id)
       assert {:ok, second_pid} = Runtime.ensure_workspace_presence(workspace_id)
@@ -26,15 +26,15 @@ defmodule DiscordClone.Chat.RuntimeTest do
     end
 
     test "runtime online user listing does not start an absent workspace runtime" do
-      workspace_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
 
       assert Runtime.online_user_ids(workspace_id) == []
       assert Runtime.workspace_presence_pid(workspace_id) == nil
     end
 
     test "facade recovers workspace presence after runtime loss" do
-      workspace_id = System.unique_integer([:positive])
-      user_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
       assert {:ok, pid} = Runtime.ensure_workspace_presence(workspace_id)
 
       ref = Process.monitor(pid)
@@ -49,8 +49,8 @@ defmodule DiscordClone.Chat.RuntimeTest do
 
   describe "workspace presence connections" do
     test "joining presence for a user and pid records that user as online" do
-      workspace_id = System.unique_integer([:positive])
-      user_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
       live_view_pid = self()
 
       assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, live_view_pid)
@@ -58,8 +58,8 @@ defmodule DiscordClone.Chat.RuntimeTest do
     end
 
     test "joining presence for the same user and same pid is idempotent" do
-      workspace_id = System.unique_integer([:positive])
-      user_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
       live_view_pid = self()
 
       assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, live_view_pid)
@@ -69,8 +69,8 @@ defmodule DiscordClone.Chat.RuntimeTest do
     end
 
     test "joining presence for the same user from multiple pids keeps one online user id" do
-      workspace_id = System.unique_integer([:positive])
-      user_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
       first_live_view_pid = self()
       second_live_view_pid = start_live_view_process()
 
@@ -81,9 +81,9 @@ defmodule DiscordClone.Chat.RuntimeTest do
     end
 
     test "joining presence for different users tracks each user independently" do
-      workspace_id = System.unique_integer([:positive])
-      first_user_id = System.unique_integer([:positive])
-      second_user_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
+      first_user_id = Ecto.UUID.generate()
+      second_user_id = Ecto.UUID.generate()
       first_live_view_pid = self()
       second_live_view_pid = start_live_view_process()
 
@@ -98,8 +98,8 @@ defmodule DiscordClone.Chat.RuntimeTest do
     end
 
     test "when the last pid for a user exits the user is removed from online state" do
-      workspace_id = System.unique_integer([:positive])
-      user_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
       live_view_pid = start_live_view_process()
 
       assert :ok = Runtime.subscribe_workspace_presence(workspace_id)
@@ -119,8 +119,8 @@ defmodule DiscordClone.Chat.RuntimeTest do
     end
 
     test "when one of several pids for a user exits the user remains online" do
-      workspace_id = System.unique_integer([:positive])
-      user_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
       first_live_view_pid = start_live_view_process()
       second_live_view_pid = start_live_view_process()
 
@@ -139,8 +139,8 @@ defmodule DiscordClone.Chat.RuntimeTest do
     end
 
     test "listing online user ids does not change runtime state" do
-      workspace_id = System.unique_integer([:positive])
-      user_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
       live_view_pid = self()
 
       assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, live_view_pid)
@@ -152,8 +152,8 @@ defmodule DiscordClone.Chat.RuntimeTest do
 
   describe "workspace presence broadcasts" do
     test "presence event builders expose the public event contract" do
-      workspace_id = System.unique_integer([:positive])
-      user_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
 
       assert PresenceEvents.user_joined_event(workspace_id, user_id) ==
                {:workspace_user_joined, %{workspace_id: workspace_id, user_id: user_id}}
@@ -171,8 +171,8 @@ defmodule DiscordClone.Chat.RuntimeTest do
     end
 
     test "first connection for a user broadcasts that workspace user joined" do
-      workspace_id = System.unique_integer([:positive])
-      user_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
       live_view_pid = self()
 
       assert :ok = Runtime.subscribe_workspace_presence(workspace_id)
@@ -187,8 +187,8 @@ defmodule DiscordClone.Chat.RuntimeTest do
     end
 
     test "duplicate connection for an already-online user does not broadcast another joined event" do
-      workspace_id = System.unique_integer([:positive])
-      user_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
       live_view_pid = self()
 
       assert :ok = Runtime.subscribe_workspace_presence(workspace_id)
@@ -201,8 +201,8 @@ defmodule DiscordClone.Chat.RuntimeTest do
     end
 
     test "additional connection for an already-online user does not broadcast another joined event" do
-      workspace_id = System.unique_integer([:positive])
-      user_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
       first_live_view_pid = self()
       second_live_view_pid = start_live_view_process()
 
@@ -216,8 +216,8 @@ defmodule DiscordClone.Chat.RuntimeTest do
     end
 
     test "last disconnect for a user broadcasts that workspace user left" do
-      workspace_id = System.unique_integer([:positive])
-      user_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
       live_view_pid = start_live_view_process()
 
       assert :ok = Runtime.subscribe_workspace_presence(workspace_id)
@@ -239,8 +239,8 @@ defmodule DiscordClone.Chat.RuntimeTest do
     end
 
     test "non-last disconnect for a user does not broadcast that workspace user left" do
-      workspace_id = System.unique_integer([:positive])
-      user_id = System.unique_integer([:positive])
+      workspace_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
       first_live_view_pid = start_live_view_process()
       second_live_view_pid = start_live_view_process()
 
@@ -262,7 +262,7 @@ defmodule DiscordClone.Chat.RuntimeTest do
 
   defp start_live_view_process do
     start_supervised!(%{
-      id: System.unique_integer([:positive]),
+      id: Ecto.UUID.generate(),
       start:
         {Task, :start_link,
          [

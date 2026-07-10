@@ -204,7 +204,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
   def handle_event("open_workspace_actions", %{"workspace_id" => workspace_id}, socket) do
     {:noreply,
      socket
-     |> assign(:workspace_action_menu_id, String.to_integer(workspace_id))
+     |> assign(:workspace_action_menu_id, workspace_id)
      |> assign(:context_menu_position, nil)}
   end
 

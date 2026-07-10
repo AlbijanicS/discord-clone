@@ -1990,10 +1990,16 @@ defmodule DiscordClone.WorkspacesTest do
 
   describe "change_channel/2" do
     test "returns a channel changeset for form usage" do
-      changeset = Workspaces.change_channel(123, %{"name" => "Main Room", "workspace_id" => 456})
+      workspace_id = Ecto.UUID.generate()
+
+      changeset =
+        Workspaces.change_channel(workspace_id, %{
+          "name" => "Main Room",
+          "workspace_id" => Ecto.UUID.generate()
+        })
 
       assert %Ecto.Changeset{} = changeset
-      assert Ecto.Changeset.get_field(changeset, :workspace_id) == 123
+      assert Ecto.Changeset.get_field(changeset, :workspace_id) == workspace_id
       assert Ecto.Changeset.get_change(changeset, :name) == "main-room"
     end
   end
@@ -2996,6 +3002,8 @@ defmodule DiscordClone.WorkspacesTest do
   end
 
   defp insert_message!(channel_id, user_id, content, inserted_at) do
+    inserted_at = %{inserted_at | microsecond: {elem(inserted_at.microsecond, 0), 6}}
+
     {:ok, message} =
       Repo.transaction(fn ->
         channel =

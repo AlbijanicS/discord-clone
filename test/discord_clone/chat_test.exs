@@ -536,7 +536,7 @@ defmodule DiscordClone.ChatTest do
 
       read_rows =
         Repo.all(
-          from read in "channel_reads",
+          from read in ChannelRead,
             where: read.user_id == ^member_scope.user.id,
             select: {read.channel_id, read.last_read_message_id}
         )
@@ -1086,7 +1086,7 @@ defmodule DiscordClone.ChatTest do
 
       add_workspace_member!(workspace, other_scope)
 
-      release_message =
+      _release_message =
         insert_message!(
           release_channel.id,
           other_scope.user.id,
@@ -1101,8 +1101,6 @@ defmodule DiscordClone.ChatTest do
           "later general update",
           ~U[2026-06-19 10:01:00Z]
         )
-
-      assert later_general_message.id > release_message.id
 
       put_channel_read!(release_channel.id, scope.user.id, later_general_message.id)
 
@@ -3478,6 +3476,8 @@ defmodule DiscordClone.ChatTest do
   end
 
   defp insert_message!(channel_id, user_id, content, inserted_at) do
+    inserted_at = %{inserted_at | microsecond: {elem(inserted_at.microsecond, 0), 6}}
+
     {:ok, message} =
       Repo.transaction(fn ->
         channel =

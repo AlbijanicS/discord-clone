@@ -10,6 +10,9 @@ defmodule DiscordClone.Chat.ChannelUnreadSpan do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @primary_key {:id, :binary_id, autogenerate: true}
+  @foreign_key_type :binary_id
+
   schema "channel_unread_spans" do
     field :from_seq, :integer
     field :to_seq, :integer
@@ -17,7 +20,7 @@ defmodule DiscordClone.Chat.ChannelUnreadSpan do
     belongs_to :channel, DiscordClone.Workspaces.Channel
     belongs_to :user, DiscordClone.Accounts.User
 
-    timestamps(type: :utc_datetime)
+    timestamps(type: :utc_datetime_usec)
   end
 
   def changeset(unread_span, attrs) do

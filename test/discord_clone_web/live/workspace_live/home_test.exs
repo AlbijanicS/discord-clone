@@ -109,7 +109,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
         |> form("#workspace-create-form", workspace: %{name: "Launch Room"})
         |> render_submit()
 
-      assert path =~ ~r|^/workspaces/\d+$|
+      assert path =~ ~r|^/workspaces/[0-9a-f-]{36}$|
     end
   end
 
@@ -2122,7 +2122,12 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert has_element?(view, "#message-#{message.id}")
       assert has_element?(view, "#message-#{message.id}-author", scope.user.username)
-      assert has_element?(view, "#message-#{message.id} time[datetime='2026-06-19T10:30:00Z']")
+
+      assert has_element?(
+               view,
+               "#message-#{message.id} time[datetime='2026-06-19T10:30:00.000000Z']"
+             )
+
       assert has_element?(view, "#message-#{message.id}-content", message.content)
     end
 
@@ -2598,7 +2603,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
         live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
 
       render_click(view, "toggle_reaction", %{
-        "message-id" => Integer.to_string(message.id),
+        "message-id" => "not-a-uuid",
         "emoji" => "👍❤️"
       })
 
@@ -2638,7 +2643,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert has_element?(
                view,
-               "#message-#{message.id}-timestamp[datetime='2026-06-19T10:30:00Z']"
+               "#message-#{message.id}-timestamp[datetime='2026-06-19T10:30:00.000000Z']"
              )
 
       content_text =
@@ -2800,7 +2805,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert has_element?(
                view,
-               "#message-#{second_message.id}-timestamp[datetime='2026-06-19T10:36:00Z']"
+               "#message-#{second_message.id}-timestamp[datetime='2026-06-19T10:36:00.000000Z']"
              )
     end
 
@@ -2963,7 +2968,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       sent_message =
         Message
-        |> order_by([message], desc: message.id)
+        |> order_by([message], desc: message.seq)
         |> limit(1)
         |> Repo.one!()
 
@@ -3076,7 +3081,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       message =
         Message
-        |> order_by([message], desc: message.id)
+        |> order_by([message], desc: message.seq)
         |> limit(1)
         |> Repo.one!()
 
@@ -3127,7 +3132,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       message =
         Message
-        |> order_by([message], desc: message.id)
+        |> order_by([message], desc: message.seq)
         |> limit(1)
         |> Repo.one!()
 
@@ -3174,7 +3179,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       message =
         Message
-        |> order_by([message], desc: message.id)
+        |> order_by([message], desc: message.seq)
         |> limit(1)
         |> Repo.one!()
 
@@ -3215,7 +3220,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       message =
         Message
-        |> order_by([message], desc: message.id)
+        |> order_by([message], desc: message.seq)
         |> limit(1)
         |> Repo.one!()
 
@@ -3259,7 +3264,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       message =
         Message
-        |> order_by([message], desc: message.id)
+        |> order_by([message], desc: message.seq)
         |> limit(1)
         |> Repo.one!()
 
@@ -4056,7 +4061,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
         |> render_submit()
 
       assert %{path: expected_path} = URI.parse(path)
-      assert expected_path =~ ~r|^/workspaces/#{workspace.id}/channels/\d+$|
+      assert expected_path =~ ~r|^/workspaces/#{workspace.id}/channels/[0-9a-f-]{36}$|
 
       refute expected_path ==
                ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
@@ -5649,7 +5654,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       second_invite =
         WorkspaceInvite
-        |> order_by([invite], desc: invite.id)
+        |> order_by([invite], desc: invite.inserted_at, desc: invite.id)
         |> limit(1)
         |> Repo.one!()
 
@@ -6175,6 +6180,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
   end
 
   defp insert_message!(channel_id, user_id, content, inserted_at) do
+    inserted_at = %{inserted_at | microsecond: {elem(inserted_at.microsecond, 0), 6}}
+
     {:ok, message} =
       Repo.transaction(fn ->
         channel =

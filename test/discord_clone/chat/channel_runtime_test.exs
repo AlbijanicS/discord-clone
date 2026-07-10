@@ -9,7 +9,7 @@ defmodule DiscordClone.Chat.ChannelRuntimeTest do
 
   describe "channel runtime supervision" do
     test "starts and finds a channel runtime by durable channel ID" do
-      channel_id = System.unique_integer([:positive])
+      channel_id = Ecto.UUID.generate()
 
       assert {:ok, pid} = Runtime.ensure_channel(channel_id)
 
@@ -121,6 +121,8 @@ defmodule DiscordClone.Chat.ChannelRuntimeTest do
   end
 
   defp insert_message!(channel_id, user_id, content, inserted_at) do
+    inserted_at = %{inserted_at | microsecond: {elem(inserted_at.microsecond, 0), 6}}
+
     {:ok, message} =
       Repo.transaction(fn ->
         channel =

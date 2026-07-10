@@ -79,7 +79,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
   def handle_event("open_workspace_actions", %{"workspace_id" => workspace_id}, socket) do
     {:noreply,
      socket
-     |> assign(:workspace_action_menu_id, String.to_integer(workspace_id))
+     |> assign(:workspace_action_menu_id, workspace_id)
      |> assign(:context_menu_position, nil)}
   end
 
@@ -90,8 +90,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
       ) do
     {:noreply,
      socket
-     |> assign(:workspace_action_menu_id, to_integer(workspace_id))
-     |> assign(:context_menu_position, %{x: to_integer(x), y: to_integer(y)})}
+     |> assign(:workspace_action_menu_id, workspace_id)
+     |> assign(:context_menu_position, %{x: coordinate_integer(x), y: coordinate_integer(y)})}
   end
 
   def handle_event("close_context_menu", _params, socket) do
@@ -154,7 +154,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
       {:error, :invalid_workspace, changeset} ->
         {:noreply,
          socket
-         |> assign(:renaming_workspace_id, String.to_integer(workspace_id))
+         |> assign(:renaming_workspace_id, workspace_id)
          |> assign(:workspace_rename_form, to_form(changeset, as: :workspace, action: :insert))
          |> assign(:workspace_action_menu_id, nil)
          |> restream_workspaces()}
@@ -247,6 +247,6 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
     stream(socket, :workspaces, workspaces, reset: true)
   end
 
-  defp to_integer(value) when is_integer(value), do: value
-  defp to_integer(value) when is_binary(value), do: String.to_integer(value)
+  defp coordinate_integer(value) when is_integer(value), do: value
+  defp coordinate_integer(value) when is_binary(value), do: String.to_integer(value)
 end

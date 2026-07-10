@@ -2,6 +2,9 @@ defmodule DiscordClone.Workspaces.WorkspaceModeration do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @primary_key {:id, :binary_id, autogenerate: true}
+  @foreign_key_type :binary_id
+
   @types ~w(mute timeout)
 
   schema "workspace_moderations" do
@@ -16,7 +19,7 @@ defmodule DiscordClone.Workspaces.WorkspaceModeration do
     belongs_to :created_by_user, DiscordClone.Accounts.User
     belongs_to :ended_by_user, DiscordClone.Accounts.User
 
-    timestamps(type: :utc_datetime)
+    timestamps(type: :utc_datetime_usec)
   end
 
   def create_changeset(moderation, attrs) do
