@@ -563,6 +563,96 @@ defmodule DiscordClone.WorkspacesTest do
     end
   end
 
+  # Regression tests for two latent risks flagged before the moderation/role
+  # refactors (issue 05). They pin current behavior at the Workspaces public-API
+  # seam so the refactors cannot silently change it.
+  describe "latent-bug regression tests" do
+    # Every Role transition the context permits must generate an audit
+    # event_type that WorkspaceAuditEvent's allow-list accepts, so an
+    # out-of-list type can never roll back the whole role-change transaction.
+    #
+    # The {:ok, _} return is itself the allow-list proof: an out-of-list
+    # event_type would fail validate_inclusion and yield
+    # {:error, :invalid_audit_event, _}. On top of that we pin the exact
+    # event_type each transition must record — a stronger check than mere
+    # allow-list membership, since success alone doesn't say *which* type was
+    # logged. member <-> admin are exactly the transitions Workspaces permits
+    # (authorize_role_transition/2); every other transition is rejected before
+    # an audit event is ever built.
+    test "every supported role transition records its expected allowed event type" do
+      expected_event_types = %{
+        {"member", "admin"} => "member_role_promoted",
+        {"admin", "member"} => "member_role_demoted"
+      }
+
+      for {{from_role, to_role}, expected_event_type} <- expected_event_types do
+        owner_scope = user_scope_fixture()
+        target_scope = user_scope_fixture()
+        {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Role Workspace"})
+        add_workspace_member!(workspace, target_scope, from_role)
+
+        assert {:ok, membership} =
+                 Workspaces.change_member_role(
+                   owner_scope,
+                   workspace.id,
+                   target_scope.user.id,
+                   to_role
+                 )
+
+        assert membership.role == to_role
+
+        assert {:ok, [audit_event]} = Workspaces.list_audit_events(owner_scope, workspace.id)
+        assert audit_event.event_type == expected_event_type
+      end
+    end
+
+    # The uniqueness index on (workspace_id, target_user_id, type) is partial
+    # (WHERE active), so once a mute has ended it no longer blocks a fresh mute.
+    # Intended behavior: re-muting after an ended mute is ALLOWED and creates a
+    # new active moderation alongside the ended one.
+    test "muting again after a previous mute has ended is allowed" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Mute Workspace"})
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert {:ok, first_mute} =
+               Workspaces.mute_member(owner_scope, workspace.id, member_scope.user.id, %{})
+
+      assert {:ok, ended_mute} =
+               Workspaces.unmute_member(owner_scope, workspace.id, member_scope.user.id)
+
+      refute ended_mute.active?
+
+      # Second mute after the first has ended: a brand-new active moderation.
+      assert {:ok, second_mute} =
+               Workspaces.mute_member(owner_scope, workspace.id, member_scope.user.id, %{})
+
+      assert second_mute.active?
+      assert second_mute.id != first_mute.id
+
+      assert {:ok, %{muted?: true}} =
+               Workspaces.member_moderation_state(
+                 member_scope,
+                 workspace.id,
+                 member_scope.user.id
+               )
+
+      # Both the ended and the new active mute rows coexist in Postgres.
+      mutes =
+        Repo.all(
+          from moderation in WorkspaceModeration,
+            where:
+              moderation.workspace_id == ^workspace.id and
+                moderation.target_user_id == ^member_scope.user.id and
+                moderation.type == "mute"
+        )
+
+      assert length(mutes) == 2
+      assert Enum.count(mutes, & &1.active?) == 1
+    end
+  end
+
   describe "workspace-wide timeout workflow" do
     test "owners can timeout members with a fixed duration preset and audit event" do
       owner_scope = user_scope_fixture()
