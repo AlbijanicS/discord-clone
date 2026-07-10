@@ -16,6 +16,7 @@ defmodule DiscordClone.Chat do
     Emoji,
     Message,
     MessageReaction,
+    MessageWindow,
     Runtime,
     Unread
   }
@@ -24,6 +25,7 @@ defmodule DiscordClone.Chat do
 
   alias DiscordClone.Workspaces.{
     Channel,
+    Roles,
     WorkspaceAuditEvent,
     WorkspaceMembership,
     WorkspaceModeration
@@ -169,7 +171,7 @@ defmodule DiscordClone.Chat do
       |> Repo.update!()
 
       {:ok,
-       load_message_window_for_channel(
+       MessageWindow.load_for_channel(
          channel,
          max(1, channel.last_message_seq - @message_page_size + 1),
          channel.last_message_seq
@@ -338,7 +340,7 @@ defmodule DiscordClone.Chat do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
       latest_seq = channel.last_message_seq
       oldest_requested_seq = max(1, latest_seq - @message_page_size + 1)
-      {:ok, load_message_window_for_channel(channel, oldest_requested_seq, latest_seq)}
+      {:ok, MessageWindow.load_for_channel(channel, oldest_requested_seq, latest_seq)}
     else
       nil -> {:error, :not_found}
     end
@@ -349,7 +351,7 @@ defmodule DiscordClone.Chat do
   def load_message_window_around(%Scope{user: %User{id: user_id}}, channel_id, target_seq)
       when is_integer(target_seq) do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
-      {:ok, load_message_window_around_channel(channel, target_seq)}
+      {:ok, MessageWindow.load_around_channel(channel, target_seq)}
     else
       nil -> {:error, :not_found}
     end
@@ -366,7 +368,7 @@ defmodule DiscordClone.Chat do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
       to_seq = min(channel.last_message_seq, before_seq - 1)
       from_seq = max(1, to_seq - @message_page_size + 1)
-      {:ok, load_message_window_for_channel(channel, from_seq, to_seq)}
+      {:ok, MessageWindow.load_for_channel(channel, from_seq, to_seq)}
     else
       nil -> {:error, :not_found}
     end
@@ -383,7 +385,7 @@ defmodule DiscordClone.Chat do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
       from_seq = max(1, after_seq + 1)
       to_seq = min(channel.last_message_seq, from_seq + @message_page_size - 1)
-      {:ok, load_message_window_for_channel(channel, from_seq, to_seq)}
+      {:ok, MessageWindow.load_for_channel(channel, from_seq, to_seq)}
     else
       nil -> {:error, :not_found}
     end
@@ -712,15 +714,11 @@ defmodule DiscordClone.Chat do
     end
   end
 
-  # Single source of truth for the moderation delete rule: an actor with an
-  # owner/admin role may delete a message authored by an admin/member. Deleting
-  # one's own message is not a moderation decision — it is handled by the
-  # author clause of `authorize_delete_message/2` and `can_delete_message?/3`.
-  defp deletable?(actor_role, author_role)
-       when actor_role in ["owner", "admin"] and author_role in ["admin", "member"],
-       do: true
-
-  defp deletable?(_actor_role, _author_role), do: false
+  # The moderation delete rule: an actor with an owner/admin role may delete a
+  # message authored by an admin/member. Deleting one's own message is not a
+  # moderation decision — it is handled by the author clause of
+  # `authorize_delete_message/2` and `can_delete_message?/3`.
+  defp deletable?(actor_role, author_role), do: Roles.can_moderate?(actor_role, author_role)
 
   defp role_of_membership(%{role: role}), do: role
   defp role_of_membership(_no_membership), do: nil
@@ -806,70 +804,6 @@ defmodule DiscordClone.Chat do
       end
     end)
   end
-
-  defp messages_between_sequences(channel_id, from_seq, to_seq) do
-    Message
-    |> where([message], message.channel_id == ^channel_id)
-    |> where([message], message.seq >= ^from_seq and message.seq <= ^to_seq)
-    |> order_by([message], asc: message.seq)
-    |> preload(:user)
-  end
-
-  defp load_message_window_for_channel(%Channel{} = channel, from_seq, to_seq) do
-    messages =
-      channel.id
-      |> messages_between_sequences(from_seq, to_seq)
-      |> Repo.all()
-
-    message_window(messages, channel.last_message_seq)
-  end
-
-  defp load_message_window_around_channel(%Channel{} = channel, target_seq) do
-    from_seq = max(1, target_seq - 15)
-    to_seq = min(channel.last_message_seq, target_seq + 35)
-    load_message_window_for_channel(channel, from_seq, to_seq)
-  end
-
-  defp message_window(messages, latest_seq) do
-    oldest_seq = messages |> List.first() |> message_seq()
-    newest_seq = messages |> List.last() |> message_seq()
-
-    %{
-      messages: messages,
-      meta: %{
-        oldest_seq: oldest_seq,
-        newest_seq: newest_seq,
-        latest_seq: latest_seq,
-        has_older?: older_history?(oldest_seq),
-        has_newer?: newer_history?(newest_seq, latest_seq),
-        at_latest?: at_latest?(newest_seq, latest_seq),
-        at_or_near_latest?: at_or_near_latest?(newest_seq, latest_seq)
-      }
-    }
-  end
-
-  defp message_seq(%Message{seq: seq}), do: seq
-  defp message_seq(nil), do: nil
-
-  defp older_history?(oldest_seq) when is_integer(oldest_seq), do: oldest_seq > 1
-  defp older_history?(nil), do: false
-
-  defp newer_history?(newest_seq, latest_seq) when is_integer(newest_seq),
-    do: newest_seq < latest_seq
-
-  defp newer_history?(nil, latest_seq), do: latest_seq > 0
-
-  defp at_latest?(newest_seq, latest_seq) when is_integer(newest_seq),
-    do: newest_seq == latest_seq
-
-  defp at_latest?(nil, 0), do: true
-  defp at_latest?(nil, _latest_seq), do: false
-
-  defp at_or_near_latest?(newest_seq, latest_seq) when is_integer(newest_seq),
-    do: latest_seq - newest_seq <= @message_page_size
-
-  defp at_or_near_latest?(nil, 0), do: true
-  defp at_or_near_latest?(nil, _latest_seq), do: false
 
   defp lock_channel_for_update!(channel_id) do
     Repo.one!(

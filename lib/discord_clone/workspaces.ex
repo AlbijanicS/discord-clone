@@ -19,6 +19,7 @@ defmodule DiscordClone.Workspaces do
 
   alias DiscordClone.Workspaces.{
     Channel,
+    Roles,
     Workspace,
     WorkspaceAuditEvent,
     WorkspaceBan,
@@ -27,9 +28,6 @@ defmodule DiscordClone.Workspaces do
     WorkspaceMembership
   }
 
-  @owner_role "owner"
-  @admin_role "admin"
-  @member_role "member"
   @mute_type "mute"
   @timeout_type "timeout"
   @timeout_duration_presets %{
@@ -208,7 +206,7 @@ defmodule DiscordClone.Workspaces do
     WorkspaceMembership.changeset(%WorkspaceMembership{}, %{
       workspace_id: workspace_id,
       user_id: user_id,
-      role: @owner_role
+      role: Roles.owner()
     })
   end
 
@@ -282,52 +280,52 @@ defmodule DiscordClone.Workspaces do
   def create_workspace_invite(_scope, _workspace_id, _attrs), do: {:error, :unauthenticated}
 
   def can_rename_workspace?(%Scope{} = scope, %Workspace{} = workspace),
-    do: has_workspace_role?(scope, workspace, [@owner_role])
+    do: has_workspace_role?(scope, workspace, [Roles.owner()])
 
   def can_rename_workspace?(_scope, _workspace), do: false
 
   def can_delete_workspace?(%Scope{} = scope, %Workspace{} = workspace),
-    do: has_workspace_role?(scope, workspace, [@owner_role])
+    do: has_workspace_role?(scope, workspace, [Roles.owner()])
 
   def can_delete_workspace?(_scope, _workspace), do: false
 
   def can_create_channel?(%Scope{} = scope, %Workspace{} = workspace),
-    do: has_workspace_role?(scope, workspace, [@owner_role, @admin_role])
+    do: has_workspace_role?(scope, workspace, [Roles.owner(), Roles.admin()])
 
   def can_create_channel?(_scope, _workspace), do: false
 
   def can_rename_channel?(%Scope{} = scope, %Workspace{} = workspace),
-    do: has_workspace_role?(scope, workspace, [@owner_role, @admin_role])
+    do: has_workspace_role?(scope, workspace, [Roles.owner(), Roles.admin()])
 
   def can_rename_channel?(_scope, _workspace), do: false
 
   def can_delete_channel?(%Scope{} = scope, %Workspace{} = workspace),
-    do: has_workspace_role?(scope, workspace, [@owner_role])
+    do: has_workspace_role?(scope, workspace, [Roles.owner()])
 
   def can_delete_channel?(_scope, _workspace), do: false
 
   def can_create_workspace_invite?(%Scope{} = scope, %Workspace{} = workspace),
-    do: has_workspace_role?(scope, workspace, [@owner_role, @admin_role])
+    do: has_workspace_role?(scope, workspace, [Roles.owner(), Roles.admin()])
 
   def can_create_workspace_invite?(_scope, _workspace), do: false
 
   def can_view_audit_log?(%Scope{} = scope, %Workspace{} = workspace),
-    do: has_workspace_role?(scope, workspace, [@owner_role])
+    do: has_workspace_role?(scope, workspace, [Roles.owner()])
 
   def can_view_audit_log?(_scope, _workspace), do: false
 
   def can_manage_roles?(%Scope{} = scope, %Workspace{} = workspace),
-    do: has_workspace_role?(scope, workspace, [@owner_role])
+    do: has_workspace_role?(scope, workspace, [Roles.owner()])
 
   def can_manage_roles?(_scope, _workspace), do: false
 
   def can_purge_all_workspace_messages?(%Scope{} = scope, %Workspace{} = workspace),
-    do: has_workspace_role?(scope, workspace, [@owner_role])
+    do: has_workspace_role?(scope, workspace, [Roles.owner()])
 
   def can_purge_all_workspace_messages?(_scope, _workspace), do: false
 
   def can_unban_member?(%Scope{} = scope, %Workspace{} = workspace),
-    do: has_workspace_role?(scope, workspace, [@owner_role])
+    do: has_workspace_role?(scope, workspace, [Roles.owner()])
 
   def can_unban_member?(_scope, _workspace), do: false
 
@@ -344,11 +342,13 @@ defmodule DiscordClone.Workspaces do
         %Workspace{id: workspace_id} = workspace,
         %WorkspaceMembership{workspace_id: workspace_id} = target_membership
       ) do
+    actor_role = workspace_role(scope, workspace)
+
     actions =
-      case workspace_role(scope, workspace) do
-        @owner_role -> owner_member_actions(target_membership)
-        @admin_role -> admin_member_actions(target_membership)
-        _role -> []
+      cond do
+        Roles.owner?(actor_role) -> owner_member_actions(target_membership)
+        Roles.admin?(actor_role) -> admin_member_actions(target_membership)
+        true -> []
       end
 
     actions
@@ -891,7 +891,7 @@ defmodule DiscordClone.Workspaces do
     |> WorkspaceMembership.changeset(%{
       workspace_id: workspace_id,
       user_id: user_id,
-      role: @member_role
+      role: Roles.member()
     })
     |> repo.insert()
     |> case do
@@ -1148,9 +1148,74 @@ defmodule DiscordClone.Workspaces do
        do: :ok
 
   defp authorize_view_member_moderation(scope, workspace, _target_membership, _actor_user_id) do
-    if has_workspace_role?(scope, workspace, [@owner_role, @admin_role]),
+    if has_workspace_role?(scope, workspace, [Roles.owner(), Roles.admin()]),
       do: :ok,
       else: {:error, :unauthorized}
+  end
+
+  # Shared transaction-result handling for every moderation flow: run the multi,
+  # fire the flow-specific success side effect on the resulting moderation, and
+  # map the two changeset-error branches uniformly.
+  defp run_moderation_multi(%Multi{} = multi, on_success) do
+    multi
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{moderation: moderation}} ->
+        :ok = on_success.(moderation)
+        {:ok, moderation}
+
+      {:error, :moderation, changeset, _changes_so_far} ->
+        {:error, :invalid_moderation, changeset}
+
+      {:error, :audit_event, changeset, _changes_so_far} ->
+        {:error, :invalid_audit_event, changeset}
+    end
+  end
+
+  # Shared shape for the three "end a moderation" flows (unmute, remove-timeout,
+  # expire): flip the moderation inactive, write the audit event, and run it.
+  # `actor_user_id` is nil for the automatic expiry; `metadata_fun` and
+  # `on_success` carry the per-flow differences.
+  defp end_moderation_with_audit(
+         %WorkspaceModeration{} = moderation,
+         actor_user_id,
+         event_type,
+         metadata_fun,
+         on_success
+       ) do
+    Multi.new()
+    |> Multi.update(
+      :moderation,
+      WorkspaceModeration.end_changeset(moderation, %{
+        active?: false,
+        ended_at: DateTime.utc_now(:second),
+        ended_by_user_id: actor_user_id
+      })
+    )
+    |> Multi.insert(:audit_event, fn %{moderation: ended_moderation} ->
+      WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
+        workspace_id: ended_moderation.workspace_id,
+        actor_user_id: actor_user_id,
+        target_user_id: ended_moderation.target_user_id,
+        event_type: event_type,
+        metadata: metadata_fun.(ended_moderation)
+      })
+    end)
+    |> run_moderation_multi(on_success)
+  end
+
+  defp base_moderation_metadata(%WorkspaceModeration{type: type}),
+    do: %{"moderation_type" => type}
+
+  defp expired_timeout_metadata(%WorkspaceModeration{} = moderation) do
+    %{
+      "moderation_type" => moderation.type,
+      "expires_at" => DateTime.to_iso8601(moderation.expires_at)
+    }
+  end
+
+  defp broadcast_moderation_changed(%WorkspaceModeration{} = moderation) do
+    broadcast_workspace_moderation_changed(moderation.workspace_id, moderation.target_user_id)
   end
 
   defp mute_member_with_audit(
@@ -1181,64 +1246,20 @@ defmodule DiscordClone.Workspaces do
         metadata: %{"moderation_type" => moderation.type}
       })
     end)
-    |> Repo.transaction()
-    |> case do
-      {:ok, %{moderation: moderation}} ->
-        :ok =
-          broadcast_workspace_moderation_changed(
-            moderation.workspace_id,
-            moderation.target_user_id
-          )
-
-        {:ok, moderation}
-
-      {:error, :moderation, changeset, _changes_so_far} ->
-        {:error, :invalid_moderation, changeset}
-
-      {:error, :audit_event, changeset, _changes_so_far} ->
-        {:error, :invalid_audit_event, changeset}
-    end
+    |> run_moderation_multi(&broadcast_moderation_changed/1)
   end
 
   defp unmute_member_with_audit(
          %Scope{user: %User{id: actor_user_id}},
          %WorkspaceModeration{} = moderation
        ) do
-    Multi.new()
-    |> Multi.update(
-      :moderation,
-      WorkspaceModeration.end_changeset(moderation, %{
-        active?: false,
-        ended_at: DateTime.utc_now(:second),
-        ended_by_user_id: actor_user_id
-      })
+    end_moderation_with_audit(
+      moderation,
+      actor_user_id,
+      "member_unmuted",
+      &base_moderation_metadata/1,
+      &broadcast_moderation_changed/1
     )
-    |> Multi.insert(:audit_event, fn %{moderation: ended_moderation} ->
-      WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
-        workspace_id: ended_moderation.workspace_id,
-        actor_user_id: actor_user_id,
-        target_user_id: ended_moderation.target_user_id,
-        event_type: "member_unmuted",
-        metadata: %{"moderation_type" => ended_moderation.type}
-      })
-    end)
-    |> Repo.transaction()
-    |> case do
-      {:ok, %{moderation: moderation}} ->
-        :ok =
-          broadcast_workspace_moderation_changed(
-            moderation.workspace_id,
-            moderation.target_user_id
-          )
-
-        {:ok, moderation}
-
-      {:error, :moderation, changeset, _changes_so_far} ->
-        {:error, :invalid_moderation, changeset}
-
-      {:error, :audit_event, changeset, _changes_so_far} ->
-        {:error, :invalid_audit_event, changeset}
-    end
   end
 
   defp timeout_member_with_audit(
@@ -1276,68 +1297,26 @@ defmodule DiscordClone.Workspaces do
         }
       })
     end)
-    |> Repo.transaction()
-    |> case do
-      {:ok, %{moderation: moderation}} ->
-        :ok = Chat.schedule_workspace_timeout_expiry(moderation)
-
-        :ok =
-          broadcast_workspace_moderation_changed(
-            moderation.workspace_id,
-            moderation.target_user_id
-          )
-
-        {:ok, moderation}
-
-      {:error, :moderation, changeset, _changes_so_far} ->
-        {:error, :invalid_moderation, changeset}
-
-      {:error, :audit_event, changeset, _changes_so_far} ->
-        {:error, :invalid_audit_event, changeset}
-    end
+    |> run_moderation_multi(fn moderation ->
+      :ok = Chat.schedule_workspace_timeout_expiry(moderation)
+      broadcast_moderation_changed(moderation)
+    end)
   end
 
   defp remove_member_timeout_with_audit(
          %Scope{user: %User{id: actor_user_id}},
          %WorkspaceModeration{} = moderation
        ) do
-    Multi.new()
-    |> Multi.update(
-      :moderation,
-      WorkspaceModeration.end_changeset(moderation, %{
-        active?: false,
-        ended_at: DateTime.utc_now(:second),
-        ended_by_user_id: actor_user_id
-      })
+    end_moderation_with_audit(
+      moderation,
+      actor_user_id,
+      "member_timeout_removed",
+      &base_moderation_metadata/1,
+      fn ended_moderation ->
+        :ok = Chat.cancel_workspace_timeout_expiry(ended_moderation)
+        broadcast_moderation_changed(ended_moderation)
+      end
     )
-    |> Multi.insert(:audit_event, fn %{moderation: ended_moderation} ->
-      WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
-        workspace_id: ended_moderation.workspace_id,
-        actor_user_id: actor_user_id,
-        target_user_id: ended_moderation.target_user_id,
-        event_type: "member_timeout_removed",
-        metadata: %{"moderation_type" => ended_moderation.type}
-      })
-    end)
-    |> Repo.transaction()
-    |> case do
-      {:ok, %{moderation: moderation}} ->
-        :ok = Chat.cancel_workspace_timeout_expiry(moderation)
-
-        :ok =
-          broadcast_workspace_moderation_changed(
-            moderation.workspace_id,
-            moderation.target_user_id
-          )
-
-        {:ok, moderation}
-
-      {:error, :moderation, changeset, _changes_so_far} ->
-        {:error, :invalid_moderation, changeset}
-
-      {:error, :audit_event, changeset, _changes_so_far} ->
-        {:error, :invalid_audit_event, changeset}
-    end
   end
 
   defp kick_member_with_audit(
@@ -1571,43 +1550,13 @@ defmodule DiscordClone.Workspaces do
   end
 
   defp expire_member_timeout_with_audit(%WorkspaceModeration{} = moderation) do
-    Multi.new()
-    |> Multi.update(
-      :moderation,
-      WorkspaceModeration.end_changeset(moderation, %{
-        active?: false,
-        ended_at: DateTime.utc_now(:second)
-      })
+    end_moderation_with_audit(
+      moderation,
+      nil,
+      "member_timeout_expired",
+      &expired_timeout_metadata/1,
+      &broadcast_moderation_changed/1
     )
-    |> Multi.insert(:audit_event, fn %{moderation: ended_moderation} ->
-      WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
-        workspace_id: ended_moderation.workspace_id,
-        actor_user_id: nil,
-        target_user_id: ended_moderation.target_user_id,
-        event_type: "member_timeout_expired",
-        metadata: %{
-          "moderation_type" => ended_moderation.type,
-          "expires_at" => DateTime.to_iso8601(ended_moderation.expires_at)
-        }
-      })
-    end)
-    |> Repo.transaction()
-    |> case do
-      {:ok, %{moderation: moderation}} ->
-        :ok =
-          broadcast_workspace_moderation_changed(
-            moderation.workspace_id,
-            moderation.target_user_id
-          )
-
-        {:ok, moderation}
-
-      {:error, :moderation, changeset, _changes_so_far} ->
-        {:error, :invalid_moderation, changeset}
-
-      {:error, :audit_event, changeset, _changes_so_far} ->
-        {:error, :invalid_audit_event, changeset}
-    end
   end
 
   defp timeout_expires_at(duration) do
@@ -1814,11 +1763,13 @@ defmodule DiscordClone.Workspaces do
     end
   end
 
-  defp role_change_event_type("member", "admin"), do: "member_role_promoted"
-  defp role_change_event_type("admin", "member"), do: "member_role_demoted"
-
-  defp role_change_event_type(from_role, to_role),
-    do: "member_role_changed:#{from_role}:#{to_role}"
+  defp role_change_event_type(from_role, to_role) do
+    cond do
+      Roles.member?(from_role) and Roles.admin?(to_role) -> "member_role_promoted"
+      Roles.admin?(from_role) and Roles.member?(to_role) -> "member_role_demoted"
+      true -> "member_role_changed:#{from_role}:#{to_role}"
+    end
+  end
 
   defp create_channel_with_reads(%Workspace{} = workspace, attrs) do
     Multi.new()
@@ -1855,19 +1806,21 @@ defmodule DiscordClone.Workspaces do
 
   defp reject_landing_channel_delete(_workspace, _channel), do: :ok
 
-  defp reject_owner_leave(%WorkspaceMembership{role: @owner_role}),
-    do: {:error, :owner_must_delete}
+  defp reject_owner_leave(%WorkspaceMembership{role: role}) do
+    if Roles.owner?(role), do: {:error, :owner_must_delete}, else: :ok
+  end
 
-  defp reject_owner_leave(_membership), do: :ok
+  defp reject_owner_role_change(%WorkspaceMembership{role: role}) do
+    if Roles.owner?(role), do: {:error, :owner_role_locked}, else: :ok
+  end
 
-  defp reject_owner_role_change(%WorkspaceMembership{role: @owner_role}),
-    do: {:error, :owner_role_locked}
-
-  defp reject_owner_role_change(_membership), do: :ok
-
-  defp authorize_role_transition("member", "admin"), do: :ok
-  defp authorize_role_transition("admin", "member"), do: :ok
-  defp authorize_role_transition(_from_role, _to_role), do: {:error, :unsupported_role_transition}
+  defp authorize_role_transition(from_role, to_role) do
+    cond do
+      Roles.member?(from_role) and Roles.admin?(to_role) -> :ok
+      Roles.admin?(from_role) and Roles.member?(to_role) -> :ok
+      true -> {:error, :unsupported_role_transition}
+    end
+  end
 
   defp has_workspace_role?(%Scope{user: %User{id: user_id}}, %Workspace{id: workspace_id}, roles) do
     case get_workspace_membership(workspace_id, user_id) do
@@ -1885,26 +1838,22 @@ defmodule DiscordClone.Workspaces do
 
   defp workspace_role(_scope, _workspace), do: nil
 
-  defp owner_member_actions(%WorkspaceMembership{role: @owner_role}), do: []
-
-  defp owner_member_actions(%WorkspaceMembership{role: @admin_role}) do
-    [:demote_to_member, :mute, :timeout, :kick, :ban]
-  end
-
-  defp owner_member_actions(%WorkspaceMembership{role: @member_role}) do
-    [:promote_to_admin, :mute, :timeout, :kick, :ban]
+  defp owner_member_actions(%WorkspaceMembership{role: role}) do
+    cond do
+      Roles.admin?(role) -> [:demote_to_member, :mute, :timeout, :kick, :ban]
+      Roles.member?(role) -> [:promote_to_admin, :mute, :timeout, :kick, :ban]
+      true -> []
+    end
   end
 
   defp owner_member_actions(_target_membership), do: []
 
-  defp admin_member_actions(%WorkspaceMembership{role: @owner_role}), do: []
-
-  defp admin_member_actions(%WorkspaceMembership{role: @admin_role}) do
-    [:mute, :timeout]
-  end
-
-  defp admin_member_actions(%WorkspaceMembership{role: @member_role}) do
-    [:mute, :timeout, :kick, :ban]
+  defp admin_member_actions(%WorkspaceMembership{role: role}) do
+    cond do
+      Roles.admin?(role) -> [:mute, :timeout]
+      Roles.member?(role) -> [:mute, :timeout, :kick, :ban]
+      true -> []
+    end
   end
 
   defp admin_member_actions(_target_membership), do: []

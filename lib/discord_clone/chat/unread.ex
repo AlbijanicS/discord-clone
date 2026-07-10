@@ -16,13 +16,12 @@ defmodule DiscordClone.Chat.Unread do
     ChannelReadState,
     ChannelUnreadSpan,
     Message,
+    MessageWindow,
     Unread.Spans
   }
 
   alias DiscordClone.{Repo, UUIDIdentifier}
   alias DiscordClone.Workspaces.{Channel, WorkspaceMembership}
-
-  @message_page_size 50
 
   def initialize_workspace_reads_for_user(user_id, workspace_id) do
     with :ok <- authorize_workspace_member(workspace_id, user_id) do
@@ -49,7 +48,10 @@ defmodule DiscordClone.Chat.Unread do
                  {:error, changeset} -> {:halt, {:error, changeset}}
                end
              end) do
-        insert_zero_unread_read_states(read_rows, user_id)
+        insert_zero_unread_read_states(read_rows, fn %{channel_id: channel_id} ->
+          {channel_id, user_id}
+        end)
+
         :ok
       end
     end
@@ -82,7 +84,9 @@ defmodule DiscordClone.Chat.Unread do
         conflict_target: [:channel_id, :user_id]
       )
 
-      insert_zero_unread_read_states(read_rows)
+      insert_zero_unread_read_states(read_rows, fn %{channel_id: channel_id, user_id: user_id} ->
+        {channel_id, user_id}
+      end)
 
       :ok
     else
@@ -165,7 +169,7 @@ defmodule DiscordClone.Chat.Unread do
          read_state = Repo.get_by!(ChannelReadState, channel_id: channel_id, user_id: user_id),
          true <- read_state.unread_count > 0 do
       first_unread_seq = read_state.first_unread_seq
-      {:ok, load_message_window_around_channel(channel, first_unread_seq)}
+      {:ok, MessageWindow.load_around_channel(channel, first_unread_seq)}
     else
       nil -> {:error, :not_found}
       false -> {:error, :no_unread_messages}
@@ -351,33 +355,17 @@ defmodule DiscordClone.Chat.Unread do
     end
   end
 
-  defp insert_zero_unread_read_states(channel_rows, user_id) do
+  # Single zero-unread Read State insertion path. `to_channel_user` maps each
+  # source row to its `{channel_id, user_id}` pair — the per-invite caller closes
+  # over one shared user_id, the per-member caller reads it from each row — so
+  # both initialization flows share one code path and on-conflict behavior.
+  defp insert_zero_unread_read_states(rows, to_channel_user) do
     now = DateTime.utc_now(:microsecond)
 
     read_state_rows =
-      Enum.map(channel_rows, fn %{channel_id: channel_id} ->
-        %{
-          channel_id: channel_id,
-          user_id: user_id,
-          unread_count: 0,
-          inserted_at: now,
-          updated_at: now
-        }
-      end)
+      Enum.map(rows, fn row ->
+        {channel_id, user_id} = to_channel_user.(row)
 
-    Repo.insert_all(
-      ChannelReadState,
-      read_state_rows,
-      on_conflict: :nothing,
-      conflict_target: [:channel_id, :user_id]
-    )
-  end
-
-  defp insert_zero_unread_read_states(channel_user_rows) do
-    now = DateTime.utc_now(:microsecond)
-
-    read_state_rows =
-      Enum.map(channel_user_rows, fn %{channel_id: channel_id, user_id: user_id} ->
         %{
           channel_id: channel_id,
           user_id: user_id,
@@ -513,70 +501,6 @@ defmodule DiscordClone.Chat.Unread do
         {:ok, channel_read}
     end
   end
-
-  defp messages_between_sequences(channel_id, from_seq, to_seq) do
-    Message
-    |> where([message], message.channel_id == ^channel_id)
-    |> where([message], message.seq >= ^from_seq and message.seq <= ^to_seq)
-    |> order_by([message], asc: message.seq)
-    |> preload(:user)
-  end
-
-  defp load_message_window_for_channel(%Channel{} = channel, from_seq, to_seq) do
-    messages =
-      channel.id
-      |> messages_between_sequences(from_seq, to_seq)
-      |> Repo.all()
-
-    message_window(messages, channel.last_message_seq)
-  end
-
-  defp load_message_window_around_channel(%Channel{} = channel, target_seq) do
-    from_seq = max(1, target_seq - 15)
-    to_seq = min(channel.last_message_seq, target_seq + 35)
-    load_message_window_for_channel(channel, from_seq, to_seq)
-  end
-
-  defp message_window(messages, latest_seq) do
-    oldest_seq = messages |> List.first() |> message_seq()
-    newest_seq = messages |> List.last() |> message_seq()
-
-    %{
-      messages: messages,
-      meta: %{
-        oldest_seq: oldest_seq,
-        newest_seq: newest_seq,
-        latest_seq: latest_seq,
-        has_older?: older_history?(oldest_seq),
-        has_newer?: newer_history?(newest_seq, latest_seq),
-        at_latest?: at_latest?(newest_seq, latest_seq),
-        at_or_near_latest?: at_or_near_latest?(newest_seq, latest_seq)
-      }
-    }
-  end
-
-  defp message_seq(%Message{seq: seq}), do: seq
-  defp message_seq(nil), do: nil
-
-  defp older_history?(oldest_seq) when is_integer(oldest_seq), do: oldest_seq > 1
-  defp older_history?(nil), do: false
-
-  defp newer_history?(newest_seq, latest_seq) when is_integer(newest_seq),
-    do: newest_seq < latest_seq
-
-  defp newer_history?(nil, latest_seq), do: latest_seq > 0
-
-  defp at_latest?(newest_seq, latest_seq) when is_integer(newest_seq),
-    do: newest_seq == latest_seq
-
-  defp at_latest?(nil, 0), do: true
-  defp at_latest?(nil, _latest_seq), do: false
-
-  defp at_or_near_latest?(newest_seq, latest_seq) when is_integer(newest_seq),
-    do: latest_seq - newest_seq <= @message_page_size
-
-  defp at_or_near_latest?(nil, 0), do: true
-  defp at_or_near_latest?(nil, _latest_seq), do: false
 
   defp channel_read_state_topic(user_id, channel_id),
     do: "chat:user:#{user_id}:channel:#{channel_id}:read_state"
