@@ -4,6 +4,8 @@ const resetDelay = 1800
 const ClipboardCopy = {
   mounted() {
     this.originalLabel = this.el.getAttribute("aria-label")
+    this.labelEl = this.el.querySelector("[data-copy-label]")
+    this.originalText = this.labelEl?.textContent
     this.handleClick = () => copyFromTarget(this)
     this.el.addEventListener("click", this.handleClick)
   },
@@ -53,11 +55,17 @@ async function copyText(value, target) {
 function showCopiedFeedback(hook) {
   hook.el.setAttribute("aria-label", copiedLabel)
   hook.el.dataset.copied = "true"
+  if (hook.labelEl) {
+    hook.labelEl.textContent = copiedLabel
+  }
 
   clearTimeout(hook.resetTimer)
 
   hook.resetTimer = setTimeout(() => {
     hook.el.setAttribute("aria-label", hook.originalLabel)
+    if (hook.labelEl) {
+      hook.labelEl.textContent = hook.originalText
+    }
     delete hook.el.dataset.copied
   }, resetDelay)
 }

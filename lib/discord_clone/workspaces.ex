@@ -335,6 +335,14 @@ defmodule DiscordClone.Workspaces do
   def can_unban_member?(_scope, _workspace), do: false
 
   def available_member_actions(
+        %Scope{user: %User{id: actor_user_id}},
+        %Workspace{id: workspace_id},
+        %WorkspaceMembership{workspace_id: workspace_id, user_id: actor_user_id}
+      ) do
+    []
+  end
+
+  def available_member_actions(
         %Scope{} = scope,
         %Workspace{id: workspace_id} = workspace,
         %WorkspaceMembership{workspace_id: workspace_id} = target_membership
@@ -601,6 +609,14 @@ defmodule DiscordClone.Workspaces do
 
   def subscribe_to_workspace_moderation(_scope, _workspace_id), do: {:error, :unauthenticated}
 
+  def subscribe_to_workspace_events(%Scope{user: %User{id: user_id}}, workspace_id) do
+    with :ok <- authorize_view_workspace(workspace_id, user_id) do
+      Phoenix.PubSub.subscribe(DiscordClone.PubSub, workspace_events_topic(workspace_id))
+    end
+  end
+
+  def subscribe_to_workspace_events(_scope, _workspace_id), do: {:error, :unauthenticated}
+
   def preview_workspace_invite(%Scope{user: %User{} = user}, code) when is_binary(code) do
     with {:ok, invite} <- get_invite_by_code(code),
          :ok <- validate_invite_usable(invite),
@@ -645,6 +661,9 @@ defmodule DiscordClone.Workspaces do
                                              membership: membership_result
                                            } ->
       initialize_invite_member_reads(user, invite, membership_result)
+    end)
+    |> Multi.run(:audit_event, fn repo, %{invite: invite, membership: membership_result} ->
+      insert_invite_join_audit(repo, invite, membership_result, user)
     end)
     |> Multi.run(:invite_usage, fn repo, %{invite: invite, membership: membership_result} ->
       update_invite_usage(repo, invite, membership_result)
@@ -894,6 +913,32 @@ defmodule DiscordClone.Workspaces do
     {:ok, :unchanged}
   end
 
+  defp insert_invite_join_audit(
+         repo,
+         %WorkspaceInvite{} = invite,
+         {:new_member, %WorkspaceMembership{} = membership},
+         %User{}
+       ) do
+    %WorkspaceAuditEvent{}
+    |> WorkspaceAuditEvent.changeset(%{
+      workspace_id: invite.workspace_id,
+      actor_user_id: invite.created_by_user_id,
+      target_user_id: membership.user_id,
+      event_type: "member_joined_from_invite",
+      metadata: %{"invite_id" => invite.id}
+    })
+    |> repo.insert()
+  end
+
+  defp insert_invite_join_audit(
+         _repo,
+         %WorkspaceInvite{},
+         {:existing_member, %WorkspaceMembership{}},
+         %User{}
+       ) do
+    {:ok, :unchanged}
+  end
+
   defp already_member?({:existing_member, _membership}), do: true
   defp already_member?({:new_member, _membership}), do: false
 
@@ -902,6 +947,8 @@ defmodule DiscordClone.Workspaces do
          %Scope{} = scope
        ) do
     with {:ok, channel} <- resolve_landing_channel(scope, invite.workspace_id) do
+      :ok = maybe_broadcast_invite_join(scope, invite, membership_result, channel)
+
       {:ok,
        %{
          workspace_id: invite.workspace_id,
@@ -919,6 +966,33 @@ defmodule DiscordClone.Workspaces do
     do: {:error, :invalid_membership, changeset}
 
   defp normalize_accept_invite_error(reason), do: {:error, reason}
+
+  defp maybe_broadcast_invite_join(
+         %Scope{user: %User{id: user_id, username: username}} = scope,
+         %WorkspaceInvite{} = invite,
+         {:new_member, _membership},
+         %Channel{} = channel
+       ) do
+    :ok = Chat.broadcast_workspace_user_joined(invite.workspace_id, user_id)
+    :ok = broadcast_workspace_member_joined(invite.workspace_id, user_id)
+    :ok = broadcast_workspace_audit_changed(invite.workspace_id)
+
+    case Chat.send_message(scope, channel.id, %{
+           "content" => "#{username} joined from an invite."
+         }) do
+      {:ok, _message} -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp maybe_broadcast_invite_join(
+         %Scope{},
+         %WorkspaceInvite{},
+         {:existing_member, _membership},
+         %Channel{}
+       ) do
+    :ok
+  end
 
   defp inviter_username(%WorkspaceInvite{created_by_user: %User{username: username}}),
     do: username
@@ -1283,6 +1357,7 @@ defmodule DiscordClone.Workspaces do
     |> case do
       {:ok, %{membership: membership}} ->
         Enum.each(active_timeouts, &Chat.cancel_workspace_timeout_expiry/1)
+        :ok = broadcast_workspace_audit_changed(workspace.id)
         :ok = broadcast_workspace_access_revoked(workspace.id, target_user_id)
         {:ok, membership}
 
@@ -1345,6 +1420,7 @@ defmodule DiscordClone.Workspaces do
       {:ok, %{ban: ban, message_cleanup: cleaned_messages}} ->
         Enum.each(active_timeouts, &Chat.cancel_workspace_timeout_expiry/1)
         :ok = Chat.broadcast_cleaned_messages(cleaned_messages)
+        :ok = broadcast_workspace_audit_changed(workspace.id)
         :ok = broadcast_workspace_access_revoked(workspace.id, target_user_id)
         {:ok, ban}
 
@@ -1385,6 +1461,7 @@ defmodule DiscordClone.Workspaces do
     |> Repo.transaction()
     |> case do
       {:ok, %{unban: unban}} ->
+        :ok = broadcast_workspace_audit_changed(workspace.id)
         {:ok, unban}
 
       {:error, :audit_event, changeset, _changes_so_far} ->
@@ -1623,6 +1700,8 @@ defmodule DiscordClone.Workspaces do
       {:workspace_moderation_changed,
        %{workspace_id: workspace_id, target_user_id: target_user_id}}
     )
+
+    :ok = broadcast_workspace_audit_changed(workspace_id)
   end
 
   defp broadcast_workspace_access_revoked(workspace_id, target_user_id) do
@@ -1634,6 +1713,32 @@ defmodule DiscordClone.Workspaces do
   end
 
   defp workspace_moderation_topic(workspace_id), do: "workspaces:#{workspace_id}:moderation"
+
+  defp broadcast_workspace_member_joined(workspace_id, user_id) do
+    Phoenix.PubSub.broadcast(
+      DiscordClone.PubSub,
+      workspace_events_topic(workspace_id),
+      {:workspace_member_joined, %{workspace_id: workspace_id, user_id: user_id}}
+    )
+  end
+
+  defp broadcast_workspace_channel_created(workspace_id, channel_id) do
+    Phoenix.PubSub.broadcast(
+      DiscordClone.PubSub,
+      workspace_events_topic(workspace_id),
+      {:workspace_channel_created, %{workspace_id: workspace_id, channel_id: channel_id}}
+    )
+  end
+
+  defp broadcast_workspace_audit_changed(workspace_id) do
+    Phoenix.PubSub.broadcast(
+      DiscordClone.PubSub,
+      workspace_events_topic(workspace_id),
+      {:workspace_audit_changed, %{workspace_id: workspace_id}}
+    )
+  end
+
+  defp workspace_events_topic(workspace_id), do: "workspaces:#{workspace_id}:events"
 
   defp change_member_role_with_audit(
          %Scope{user: %User{id: actor_user_id}},
@@ -1656,6 +1761,7 @@ defmodule DiscordClone.Workspaces do
     |> Repo.transaction()
     |> case do
       {:ok, %{membership: membership}} ->
+        :ok = broadcast_workspace_moderation_changed(membership.workspace_id, membership.user_id)
         {:ok, membership}
 
       {:error, :membership, changeset, _changes_so_far} ->
@@ -1687,6 +1793,7 @@ defmodule DiscordClone.Workspaces do
     |> Repo.transaction()
     |> case do
       {:ok, %{channel: channel}} ->
+        :ok = broadcast_workspace_channel_created(channel.workspace_id, channel.id)
         {:ok, channel}
 
       {:error, :channel, changeset, _changes_so_far} ->

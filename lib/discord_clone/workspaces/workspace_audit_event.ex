@@ -2,7 +2,7 @@ defmodule DiscordClone.Workspaces.WorkspaceAuditEvent do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @event_types ~w(member_role_promoted member_role_demoted member_muted member_unmuted member_timed_out member_timeout_removed member_timeout_expired member_kicked member_banned member_unbanned moderator_message_deleted)
+  @event_types ~w(member_role_promoted member_role_demoted member_muted member_unmuted member_timed_out member_timeout_removed member_timeout_expired member_kicked member_banned member_unbanned member_joined_from_invite moderator_message_deleted)
 
   schema "workspace_audit_events" do
     field :event_type, :string

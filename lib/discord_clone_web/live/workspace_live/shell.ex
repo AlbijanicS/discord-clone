@@ -487,13 +487,21 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                     <button
                       id="workspace-invite-copy"
                       type="button"
-                      class="btn btn-square btn-outline"
+                      class="btn btn-square btn-outline group transition data-[copied=true]:border-success data-[copied=true]:bg-success/10 data-[copied=true]:text-success"
                       aria-label="Copy invite link"
                       phx-hook="ClipboardCopy"
                       phx-update="ignore"
                       data-copy-target="workspace-invite-url"
                     >
-                      <.icon name="hero-clipboard-document" class="size-4" />
+                      <.icon
+                        name="hero-clipboard-document"
+                        class="size-4 group-data-[copied=true]:hidden"
+                      />
+                      <.icon
+                        name="hero-check"
+                        class="hidden size-4 group-data-[copied=true]:block"
+                      />
+                      <span class="sr-only" data-copy-label>Copy invite link</span>
                     </button>
                   </div>
                 </div>
@@ -777,6 +785,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   defp audit_event_title(%{event_type: "member_timeout_expired"}), do: "Timeout expired"
   defp audit_event_title(%{event_type: "member_kicked"}), do: "Member kicked"
   defp audit_event_title(%{event_type: "member_banned"}), do: "Member banned"
+  defp audit_event_title(%{event_type: "member_unbanned"}), do: "Member unbanned"
+  defp audit_event_title(%{event_type: "member_joined_from_invite"}), do: "Member joined"
   defp audit_event_title(%{event_type: "moderator_message_deleted"}), do: "Message deleted"
   defp audit_event_title(event), do: event.event_type
 
@@ -811,6 +821,12 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
 
       "member_banned" ->
         "#{actor} banned #{target}"
+
+      "member_unbanned" ->
+        "#{actor} unbanned #{target}"
+
+      "member_joined_from_invite" ->
+        "#{target} joined from an invite created by #{actor}"
 
       "moderator_message_deleted" ->
         "#{actor} deleted a message by #{target}#{audit_channel_context(event)}"

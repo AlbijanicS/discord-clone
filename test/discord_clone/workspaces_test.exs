@@ -183,9 +183,11 @@ defmodule DiscordClone.WorkspacesTest do
     test "exposes workspace, channel, and invite capabilities by workspace role" do
       owner_scope = user_scope_fixture()
       admin_scope = user_scope_fixture()
+      peer_admin_scope = user_scope_fixture()
       member_scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Role Workspace"})
       add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, peer_admin_scope, "admin")
       add_workspace_member!(workspace, member_scope, "member")
 
       assert Workspaces.can_rename_workspace?(owner_scope, workspace)
@@ -213,9 +215,11 @@ defmodule DiscordClone.WorkspacesTest do
     test "derives member action availability by actor and target role" do
       owner_scope = user_scope_fixture()
       admin_scope = user_scope_fixture()
+      peer_admin_scope = user_scope_fixture()
       member_scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Role Workspace"})
       add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, peer_admin_scope, "admin")
       add_workspace_member!(workspace, member_scope, "member")
 
       owner_membership =
@@ -228,6 +232,12 @@ defmodule DiscordClone.WorkspacesTest do
         Repo.get_by!(WorkspaceMembership,
           workspace_id: workspace.id,
           user_id: admin_scope.user.id
+        )
+
+      peer_admin_membership =
+        Repo.get_by!(WorkspaceMembership,
+          workspace_id: workspace.id,
+          user_id: peer_admin_scope.user.id
         )
 
       member_membership =
@@ -253,11 +263,13 @@ defmodule DiscordClone.WorkspacesTest do
              ]
 
       assert Workspaces.available_member_actions(admin_scope, workspace, owner_membership) == []
+      assert Workspaces.available_member_actions(admin_scope, workspace, admin_membership) == []
 
-      assert Workspaces.available_member_actions(admin_scope, workspace, admin_membership) == [
-               :mute,
-               :timeout
-             ]
+      assert Workspaces.available_member_actions(admin_scope, workspace, peer_admin_membership) ==
+               [
+                 :mute,
+                 :timeout
+               ]
 
       assert Workspaces.available_member_actions(admin_scope, workspace, member_membership) == [
                :mute,
@@ -429,6 +441,33 @@ defmodule DiscordClone.WorkspacesTest do
       assert demotion.target_user_id == admin_scope.user.id
       assert demotion.event_type == "member_role_demoted"
       assert demotion.metadata == %{"from_role" => "admin", "to_role" => "member"}
+    end
+
+    test "role changes broadcast workspace member and audit refresh events" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Role Workspace"})
+      add_workspace_member!(workspace, member_scope, "member")
+
+      assert :ok = Workspaces.subscribe_to_workspace_moderation(owner_scope, workspace.id)
+      assert :ok = Workspaces.subscribe_to_workspace_events(owner_scope, workspace.id)
+
+      assert {:ok, _membership} =
+               Workspaces.change_member_role(
+                 owner_scope,
+                 workspace.id,
+                 member_scope.user.id,
+                 "admin"
+               )
+
+      assert_receive {:workspace_moderation_changed,
+                      %{workspace_id: workspace_id, target_user_id: target_user_id}}
+
+      assert workspace_id == workspace.id
+      assert target_user_id == member_scope.user.id
+
+      assert_receive {:workspace_audit_changed, %{workspace_id: workspace_id}}
+      assert workspace_id == workspace.id
     end
 
     test "rejects audit event listing for admins and members" do
@@ -1770,12 +1809,19 @@ defmodule DiscordClone.WorkspacesTest do
     test "allows the workspace owner to create a channel" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "My Server"})
+      assert :ok = Workspaces.subscribe_to_workspace_events(scope, workspace.id)
 
       assert {:ok, channel} =
                Workspaces.create_channel(scope, workspace.id, %{name: "General Chat"})
 
       assert channel.workspace_id == workspace.id
       assert channel.name == "general-chat"
+
+      assert_receive {:workspace_channel_created,
+                      %{workspace_id: workspace_id, channel_id: channel_id}}
+
+      assert workspace_id == workspace.id
+      assert channel_id == channel.id
     end
 
     test "allows admins but rejects members creating channels" do

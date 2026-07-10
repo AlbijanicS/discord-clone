@@ -7,6 +7,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
   alias DiscordCloneWeb.WorkspaceLive.MemberActions
   alias DiscordCloneWeb.WorkspaceLive.Presence
   alias DiscordCloneWeb.WorkspaceLive.Shell
+  alias DiscordCloneWeb.WorkspaceLive.WorkspaceEvents
 
   @impl true
   def mount(%{"workspace_id" => workspace_id}, _session, socket) do
@@ -17,7 +18,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
          {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id),
          {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id),
          {:ok, channel_unread_counts} <- load_channel_unread_counts(socket, workspace.id),
-         :ok <- subscribe_to_channel_read_states(socket, channels) do
+         :ok <- subscribe_to_channel_read_states(socket, channels),
+         :ok <- WorkspaceEvents.subscribe(socket, workspace.id) do
       socket =
         socket
         |> assign(:selected_workspace, workspace)
@@ -87,6 +89,28 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
     else
       {:noreply, socket}
     end
+  end
+
+  def handle_info({:workspace_channel_created, %{workspace_id: workspace_id}}, socket) do
+    {:noreply,
+     WorkspaceEvents.apply_to_selected(
+       socket,
+       workspace_id,
+       &refresh_channel_sidebar(&1, workspace_id)
+     )}
+  end
+
+  def handle_info({:workspace_member_joined, %{workspace_id: workspace_id}}, socket) do
+    {:noreply,
+     WorkspaceEvents.apply_to_selected(
+       socket,
+       workspace_id,
+       &WorkspaceEvents.refresh_members(&1, workspace_id)
+     )}
+  end
+
+  def handle_info({:workspace_audit_changed, _payload}, socket) do
+    {:noreply, socket}
   end
 
   def handle_info(event, socket) do

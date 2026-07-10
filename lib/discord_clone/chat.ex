@@ -122,6 +122,10 @@ defmodule DiscordClone.Chat do
     Runtime.cancel_timeout_expiry(moderation)
   end
 
+  def broadcast_workspace_user_joined(workspace_id, user_id) do
+    Runtime.broadcast_user_joined(workspace_id, user_id)
+  end
+
   defdelegate list_unread_counts(scope, workspace_id), to: Unread
   defdelegate list_channel_read_summaries(scope, workspace_id), to: Unread
 

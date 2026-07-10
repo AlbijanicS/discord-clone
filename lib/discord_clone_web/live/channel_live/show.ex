@@ -9,6 +9,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   alias DiscordCloneWeb.WorkspaceLive.MemberActionsMenu
   alias DiscordCloneWeb.WorkspaceLive.Presence
   alias DiscordCloneWeb.WorkspaceLive.Shell
+  alias DiscordCloneWeb.WorkspaceLive.WorkspaceEvents
 
   @reaction_palette [
     {"👍", "React with 👍 to message"},
@@ -42,6 +43,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          :ok <- subscribe_to_channel_reactions(socket, channel.id),
          :ok <- subscribe_to_workspace_messages(socket, workspace.id),
          :ok <- subscribe_to_workspace_moderation(socket, workspace.id),
+         :ok <- WorkspaceEvents.subscribe(socket, workspace.id),
          :ok <- subscribe_to_channel_read_states(socket, channels),
          :ok <- subscribe_to_channel_typing(socket, channel.id) do
       message_rows = MessageRows.annotate(messages)
@@ -267,69 +269,77 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               <div id={"#{dom_id}-body"} class="relative min-w-0 pr-40">
                 <div
                   :if={!message_deleted?(row.message)}
-                  id={"#{dom_id}-reaction-palette"}
+                  id={"#{dom_id}-hover-actions"}
                   class={[
-                    "pointer-events-none absolute right-0 z-10 flex items-center gap-0.5 rounded-md bg-base-100/95 p-0.5 opacity-0 shadow-lg shadow-base-300/20 ring-1 ring-base-content/10 transition duration-150 group-hover:pointer-events-auto group-hover:opacity-100",
+                    "absolute right-0 z-20 flex items-center gap-2",
                     if(row.row_kind == :compact, do: "top-0", else: "top-0.5")
                   ]}
-                  aria-label="Reaction palette"
                 >
-                  <button
-                    :for={{{emoji, label}, index} <- Enum.with_index(reaction_palette())}
-                    id={reaction_option_id(row.message.id, index)}
-                    type="button"
-                    phx-click="toggle_reaction"
-                    phx-value-message-id={row.message.id}
-                    phx-value-emoji={emoji}
-                    class="flex size-7 items-center justify-center rounded text-sm transition hover:bg-base-200 focus:outline-none focus:ring-2 focus:ring-primary/25"
-                    aria-label={label}
-                    title={label}
+                  <div
+                    id={"#{dom_id}-reaction-palette"}
+                    class="pointer-events-none flex items-center gap-0.5 rounded-lg bg-base-100/95 p-1 opacity-0 shadow-lg shadow-base-300/20 ring-1 ring-base-content/10 backdrop-blur-sm transition duration-150 group-hover:pointer-events-auto group-hover:opacity-100"
+                    aria-label="Reaction palette"
                   >
-                    <span aria-hidden="true">{emoji}</span>
-                  </button>
-                </div>
-                <details
-                  :if={
-                    !message_deleted?(row.message) and
+                    <button
+                      :for={{{emoji, label}, index} <- Enum.with_index(reaction_palette())}
+                      id={reaction_option_id(row.message.id, index)}
+                      type="button"
+                      phx-click="toggle_reaction"
+                      phx-value-message-id={row.message.id}
+                      phx-value-emoji={emoji}
+                      class="flex size-8 items-center justify-center rounded-md text-base leading-none transition hover:bg-base-200 focus:outline-none focus:ring-2 focus:ring-primary/25"
+                      aria-label={label}
+                      title={label}
+                    >
+                      <span aria-hidden="true">{emoji}</span>
+                    </button>
+                  </div>
+                  <details
+                    :if={
                       message_menu?(
                         row,
                         @member_by_user_id,
                         @member_actions_by_user_id,
                         @current_scope
                       )
-                  }
-                  id={"#{dom_id}-actions"}
-                  class={[
-                    "absolute right-0 z-20",
-                    if(row.row_kind == :compact, do: "top-0", else: "top-0.5")
-                  ]}
-                >
-                  <summary
-                    class="btn btn-square btn-xs btn-ghost list-none opacity-0 transition group-hover:opacity-100 [&::-webkit-details-marker]:hidden"
-                    aria-label="Open message actions"
+                    }
+                    id={"#{dom_id}-actions"}
+                    phx-hook="MessageActionsMenu"
+                    class="relative"
                   >
-                    <.icon name="hero-ellipsis-horizontal" class="size-4" />
-                  </summary>
-                  <div class="absolute right-0 z-30 mt-1 w-44 rounded border border-base-300 bg-base-100 p-1 shadow-lg">
-                    <button
-                      :if={Chat.can_delete_message?(@current_scope, row.message, @member_by_user_id)}
-                      id={"#{dom_id}-delete"}
-                      type="button"
-                      class="block w-full rounded px-3 py-2 text-left text-xs font-medium text-error transition hover:bg-error/10"
-                      phx-click="delete_message"
-                      phx-value-message-id={row.message.id}
+                    <summary
+                      class="btn btn-square btn-sm btn-ghost list-none rounded-lg bg-base-100/95 opacity-0 shadow-lg shadow-base-300/20 ring-1 ring-base-content/10 backdrop-blur-sm transition duration-150 group-hover:opacity-100 [&::-webkit-details-marker]:hidden"
+                      aria-label="Open message actions"
+                      data-message-menu-summary
                     >
-                      Delete message
-                    </button>
-                    <MemberActionsMenu.menu_items
-                      id_prefix={dom_id}
-                      actions={message_author_actions(@member_actions_by_user_id, row)}
-                      user_id={row.message.user_id}
-                      current_scope={@current_scope}
-                      workspace={@selected_workspace}
-                    />
-                  </div>
-                </details>
+                      <.icon name="hero-ellipsis-horizontal" class="size-4" />
+                    </summary>
+                    <div
+                      data-message-menu-panel
+                      class="fixed z-50 w-52 rounded border border-base-300 bg-base-100 p-1 shadow-2xl shadow-base-300/30"
+                    >
+                      <button
+                        :if={
+                          Chat.can_delete_message?(@current_scope, row.message, @member_by_user_id)
+                        }
+                        id={"#{dom_id}-delete"}
+                        type="button"
+                        class="block w-full rounded px-3 py-2 text-left text-xs font-medium text-error transition hover:bg-error/10"
+                        phx-click="delete_message"
+                        phx-value-message-id={row.message.id}
+                      >
+                        Delete message
+                      </button>
+                      <MemberActionsMenu.menu_items
+                        id_prefix={dom_id}
+                        actions={message_author_actions(@member_actions_by_user_id, row)}
+                        user_id={row.message.user_id}
+                        current_scope={@current_scope}
+                        workspace={@selected_workspace}
+                      />
+                    </div>
+                  </details>
+                </div>
                 <div
                   :if={row.row_kind == :full}
                   id={"#{dom_id}-header"}
@@ -519,6 +529,28 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   def handle_info({:workspace_moderation_changed, payload}, socket) do
     {:noreply, refresh_workspace_moderation(socket, payload)}
+  end
+
+  def handle_info({:workspace_channel_created, %{workspace_id: workspace_id}}, socket) do
+    {:noreply,
+     WorkspaceEvents.apply_to_selected(
+       socket,
+       workspace_id,
+       &refresh_channel_sidebar(&1, workspace_id)
+     )}
+  end
+
+  def handle_info({:workspace_member_joined, %{workspace_id: workspace_id}}, socket) do
+    {:noreply,
+     WorkspaceEvents.apply_to_selected(
+       socket,
+       workspace_id,
+       &refresh_workspace_members(&1, workspace_id)
+     )}
+  end
+
+  def handle_info({:workspace_audit_changed, _payload}, socket) do
+    {:noreply, socket}
   end
 
   def handle_info(
@@ -2166,6 +2198,24 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       end
 
     stream(socket, :channels, channels, reset: true)
+  end
+
+  defp refresh_workspace_members(socket, workspace_id) do
+    with {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id) do
+      socket
+      |> assign(:member_by_user_id, member_by_user_id(members))
+      |> assign(
+        :member_actions_by_user_id,
+        member_actions_by_user_id(
+          socket.assigns.current_scope,
+          socket.assigns.selected_workspace,
+          members
+        )
+      )
+      |> Presence.refresh_workspace_members(members)
+    else
+      _error -> socket
+    end
   end
 
   defp selected_channel_unread_count(channel_unread_counts, selected_channel) do

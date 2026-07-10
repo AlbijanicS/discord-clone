@@ -2,7 +2,10 @@ defmodule DiscordCloneWeb.InviteControllerTest do
   use DiscordCloneWeb.ConnCase
 
   alias DiscordClone.Repo
+  alias DiscordClone.Chat
+  alias DiscordClone.Chat.Message
   alias DiscordClone.Workspaces
+  alias DiscordClone.Workspaces.WorkspaceAuditEvent
   alias DiscordClone.Workspaces.WorkspaceMembership
 
   import Ecto.Query
@@ -167,6 +170,8 @@ defmodule DiscordCloneWeb.InviteControllerTest do
       invited_user = user_fixture()
       {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
       {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+      assert :ok = Workspaces.subscribe_to_workspace_events(owner_scope, workspace.id)
+      assert :ok = Chat.subscribe_to_workspace_presence(owner_scope, workspace.id)
 
       conn =
         conn
@@ -181,6 +186,40 @@ defmodule DiscordCloneWeb.InviteControllerTest do
                  workspace_id: workspace.id,
                  user_id: invited_user.id
                )
+
+      assert_receive {:workspace_member_joined, %{workspace_id: workspace_id, user_id: user_id}}
+
+      assert workspace_id == workspace.id
+      assert user_id == invited_user.id
+
+      assert_receive {:workspace_user_joined, %{workspace_id: workspace_id, user_id: user_id}}
+      assert workspace_id == workspace.id
+      assert user_id == invited_user.id
+
+      assert_receive {:workspace_audit_changed, %{workspace_id: workspace_id}}
+      assert workspace_id == workspace.id
+
+      assert %WorkspaceAuditEvent{
+               event_type: "member_joined_from_invite",
+               actor_user_id: actor_user_id,
+               target_user_id: target_user_id
+             } =
+               Repo.get_by(WorkspaceAuditEvent,
+                 workspace_id: workspace.id,
+                 target_user_id: invited_user.id
+               )
+
+      assert actor_user_id == owner_scope.user.id
+      assert target_user_id == invited_user.id
+
+      assert %Message{content: content, user_id: user_id} =
+               Repo.get_by(Message,
+                 channel_id: workspace.default_channel_id,
+                 user_id: invited_user.id
+               )
+
+      assert content == "#{invited_user.username} joined from an invite."
+      assert user_id == invited_user.id
     end
 
     test "redirects existing members to the landing channel with an informational flash", %{
@@ -213,6 +252,12 @@ defmodule DiscordCloneWeb.InviteControllerTest do
              ) == 1
 
       assert Repo.get!(DiscordClone.Workspaces.WorkspaceInvite, invite.id).uses_count == 0
+
+      refute Repo.get_by(WorkspaceAuditEvent,
+               workspace_id: workspace.id,
+               target_user_id: existing_user.id,
+               event_type: "member_joined_from_invite"
+             )
     end
 
     test "blocks banned users from accepting without creating membership", %{conn: conn} do

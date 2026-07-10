@@ -6,6 +6,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
   alias DiscordCloneWeb.WorkspaceLive.MemberActions
   alias DiscordCloneWeb.WorkspaceLive.Presence
   alias DiscordCloneWeb.WorkspaceLive.Shell
+  alias DiscordCloneWeb.WorkspaceLive.WorkspaceEvents
 
   @impl true
   def mount(%{"workspace_id" => workspace_id}, _session, socket) do
@@ -17,7 +18,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
            Workspaces.list_banned_members(socket.assigns.current_scope, workspace.id),
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
          {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace.id),
-         {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace.id) do
+         {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace.id),
+         :ok <- WorkspaceEvents.subscribe(socket, workspace.id) do
       socket =
         socket
         |> assign(:selected_workspace, workspace)
@@ -79,6 +81,29 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
   end
 
   @impl true
+  def handle_info({:workspace_audit_changed, %{workspace_id: workspace_id}}, socket) do
+    {:noreply,
+     WorkspaceEvents.apply_to_selected(
+       socket,
+       workspace_id,
+       &refresh_audit_state(&1, workspace_id)
+     )}
+  end
+
+  def handle_info({:workspace_channel_created, %{workspace_id: workspace_id}}, socket) do
+    {:noreply,
+     WorkspaceEvents.apply_to_selected(socket, workspace_id, &refresh_channels(&1, workspace_id))}
+  end
+
+  def handle_info({:workspace_member_joined, %{workspace_id: workspace_id}}, socket) do
+    {:noreply,
+     WorkspaceEvents.apply_to_selected(
+       socket,
+       workspace_id,
+       &WorkspaceEvents.refresh_members(&1, workspace_id)
+     )}
+  end
+
   def handle_info(event, socket) do
     case PresenceEvents.to_presence_event(event) do
       {:ok, :user_joined, payload} -> {:noreply, Presence.user_joined(socket, payload)}
@@ -176,6 +201,27 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
     socket
     |> assign(:audit_events, audit_events)
     |> assign(:banned_members, banned_members)
+  end
+
+  defp refresh_audit_state(socket, workspace_id) do
+    with {:ok, audit_events} <-
+           Workspaces.list_audit_events(socket.assigns.current_scope, workspace_id),
+         {:ok, banned_members} <-
+           Workspaces.list_banned_members(socket.assigns.current_scope, workspace_id) do
+      socket
+      |> assign(:audit_events, audit_events)
+      |> assign(:banned_members, banned_members)
+    else
+      _error -> socket
+    end
+  end
+
+  defp refresh_channels(socket, workspace_id) do
+    with {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id) do
+      stream(socket, :channels, channels, reset: true)
+    else
+      _error -> socket
+    end
   end
 
   defp workspace_form(scope, attrs \\ %{}) do

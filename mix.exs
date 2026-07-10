@@ -11,7 +11,20 @@ defmodule DiscordClone.MixProject do
       aliases: aliases(),
       deps: deps(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
-      listeners: [Phoenix.CodeReloader]
+      listeners: [Phoenix.CodeReloader],
+      test_coverage: [
+        # `--cover`'s built-in threshold lives under `:summary`; a top-level
+        # `:threshold` is silently ignored.
+        summary: [threshold: 85],
+        # Generated/boilerplate render modules with no meaningful branches to
+        # cover — excluded so the gate reflects real application code.
+        ignore_modules: [
+          DiscordCloneWeb.InviteHTML,
+          DiscordCloneWeb.PageHTML,
+          DiscordCloneWeb.ErrorHTML,
+          DiscordCloneWeb.ErrorJSON
+        ]
+      ]
     ]
   end
 

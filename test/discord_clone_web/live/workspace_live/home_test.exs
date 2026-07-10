@@ -1265,6 +1265,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
         live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
 
       refute has_element?(view, "#workspace-member-#{owner_scope.user.id}-actions")
+      refute has_element?(view, "#workspace-member-#{admin_scope.user.id}-actions")
 
       assert has_element?(view, "#workspace-member-#{peer_admin_scope.user.id}-actions")
       assert has_element?(view, "#workspace-member-#{peer_admin_scope.user.id}-mute")
@@ -1408,6 +1409,47 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute has_element?(
                owner_view,
                "#workspace-member-#{target_scope.user.id}-promote-to-admin"
+             )
+    end
+
+    test "moves an online promoted member into the admins section from a broadcast", %{
+      conn: owner_conn,
+      scope: owner_scope
+    } do
+      target_scope =
+        %{username: "broadcast_promotable"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope, "member")
+
+      target_live_view_pid = start_live_view_process()
+      assert :ok = Chat.join_workspace_presence(target_scope, workspace.id, target_live_view_pid)
+
+      {:ok, owner_view, _html} =
+        live(owner_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(
+               owner_view,
+               "#workspace-members-online-member-section ~ #workspace-member-#{target_scope.user.id}[data-presence-state='online']",
+               "broadcast_promotable"
+             )
+
+      assert {:ok, _membership} =
+               Workspaces.change_member_role(
+                 owner_scope,
+                 workspace.id,
+                 target_scope.user.id,
+                 "admin"
+               )
+
+      render(owner_view)
+
+      assert has_element?(
+               owner_view,
+               "#workspace-members-online-admin-section ~ #workspace-member-#{target_scope.user.id}[data-presence-state='online']",
+               "broadcast_promotable"
              )
     end
 
@@ -4710,6 +4752,49 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       refute Repo.get(Channel, channel.id)
     end
 
+    test "live-updates the channel sidebar when another session creates a channel", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert {:ok, channel} = Workspaces.create_channel(scope, workspace.id, %{name: "Ops Room"})
+
+      render(view)
+
+      assert has_element?(view, "#channel-#{channel.id}", "# ops-room")
+    end
+
+    test "adds a newly-joined member to the sidebar when they accept an invite", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, invite} = Workspaces.create_workspace_invite(scope, workspace.id)
+
+      joiner_scope =
+        DiscordClone.AccountsFixtures.user_fixture(%{username: "channel_view_joiner"})
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      refute has_element?(view, "#workspace-member-#{joiner_scope.user.id}")
+
+      assert {:ok, _result} = Workspaces.accept_workspace_invite(joiner_scope, invite.code)
+
+      render(view)
+
+      assert has_element?(
+               view,
+               "#workspace-member-#{joiner_scope.user.id}",
+               "channel_view_joiner"
+             )
+    end
+
     test "keeps the rename form open with field errors for invalid input", %{
       conn: conn,
       scope: scope
@@ -4878,7 +4963,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert html =~ "hands off"
       refute has_element?(viewer_view, "#message-#{message.id}-delete")
-      refute has_element?(viewer_view, "#message-#{message.id}-actions")
+      refute has_element?(viewer_view, "#message-#{message.id}-mute")
+      assert has_element?(viewer_view, "#message-#{message.id}-reaction-palette")
     end
 
     test "message menus expose author moderation actions per owner authorization", %{
@@ -4948,6 +5034,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       add_workspace_member!(workspace, member_scope, "member")
 
       channel_id = workspace.default_channel_id
+      {:ok, self_msg} = Chat.send_message(admin_scope, channel_id, %{"content" => "self post"})
       {:ok, owner_msg} = Chat.send_message(owner_scope, channel_id, %{"content" => "owner post"})
 
       {:ok, peer_msg} =
@@ -4959,12 +5046,18 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
       {:ok, admin_view, _html} =
         live(admin_conn, ~p"/workspaces/#{workspace.id}/channels/#{channel_id}")
 
+      assert has_element?(admin_view, "#message-#{self_msg.id}-delete")
+      refute has_element?(admin_view, "#message-#{self_msg.id}-mute")
+      refute has_element?(admin_view, "#message-#{self_msg.id}-timeout-5-minutes")
+
       assert has_element?(admin_view, "#message-#{peer_msg.id}-mute")
       assert has_element?(admin_view, "#message-#{peer_msg.id}-timeout-5-minutes")
       refute has_element?(admin_view, "#message-#{peer_msg.id}-kick")
       refute has_element?(admin_view, "#message-#{peer_msg.id}-ban")
 
-      refute has_element?(admin_view, "#message-#{owner_msg.id}-actions")
+      refute has_element?(admin_view, "#message-#{owner_msg.id}-delete")
+      refute has_element?(admin_view, "#message-#{owner_msg.id}-mute")
+      assert has_element?(admin_view, "#message-#{owner_msg.id}-reaction-palette")
 
       assert has_element?(admin_view, "#message-#{member_msg.id}-kick")
       assert has_element?(admin_view, "#message-#{member_msg.id}-ban")
@@ -5110,7 +5203,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
                user_id: target_scope.user.id
              )
 
-      refute has_element?(owner_view, "#message-#{message.id}-actions")
+      refute has_element?(owner_view, "#message-#{message.id}-delete")
+      refute has_element?(owner_view, "#message-#{message.id}-mute")
+      refute has_element?(owner_view, "#message-#{message.id}-kick")
+      assert has_element?(owner_view, "#message-#{message.id}-reaction-palette")
 
       assert {:ok, events} = Workspaces.list_audit_events(owner_scope, workspace.id)
 
@@ -5432,6 +5528,47 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
              )
     end
 
+    test "refreshes the channel sidebar when a channel is created elsewhere", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/invites/new")
+
+      assert {:ok, channel} = Workspaces.create_channel(scope, workspace.id, %{name: "Logistics"})
+
+      render(view)
+
+      assert has_element?(view, "#channel-#{channel.id}", "# logistics")
+    end
+
+    test "refreshes the member list when a new member joins via invite", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, invite} = Workspaces.create_workspace_invite(scope, workspace.id)
+
+      joiner_scope =
+        DiscordClone.AccountsFixtures.user_fixture(%{username: "invite_screen_joiner"})
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/invites/new")
+
+      refute has_element?(view, "#workspace-member-#{joiner_scope.user.id}")
+
+      assert {:ok, _result} = Workspaces.accept_workspace_invite(joiner_scope, invite.code)
+
+      render(view)
+
+      assert has_element?(
+               view,
+               "#workspace-member-#{joiner_scope.user.id}",
+               "invite_screen_joiner"
+             )
+    end
+
     test "shows and opens the workspace create action from the invite screen", %{
       conn: conn,
       scope: scope
@@ -5729,6 +5866,113 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeTest do
 
       assert has_element?(view, "#workspace-member-#{target_scope.user.id}-demote-to-member")
       assert has_element?(view, "#workspace-audit-events article:first-child", "promoted")
+    end
+
+    test "refreshes when an admin action creates an audit event elsewhere", %{
+      conn: owner_conn,
+      scope: owner_scope
+    } do
+      admin_scope =
+        DiscordClone.AccountsFixtures.user_fixture(%{username: "remote_admin_actor"})
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      target_scope =
+        DiscordClone.AccountsFixtures.user_fixture(%{username: "remote_audit_target"})
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, target_scope, "member")
+
+      {:ok, audit_view, _html} = live(owner_conn, ~p"/workspaces/#{workspace.id}/audit-log")
+
+      admin_conn = build_conn() |> log_in_user(admin_scope.user)
+
+      {:ok, admin_view, _html} =
+        live(admin_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      admin_view
+      |> element("#workspace-member-#{target_scope.user.id}-mute")
+      |> render_click()
+
+      render(audit_view)
+
+      assert has_element?(
+               audit_view,
+               "#workspace-audit-events article:first-child",
+               "remote_admin_actor muted remote_audit_target"
+             )
+    end
+
+    test "refreshes the channel sidebar when a channel is created elsewhere", %{
+      conn: conn,
+      scope: owner_scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/audit-log")
+
+      assert {:ok, channel} =
+               Workspaces.create_channel(owner_scope, workspace.id, %{name: "Logistics"})
+
+      render(view)
+
+      assert has_element?(view, "#channel-#{channel.id}", "# logistics")
+    end
+
+    test "refreshes the member list when a new member joins via invite", %{
+      conn: conn,
+      scope: owner_scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      joiner_scope =
+        DiscordClone.AccountsFixtures.user_fixture(%{username: "audit_join_watcher"})
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/audit-log")
+
+      refute has_element?(view, "#workspace-member-#{joiner_scope.user.id}")
+
+      assert {:ok, _result} = Workspaces.accept_workspace_invite(joiner_scope, invite.code)
+
+      render(view)
+
+      assert has_element?(
+               view,
+               "#workspace-member-#{joiner_scope.user.id}",
+               "audit_join_watcher"
+             )
+    end
+
+    test "renders invite-join and unban audit entries", %{conn: conn, scope: owner_scope} do
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      joiner_scope =
+        DiscordClone.AccountsFixtures.user_fixture(%{username: "history_member"})
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      assert {:ok, _result} = Workspaces.accept_workspace_invite(joiner_scope, invite.code)
+
+      assert {:ok, _ban} =
+               Workspaces.ban_member(owner_scope, workspace.id, joiner_scope.user.id, %{
+                 "reason" => "spam"
+               })
+
+      assert {:ok, _unban} =
+               Workspaces.unban_member(owner_scope, workspace.id, joiner_scope.user.id)
+
+      {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/audit-log")
+
+      assert has_element?(
+               view,
+               "#workspace-audit-events",
+               "joined from an invite created by"
+             )
+
+      assert has_element?(view, "#workspace-audit-events article:first-child", "unbanned")
     end
   end
 
