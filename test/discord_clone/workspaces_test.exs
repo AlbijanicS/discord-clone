@@ -283,6 +283,103 @@ defmodule DiscordClone.WorkspacesTest do
     end
   end
 
+  describe "can_delete_message?/2" do
+    test "owners and admins may delete admin- and member-authored messages" do
+      assert Workspaces.can_delete_message?("owner", "admin")
+      assert Workspaces.can_delete_message?("owner", "member")
+      assert Workspaces.can_delete_message?("admin", "admin")
+      assert Workspaces.can_delete_message?("admin", "member")
+    end
+
+    test "nobody may delete an owner-authored message via moderation" do
+      refute Workspaces.can_delete_message?("owner", "owner")
+      refute Workspaces.can_delete_message?("admin", "owner")
+    end
+
+    test "members may not delete others' messages via moderation" do
+      refute Workspaces.can_delete_message?("member", "member")
+      refute Workspaces.can_delete_message?("member", "admin")
+    end
+
+    test "a missing role on either side denies deletion" do
+      refute Workspaces.can_delete_message?(nil, "member")
+      refute Workspaces.can_delete_message?("owner", nil)
+    end
+  end
+
+  describe "member_participation_status/2" do
+    setup do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Participation"})
+      add_workspace_member!(workspace, member_scope, "member")
+
+      %{owner_scope: owner_scope, member_scope: member_scope, workspace: workspace}
+    end
+
+    test "returns :ok when no active moderation blocks the member", ctx do
+      assert Workspaces.member_participation_status(
+               ctx.workspace.id,
+               ctx.member_scope.user.id
+             ) == :ok
+    end
+
+    test "returns {:error, :muted} for an actively muted member", ctx do
+      assert {:ok, _moderation} =
+               Workspaces.mute_member(
+                 ctx.owner_scope,
+                 ctx.workspace.id,
+                 ctx.member_scope.user.id,
+                 %{}
+               )
+
+      assert Workspaces.member_participation_status(
+               ctx.workspace.id,
+               ctx.member_scope.user.id
+             ) == {:error, :muted}
+    end
+
+    test "returns {:error, :timeout} for an active, unexpired timeout", ctx do
+      assert {:ok, _moderation} =
+               Workspaces.timeout_member(
+                 ctx.owner_scope,
+                 ctx.workspace.id,
+                 ctx.member_scope.user.id,
+                 "1_hour",
+                 %{}
+               )
+
+      assert Workspaces.member_participation_status(
+               ctx.workspace.id,
+               ctx.member_scope.user.id
+             ) == {:error, :timeout}
+    end
+
+    test "a mute takes precedence over a concurrent timeout", ctx do
+      assert {:ok, _mute} =
+               Workspaces.mute_member(
+                 ctx.owner_scope,
+                 ctx.workspace.id,
+                 ctx.member_scope.user.id,
+                 %{}
+               )
+
+      assert {:ok, _timeout} =
+               Workspaces.timeout_member(
+                 ctx.owner_scope,
+                 ctx.workspace.id,
+                 ctx.member_scope.user.id,
+                 "1_hour",
+                 %{}
+               )
+
+      assert Workspaces.member_participation_status(
+               ctx.workspace.id,
+               ctx.member_scope.user.id
+             ) == {:error, :muted}
+    end
+  end
+
   describe "change_member_role/4" do
     test "allows owners to promote members to admins" do
       owner_scope = user_scope_fixture()

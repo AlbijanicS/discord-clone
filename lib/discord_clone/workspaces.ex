@@ -329,6 +329,19 @@ defmodule DiscordClone.Workspaces do
 
   def can_unban_member?(_scope, _workspace), do: false
 
+  @doc """
+  Whether an actor holding `actor_role` may delete, as a moderator, a message
+  authored by a member holding `author_role`.
+
+  This is the single definition of the message-delete moderation rule — owners
+  and admins may delete messages authored by admins and members; nobody may
+  delete an owner's message. It is consumed by the Chat context for both delete
+  enforcement and the channel view's delete affordance. Deleting one's own
+  message is not a moderation decision and is handled by the caller.
+  """
+  def can_delete_message?(actor_role, author_role),
+    do: Roles.can_moderate?(actor_role, author_role)
+
   def available_member_actions(
         %Scope{user: %User{id: actor_user_id}},
         %Workspace{id: workspace_id},
@@ -550,6 +563,29 @@ defmodule DiscordClone.Workspaces do
 
   def member_moderation_state(_scope, _workspace_id, _target_user_id),
     do: {:error, :unauthenticated}
+
+  @doc """
+  Whether an active mute or timeout blocks a Workspace Member from participating
+  (sending messages, reacting, typing).
+
+  Returns `:ok` when the member may participate, `{:error, :muted}` when an active
+  mute is in effect, or `{:error, :timeout}` when an active, unexpired timeout is
+  in effect. An active mute takes precedence over an active timeout. This is the
+  single owner of the "blocked from participating" rule; the Chat context calls
+  it instead of reading the moderation table directly.
+  """
+  def member_participation_status(workspace_id, user_id) do
+    cond do
+      match?(%WorkspaceModeration{}, get_active_moderation(workspace_id, user_id, @mute_type)) ->
+        {:error, :muted}
+
+      match?(%WorkspaceModeration{}, get_active_moderation(workspace_id, user_id, @timeout_type)) ->
+        {:error, :timeout}
+
+      true ->
+        :ok
+    end
+  end
 
   def change_member_role(
         %Scope{user: %User{}} = scope,

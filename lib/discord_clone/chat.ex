@@ -21,11 +21,10 @@ defmodule DiscordClone.Chat do
     Unread
   }
 
-  alias DiscordClone.{Repo, UUIDIdentifier}
+  alias DiscordClone.{Repo, UUIDIdentifier, Workspaces}
 
   alias DiscordClone.Workspaces.{
     Channel,
-    Roles,
     WorkspaceAuditEvent,
     WorkspaceMembership,
     WorkspaceModeration
@@ -409,7 +408,7 @@ defmodule DiscordClone.Chat do
 
   def user_started_typing(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id),
-         :ok <- authorize_unmuted(channel.workspace_id, user_id) do
+         :ok <- Workspaces.member_participation_status(channel.workspace_id, user_id) do
       Runtime.user_started_typing(channel_id, user_id)
     else
       nil -> {:error, :not_found}
@@ -462,7 +461,7 @@ defmodule DiscordClone.Chat do
 
   def send_message(%Scope{user: %User{id: user_id}}, channel_id, attrs) do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id),
-         :ok <- authorize_unmuted(channel.workspace_id, user_id) do
+         :ok <- Workspaces.member_participation_status(channel.workspace_id, user_id) do
       changeset =
         Message.changeset(%Message{}, %{
           "content" => Map.get(attrs, "content") || Map.get(attrs, :content),
@@ -517,7 +516,7 @@ defmodule DiscordClone.Chat do
     with {:ok, normalized_emoji} <- Emoji.validate_reaction(emoji),
          %Message{} = message <- get_member_message(message_id, user_id),
          :ok <- reject_deleted_message(message),
-         :ok <- authorize_unmuted(message.channel.workspace_id, user_id) do
+         :ok <- Workspaces.member_participation_status(message.channel.workspace_id, user_id) do
       case Repo.get_by(MessageReaction,
              message_id: message.id,
              user_id: user_id,
@@ -571,8 +570,8 @@ defmodule DiscordClone.Chat do
   `member_by_user_id` map the caller already holds (no DB round-trip).
 
   This is the UI-facing twin of the context's delete enforcement: both route
-  through the same `deletable?/2` rule, so the affordance the channel view shows
-  can never drift from what `delete_message/2` will accept.
+  through the same `Workspaces.can_delete_message?/2` rule, so the affordance the
+  channel view shows can never drift from what `delete_message/2` will accept.
   """
   def can_delete_message?(
         %Scope{user: %User{id: user_id}},
@@ -582,7 +581,7 @@ defmodule DiscordClone.Chat do
     actor_role = role_of(member_by_user_id, user_id)
     author_role = role_of(member_by_user_id, message.user_id)
 
-    message.user_id == user_id or deletable?(actor_role, author_role)
+    message.user_id == user_id or Workspaces.can_delete_message?(actor_role, author_role)
   end
 
   def can_delete_message?(_scope, _message, _member_by_user_id), do: false
@@ -654,35 +653,6 @@ defmodule DiscordClone.Chat do
     end)
   end
 
-  defp authorize_unmuted(workspace_id, user_id) do
-    muted? =
-      Repo.exists?(
-        from moderation in WorkspaceModeration,
-          where:
-            moderation.workspace_id == ^workspace_id and
-              moderation.target_user_id == ^user_id and
-              moderation.type == "mute" and
-              moderation.active? == true
-      )
-
-    timed_out? =
-      Repo.exists?(
-        from moderation in WorkspaceModeration,
-          where:
-            moderation.workspace_id == ^workspace_id and
-              moderation.target_user_id == ^user_id and
-              moderation.type == "timeout" and
-              moderation.active? == true and
-              moderation.expires_at > ^DateTime.utc_now(:second)
-      )
-
-    cond do
-      muted? -> {:error, :muted}
-      timed_out? -> {:error, :timeout}
-      true -> :ok
-    end
-  end
-
   defp authorize_member_messages(message_ids, user_id) do
     UUIDIdentifier.cast_or(message_ids, {:error, :not_found}, fn message_ids ->
       accessible_message_count =
@@ -707,18 +677,12 @@ defmodule DiscordClone.Chat do
   defp authorize_delete_message(%Message{} = message, user_id) do
     {actor, author} = actor_target_roles(message.channel.workspace_id, user_id, message.user_id)
 
-    if deletable?(role_of_membership(actor), role_of_membership(author)) do
+    if Workspaces.can_delete_message?(role_of_membership(actor), role_of_membership(author)) do
       :ok
     else
       {:error, :unauthorized}
     end
   end
-
-  # The moderation delete rule: an actor with an owner/admin role may delete a
-  # message authored by an admin/member. Deleting one's own message is not a
-  # moderation decision — it is handled by the author clause of
-  # `authorize_delete_message/2` and `can_delete_message?/3`.
-  defp deletable?(actor_role, author_role), do: Roles.can_moderate?(actor_role, author_role)
 
   defp role_of_membership(%{role: role}), do: role
   defp role_of_membership(_no_membership), do: nil
