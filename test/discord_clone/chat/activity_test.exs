@@ -303,6 +303,107 @@ defmodule DiscordClone.Chat.ActivityTest do
     end
   end
 
+  describe "open_activity_item/2" do
+    test "marks only the selected recipient item read and returns its exact source" do
+      recipient_scope = user_scope_fixture(user_fixture(%{username: "activity_recipient"}))
+      author_scope = user_scope_fixture(user_fixture(%{username: "activity_author"}))
+      {:ok, workspace} = Workspaces.create_workspace(author_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, recipient_scope)
+
+      assert {:ok, first_message} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{
+                 content: "first request @activity_recipient"
+               })
+
+      assert {:ok, second_message} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{
+                 content: "second request @activity_recipient"
+               })
+
+      [first_item] = activity_items_for_message(first_message.id)
+      [second_item] = activity_items_for_message(second_message.id)
+
+      assert {:ok, destination} = Chat.open_activity_item(recipient_scope, first_item.id)
+
+      assert destination == %{
+               workspace_id: workspace.id,
+               channel_id: workspace.default_channel_id,
+               message_id: first_message.id
+             }
+
+      assert %DateTime{} = Repo.get!(ActivityItem, first_item.id).read_at
+      assert is_nil(Repo.get!(ActivityItem, second_item.id).read_at)
+      assert {:ok, 1} = Chat.unread_activity_count(recipient_scope)
+    end
+
+    test "uses one privacy-safe result without changing read state for invalid sources" do
+      recipient_scope = user_scope_fixture(user_fixture(%{username: "safe_recipient"}))
+      other_scope = user_scope_fixture(user_fixture(%{username: "safe_other"}))
+      author_scope = user_scope_fixture(user_fixture(%{username: "safe_author"}))
+      {:ok, workspace} = Workspaces.create_workspace(author_scope, %{name: "Foundry"})
+      {:ok, other_workspace} = Workspaces.create_workspace(other_scope, %{name: "Private"})
+      add_workspace_member!(workspace, recipient_scope)
+
+      assert {:ok, deleted_message} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{
+                 content: "deleted request @safe_recipient"
+               })
+
+      [deleted_item] = activity_items_for_message(deleted_message.id)
+      assert {:ok, _deleted_message} = Chat.delete_message(author_scope, deleted_message.id)
+
+      assert Chat.open_activity_item(recipient_scope, deleted_item.id) == {:error, :not_found}
+      assert Chat.open_activity_item(other_scope, deleted_item.id) == {:error, :not_found}
+
+      assert Chat.open_activity_item(recipient_scope, Ecto.UUID.generate()) ==
+               {:error, :not_found}
+
+      assert is_nil(Repo.get!(ActivityItem, deleted_item.id).read_at)
+
+      assert {:ok, wrong_channel_message} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{
+                 content: "wrong channel request @safe_recipient"
+               })
+
+      [wrong_channel_item] = activity_items_for_message(wrong_channel_message.id)
+
+      Repo.update_all(
+        from(activity_item in ActivityItem, where: activity_item.id == ^wrong_channel_item.id),
+        set: [source_channel_id: other_workspace.default_channel_id]
+      )
+
+      assert Chat.open_activity_item(recipient_scope, wrong_channel_item.id) ==
+               {:error, :not_found}
+
+      assert is_nil(Repo.get!(ActivityItem, wrong_channel_item.id).read_at)
+
+      assert {:ok, inaccessible_message} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{
+                 content: "inaccessible request @safe_recipient"
+               })
+
+      [inaccessible_item] = activity_items_for_message(inaccessible_message.id)
+
+      membership =
+        Repo.get_by!(WorkspaceMembership,
+          workspace_id: workspace.id,
+          user_id: recipient_scope.user.id
+        )
+
+      Repo.delete!(membership)
+
+      assert Chat.open_activity_item(recipient_scope, inaccessible_item.id) ==
+               {:error, :not_found}
+
+      assert is_nil(Repo.get!(ActivityItem, inaccessible_item.id).read_at)
+    end
+
+    test "requires an authenticated scope" do
+      assert Chat.open_activity_item(nil, Ecto.UUID.generate()) == {:error, :unauthenticated}
+      assert Chat.open_activity_item(%Scope{}, Ecto.UUID.generate()) == {:error, :unauthenticated}
+    end
+  end
+
   defp add_workspace_member!(workspace, scope) do
     %WorkspaceMembership{}
     |> WorkspaceMembership.changeset(%{

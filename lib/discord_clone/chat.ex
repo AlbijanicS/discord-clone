@@ -80,6 +80,73 @@ defmodule DiscordClone.Chat do
 
   def list_activity_feed(_scope), do: {:error, :unauthenticated}
 
+  @doc """
+  Opens one Activity Item for the scoped recipient.
+
+  The item is marked read only after its current Workspace membership, source
+  Channel, and live source Message have been validated together. All invalid or
+  inaccessible targets use `:not_found` so callers cannot infer source existence.
+  """
+  @spec open_activity_item(term(), term()) ::
+          {:ok,
+           %{workspace_id: Ecto.UUID.t(), channel_id: Ecto.UUID.t(), message_id: Ecto.UUID.t()}}
+          | {:error, :unauthenticated | :not_found}
+  def open_activity_item(%Scope{user: %User{id: user_id}}, activity_item_id) do
+    with {:ok, activity_item_id} <- Ecto.UUID.cast(activity_item_id) do
+      Repo.transaction(fn ->
+        destination =
+          Repo.one(
+            from activity_item in ActivityItem,
+              join: membership in WorkspaceMembership,
+              on:
+                membership.workspace_id == activity_item.workspace_id and
+                  membership.user_id == ^user_id,
+              join: channel in Channel,
+              on:
+                channel.id == activity_item.source_channel_id and
+                  channel.workspace_id == activity_item.workspace_id,
+              join: message in Message,
+              on:
+                message.id == activity_item.source_message_id and
+                  message.channel_id == activity_item.source_channel_id and
+                  is_nil(message.deleted_at),
+              where:
+                activity_item.id == ^activity_item_id and
+                  activity_item.recipient_user_id == ^user_id,
+              select: %{
+                workspace_id: activity_item.workspace_id,
+                channel_id: activity_item.source_channel_id,
+                message_id: activity_item.source_message_id
+              },
+              lock: "FOR UPDATE"
+          )
+
+        if destination do
+          Repo.update_all(
+            from(activity_item in ActivityItem,
+              where:
+                activity_item.id == ^activity_item_id and
+                  activity_item.recipient_user_id == ^user_id and
+                  is_nil(activity_item.read_at)
+            ),
+            set: [read_at: DateTime.utc_now(:microsecond)]
+          )
+
+          destination
+        else
+          Repo.rollback(:not_found)
+        end
+      end)
+    else
+      :error -> {:error, :not_found}
+    end
+  end
+
+  def open_activity_item(%Scope{user: %User{}}, _activity_item_id),
+    do: {:error, :not_found}
+
+  def open_activity_item(_scope, _activity_item_id), do: {:error, :unauthenticated}
+
   @doc "Initializes zero-unread read states for a user across a workspace's channels."
   @spec initialize_workspace_reads_for_user(Ecto.UUID.t(), Ecto.UUID.t()) ::
           :ok | {:error, reason()}

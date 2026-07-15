@@ -21,10 +21,14 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     {"🎉", "React with 🎉 to message"},
     {"👀", "React with 👀 to message"}
   ]
-  @reply_highlight_duration_ms 2_400
+  @message_highlight_duration_ms 2_400
 
   @impl true
-  def mount(%{"workspace_id" => workspace_id, "channel_id" => channel_id}, _session, socket) do
+  def mount(
+        %{"workspace_id" => workspace_id, "channel_id" => channel_id} = params,
+        _session,
+        socket
+      ) do
     with {:ok, workspace} <-
            Workspaces.fetch_workspace(socket.assigns.current_scope, workspace_id),
          {:ok, channel} <-
@@ -34,7 +38,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id),
          {:ok, current_member_moderation_state} <-
            current_member_moderation_state(socket, workspace.id),
-         {:ok, message_window} <- open_channel_message_window(socket, channel.id),
+         {:ok, message_window} <- open_channel_message_window(socket, channel.id, params),
          {:ok, channel_unread_counts} <- load_channel_unread_counts(socket, workspace.id),
          {:ok, selected_channel_read_summary} <-
            load_channel_read_summary(socket, workspace.id, channel.id),
@@ -62,8 +66,14 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:show_channel_form?, false)
         |> assign(:message_form, message_form())
         |> assign(:reply_target, nil)
-        |> assign(:reply_navigation_target_id, nil)
-        |> assign(:reply_navigation_target_token, nil)
+        |> assign(
+          :message_navigation_target_id,
+          get_in(message_window, [:navigation_target, :id])
+        )
+        |> assign(
+          :message_navigation_target_token,
+          get_in(message_window, [:navigation_target, :token])
+        )
         |> assign(:current_member_moderation_state, current_member_moderation_state)
         |> assign(:oldest_message, List.first(messages))
         |> assign(:latest_message, List.last(messages))
@@ -248,15 +258,15 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                 data-message-row={row_kind(row)}
                 data-message-id={row.message.id}
                 data-message-seq={row.message.seq}
-                data-reply-navigation-target={
-                  to_string(row.message.id == @reply_navigation_target_id)
+                data-message-navigation-target={
+                  to_string(row.message.id == @message_navigation_target_id)
                 }
                 data-visible-read-observe="true"
                 data-hover-surface="message-row"
-                style={reply_highlight_style(row.message.id, @reply_navigation_target_id)}
+                style={message_highlight_style(row.message.id, @message_navigation_target_id)}
                 class={[
                   "group relative grid w-full grid-cols-[2.75rem_minmax(0,1fr)] gap-x-3 rounded-md px-3 transition-colors duration-150 hover:bg-base-200/70 focus-within:bg-base-200/70",
-                  row.message.id == @reply_navigation_target_id && "reply-target-highlight",
+                  row.message.id == @message_navigation_target_id && "message-target-highlight",
                   if(row.row_kind == :compact, do: "py-0.5", else: "py-1.5")
                 ]}
               >
@@ -594,13 +604,13 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     {:noreply, refresh_deleted_message(socket, payload)}
   end
 
-  def handle_info({:clear_reply_navigation_target, target_id, token}, socket) do
-    if socket.assigns.reply_navigation_target_id == target_id and
-         socket.assigns.reply_navigation_target_token == token do
+  def handle_info({:clear_message_navigation_target, target_id, token}, socket) do
+    if socket.assigns.message_navigation_target_id == target_id and
+         socket.assigns.message_navigation_target_token == token do
       socket =
         socket
-        |> assign(:reply_navigation_target_id, nil)
-        |> assign(:reply_navigation_target_token, nil)
+        |> assign(:message_navigation_target_id, nil)
+        |> assign(:message_navigation_target_token, nil)
         |> assign(:message_scroll_target, nil)
         |> restream_message_row(target_id)
 
@@ -948,29 +958,13 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   end
 
   def handle_event("navigate_reply_parent", %{"message-id" => message_id}, socket) do
-    case Chat.navigate_to_message(
-           socket.assigns.current_scope,
-           socket.assigns.selected_channel.id,
-           message_id
-         ) do
-      {:ok, %{target: target} = message_window} ->
-        token = System.unique_integer([:positive])
-
-        Process.send_after(
-          self(),
-          {:clear_reply_navigation_target, target.id, token},
-          @reply_highlight_duration_ms
-        )
-
+    case navigate_to_message_window(socket, socket.assigns.selected_channel.id, message_id) do
+      {:ok, %{navigation_target: navigation_target} = message_window} ->
         {:noreply,
          socket
-         |> assign(:reply_navigation_target_id, target.id)
-         |> assign(:reply_navigation_target_token, token)
-         |> replace_message_window(message_window, %{
-           kind: :sequence,
-           seq: target.seq,
-           token: token
-         })}
+         |> assign(:message_navigation_target_id, navigation_target.id)
+         |> assign(:message_navigation_target_token, navigation_target.token)
+         |> replace_message_window(message_window, message_window.scroll_target)}
 
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "That replied message is no longer available.")}
@@ -1563,10 +1557,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   defp message_deleted?(%{deleted_at: %DateTime{}}), do: true
   defp message_deleted?(_message), do: false
 
-  defp reply_highlight_style(message_id, message_id),
-    do: "--reply-highlight-duration: #{@reply_highlight_duration_ms}ms"
+  defp message_highlight_style(message_id, message_id),
+    do: "--message-highlight-duration: #{@message_highlight_duration_ms}ms"
 
-  defp reply_highlight_style(_message_id, _target_id), do: nil
+  defp message_highlight_style(_message_id, _target_id), do: nil
 
   defp truncate_reply_content(nil), do: ""
 
@@ -1912,26 +1906,59 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
-  defp open_channel_message_window(socket, channel_id) do
+  defp open_channel_message_window(
+         socket,
+         channel_id,
+         %{"message_id" => message_id}
+       ) do
+    if connected?(socket) do
+      navigate_to_message_window(socket, channel_id, message_id)
+    else
+      {:ok, empty_message_window()}
+    end
+  end
+
+  defp open_channel_message_window(socket, channel_id, _params) do
     if connected?(socket) do
       with {:ok, %{landing: landing}} <-
              Chat.open_channel(socket.assigns.current_scope, channel_id) do
         load_landing_message_window(socket, channel_id, landing)
       end
     else
+      {:ok, empty_message_window()}
+    end
+  end
+
+  defp empty_message_window do
+    %{
+      messages: [],
+      meta: %{
+        oldest_seq: nil,
+        newest_seq: nil,
+        latest_seq: 0,
+        has_older?: false,
+        has_newer?: false,
+        at_latest?: true,
+        at_or_near_latest?: true
+      }
+    }
+  end
+
+  defp navigate_to_message_window(socket, channel_id, message_id) do
+    with {:ok, %{target: target} = message_window} <-
+           Chat.navigate_to_message(socket.assigns.current_scope, channel_id, message_id) do
+      token = System.unique_integer([:positive])
+
+      Process.send_after(
+        self(),
+        {:clear_message_navigation_target, target.id, token},
+        @message_highlight_duration_ms
+      )
+
       {:ok,
-       %{
-         messages: [],
-         meta: %{
-           oldest_seq: nil,
-           newest_seq: nil,
-           latest_seq: 0,
-           has_older?: false,
-           has_newer?: false,
-           at_latest?: true,
-           at_or_near_latest?: true
-         }
-       }}
+       message_window
+       |> Map.put(:navigation_target, %{id: target.id, token: token})
+       |> Map.put(:scroll_target, %{kind: :sequence, seq: target.seq, token: token})}
     end
   end
 

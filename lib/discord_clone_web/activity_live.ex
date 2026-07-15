@@ -26,6 +26,25 @@ defmodule DiscordCloneWeb.ActivityLive do
   end
 
   @impl true
+  def handle_event("open_activity_item", %{"activity-item-id" => activity_item_id}, socket) do
+    case Chat.open_activity_item(socket.assigns.current_scope, activity_item_id) do
+      {:ok, destination} ->
+        {:ok, unread_count} = Chat.unread_activity_count(socket.assigns.current_scope)
+
+        {:noreply,
+         socket
+         |> assign(:unread_activity_count, unread_count)
+         |> push_navigate(
+           to:
+             ~p"/workspaces/#{destination.workspace_id}/channels/#{destination.channel_id}?message_id=#{destination.message_id}"
+         )}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Activity is no longer available.")}
+    end
+  end
+
+  @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope}>
@@ -88,11 +107,23 @@ defmodule DiscordCloneWeb.ActivityLive do
               :for={{dom_id, activity_item} <- @streams.activity_items}
               id={dom_id}
               class={[
-                "group rounded-2xl border border-base-300 bg-base-100 p-5 shadow-sm",
+                "group rounded-2xl border border-base-300 bg-base-100 shadow-sm",
                 "transition duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md"
               ]}
             >
-              <div class={["flex gap-4"]}>
+              <button
+                id={"#{dom_id}-open"}
+                type="button"
+                phx-click="open_activity_item"
+                phx-value-activity-item-id={activity_item.id}
+                aria-label={"Open activity in ##{activity_item.source_channel.name}"}
+                class={[
+                  "flex w-full gap-4 rounded-2xl p-5 text-left",
+                  "transition-colors duration-200 focus-visible:outline-none",
+                  "focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2",
+                  "hover:bg-base-200/35"
+                ]}
+              >
                 <div class={[
                   "flex size-10 shrink-0 items-center justify-center rounded-xl",
                   "bg-primary/10 text-primary ring-1 ring-primary/15"
@@ -136,7 +167,7 @@ defmodule DiscordCloneWeb.ActivityLive do
                     {activity_item.source_message.content}
                   </p>
                 </div>
-              </div>
+              </button>
             </article>
           </div>
         </section>

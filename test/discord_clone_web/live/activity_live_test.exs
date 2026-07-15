@@ -140,6 +140,88 @@ defmodule DiscordCloneWeb.ActivityLiveTest do
       assert is_nil(Repo.get!(ActivityItem, first_item.id).read_at)
       assert is_nil(Repo.get!(ActivityItem, second_item.id).read_at)
     end
+
+    test "opens an out-of-window source, marks only that item read, and refreshes the bell", %{
+      conn: conn
+    } do
+      recipient_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      recipient_conn = log_in_user(conn, recipient_scope.user)
+      author_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(author_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, recipient_scope)
+
+      assert {:ok, source_message} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{
+                 content: "distant request @#{recipient_scope.user.username}"
+               })
+
+      assert {:ok, remaining_message} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{
+                 content: "remaining request @#{recipient_scope.user.username}"
+               })
+
+      for index <- 1..55 do
+        assert {:ok, _message} =
+                 Chat.send_message(author_scope, workspace.default_channel_id, %{
+                   content: "filler #{index}"
+                 })
+      end
+
+      source_item = activity_item_for_message!(source_message.id)
+      remaining_item = activity_item_for_message!(remaining_message.id)
+      {:ok, activity_view, _html} = live(recipient_conn, ~p"/activity")
+
+      destination =
+        ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}?message_id=#{source_message.id}"
+
+      {:ok, channel_view, _html} =
+        activity_view
+        |> element("#activity-item-#{source_item.id}-open")
+        |> render_click()
+        |> follow_redirect(recipient_conn, destination)
+
+      assert %DateTime{} = Repo.get!(ActivityItem, source_item.id).read_at
+      assert is_nil(Repo.get!(ActivityItem, remaining_item.id).read_at)
+      assert {:ok, 1} = Chat.unread_activity_count(recipient_scope)
+      assert has_element?(channel_view, "#global-activity-unread-count", "1")
+
+      assert has_element?(
+               channel_view,
+               "#message-#{source_message.id}[data-message-navigation-target='true'].message-target-highlight"
+             )
+
+      assert has_element?(
+               channel_view,
+               "#channel-messages[data-scroll-target-kind='sequence'][data-scroll-target-seq='#{source_message.seq}']"
+             )
+    end
+
+    test "shows the same safe failure for unavailable and malformed activity targets", %{
+      conn: conn
+    } do
+      recipient_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      recipient_conn = log_in_user(conn, recipient_scope.user)
+      author_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(author_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, recipient_scope)
+
+      assert {:ok, source_message} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{
+                 content: "temporary request @#{recipient_scope.user.username}"
+               })
+
+      source_item = activity_item_for_message!(source_message.id)
+      {:ok, view, _html} = live(recipient_conn, ~p"/activity")
+      assert {:ok, _deleted_message} = Chat.delete_message(author_scope, source_message.id)
+
+      for activity_item_id <- [source_item.id, Ecto.UUID.generate(), "not-a-uuid"] do
+        render_hook(view, "open_activity_item", %{"activity-item-id" => activity_item_id})
+        assert has_element?(view, "#flash-error", "Activity is no longer available")
+      end
+
+      assert is_nil(Repo.get!(ActivityItem, source_item.id).read_at)
+      assert {:ok, 1} = Chat.unread_activity_count(recipient_scope)
+    end
   end
 
   defp activity_item_for_message!(message_id) do

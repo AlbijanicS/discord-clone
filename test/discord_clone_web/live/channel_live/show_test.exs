@@ -261,7 +261,7 @@ defmodule DiscordCloneWeb.ChannelLive.ShowTest do
 
       assert has_element?(
                view,
-               "#message-#{parent.id}[data-reply-navigation-target='true'].reply-target-highlight"
+               "#message-#{parent.id}[data-message-navigation-target='true'].message-target-highlight"
              )
 
       assert has_element?(

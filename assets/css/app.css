@@ -99,9 +99,9 @@
 /* Use the data attribute for dark mode  */
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
-/* Briefly call out the exact row reached through a reply preview. */
+/* Briefly call out an exact source Message reached through navigation. */
 
-@keyframes reply-target-highlight {
+@keyframes message-target-highlight {
   0%,
   35% {
     background-color: color-mix(in oklab, var(--color-primary) 22%, transparent);
@@ -114,8 +114,8 @@
   }
 }
 
-.reply-target-highlight {
-  animation: reply-target-highlight var(--reply-highlight-duration) ease-out;
+.message-target-highlight {
+  animation: message-target-highlight var(--message-highlight-duration) ease-out;
 }
 
 /* Make LiveView wrapper divs transparent for layout */
