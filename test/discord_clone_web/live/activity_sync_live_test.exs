@@ -36,12 +36,30 @@ defmodule DiscordCloneWeb.ActivitySyncLiveTest do
     assert has_element?(workspace_view, "#global-activity-unread-count", "1")
     assert has_element?(channel_view, "#global-activity-unread-count", "1")
     assert has_element?(activity_view, "#global-activity-unread-count", "1")
+
+    assert has_element?(
+             workspace_view,
+             "#activity-preview-item-#{item.id}[data-read-state='unread']"
+           )
+
+    assert has_element?(
+             channel_view,
+             "#activity-preview-item-#{item.id}[data-read-state='unread']"
+           )
+
     assert has_element?(activity_view, "#activity-item-#{item.id}[data-read-state='unread']")
 
     assert {:ok, _destination} = Chat.open_activity_item(recipient_scope, item.id)
 
     assert has_element?(workspace_view, "#global-activity-unread-count", "0")
     assert has_element?(channel_view, "#global-activity-unread-count", "0")
+
+    assert has_element?(
+             workspace_view,
+             "#activity-preview-item-#{item.id}[data-read-state='read']"
+           )
+
+    assert has_element?(channel_view, "#activity-preview-item-#{item.id}[data-read-state='read']")
     assert has_element?(activity_view, "#activity-item-#{item.id}[data-read-state='read']")
   end
 
@@ -87,11 +105,13 @@ defmodule DiscordCloneWeb.ActivitySyncLiveTest do
 
     deletion_item = Repo.get_by!(ActivityItem, source_message_id: deletion_message.id)
     assert has_element?(workspace_view, "#global-activity-unread-count", "1")
+    assert has_element?(workspace_view, "#activity-preview-item-#{deletion_item.id}")
     assert has_element?(second_feed_view, "#global-activity-unread-count", "1")
     assert has_element?(second_feed_view, "#activity-item-#{deletion_item.id}")
 
     assert {:ok, _deleted_message} = Chat.delete_message(author_scope, deletion_message.id)
     assert has_element?(workspace_view, "#global-activity-unread-count", "0")
+    refute has_element?(workspace_view, "#activity-preview-item-#{deletion_item.id}")
     assert has_element?(second_feed_view, "#global-activity-unread-count", "0")
     refute has_element?(first_feed_view, "#activity-item-#{deletion_item.id}")
     refute has_element?(second_feed_view, "#activity-item-#{deletion_item.id}")

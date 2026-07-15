@@ -5,6 +5,7 @@ defmodule DiscordCloneWeb.AuthenticatedActivityShellTest do
   import DiscordCloneWeb.WorkspaceLiveTestHelpers, only: [add_workspace_member!: 2]
 
   alias DiscordClone.Chat
+  alias DiscordClone.Repo
   alias DiscordClone.Workspaces
 
   describe "authenticated activity bell" do
@@ -37,6 +38,56 @@ defmodule DiscordCloneWeb.AuthenticatedActivityShellTest do
 
       assert has_element?(channel_view, "#global-activity-bell[aria-label='1 unread activity']")
       assert has_element?(channel_view, "#global-activity-unread-count", "1")
+    end
+
+    test "shows a live hover preview while keeping the dedicated activity link", %{
+      conn: recipient_conn,
+      scope: recipient_scope
+    } do
+      author_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(author_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, recipient_scope)
+
+      assert {:ok, message} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{
+                 content: "please review @#{recipient_scope.user.username}"
+               })
+
+      activity_item =
+        Repo.get_by!(DiscordClone.Activities.ActivityItem, source_message_id: message.id)
+
+      {:ok, view, _html} = live(recipient_conn, ~p"/workspaces")
+
+      assert has_element?(view, "#global-activity-bell[href='/activity']")
+
+      assert has_element?(view, "#global-activity-bell[aria-controls='activity-preview-popover']")
+      assert has_element?(view, "#activity-preview-popover[role='dialog']")
+
+      assert has_element?(view, "#activity-preview-feed[phx-update='stream']")
+
+      assert has_element?(
+               view,
+               "#activity-preview-item-#{activity_item.id}[data-read-state='unread']",
+               message.content
+             )
+
+      assert has_element?(
+               view,
+               "#activity-preview-view-all[href='/activity']",
+               "View all activity"
+             )
+
+      destination =
+        ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}?message_id=#{message.id}"
+
+      {:ok, channel_view, _html} =
+        view
+        |> element("#activity-preview-item-#{activity_item.id}-open")
+        |> render_click()
+        |> follow_redirect(recipient_conn, destination)
+
+      assert has_element?(channel_view, "#global-activity-unread-count", "0")
+      assert %DateTime{} = Repo.reload!(activity_item).read_at
     end
 
     test "does not expose another user's unread count", %{conn: conn} do

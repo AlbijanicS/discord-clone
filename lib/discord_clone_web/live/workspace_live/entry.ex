@@ -34,6 +34,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
         context_menu_position={@context_menu_position}
         current_scope={@current_scope}
         unread_activity_count={@unread_activity_count}
+        activity_preview_stream={@streams.activity_preview_items}
         main_state={:empty_channel}
       />
     </Layouts.app>

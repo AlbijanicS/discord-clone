@@ -6,6 +6,8 @@ defmodule DiscordCloneWeb.ActivityLive do
   alias DiscordClone.{Chat, Workspaces}
   alias DiscordCloneWeb.WorkspaceLive.Shell
 
+  @activity_preview_limit 5
+
   def on_mount(:assign_unread_count, _params, _session, socket) do
     if activity_consumer?(socket.view) do
       if connected?(socket) do
@@ -14,8 +16,12 @@ defmodule DiscordCloneWeb.ActivityLive do
 
       socket =
         socket
-        |> assign_unread_activity_count()
-        |> attach_hook(:activity_unread_count, :handle_info, &refresh_unread_count/2)
+        |> stream_configure(:activity_preview_items,
+          dom_id: &"activity-preview-item-#{&1.id}"
+        )
+        |> assign_activity_shell(socket.view)
+        |> attach_hook(:activity_summary, :handle_info, &refresh_activity_summary/2)
+        |> attach_hook(:activity_preview_events, :handle_event, &handle_activity_preview_event/3)
 
       {:cont, socket}
     else
@@ -33,6 +39,11 @@ defmodule DiscordCloneWeb.ActivityLive do
       |> assign(:activity_feed_pages_loaded, 1)
       |> assign(:activity_next_cursor, activity_feed_page.next_cursor)
       |> stream(:workspaces, workspaces)
+      |> stream(
+        :activity_preview_items,
+        Enum.take(activity_feed_page.items, @activity_preview_limit),
+        reset: true
+      )
       |> stream_configure(:activity_items, dom_id: &"activity-item-#{&1.id}")
       |> stream(:activity_items, activity_feed_page.items)
 
@@ -78,6 +89,11 @@ defmodule DiscordCloneWeb.ActivityLive do
        socket
        |> assign(:activity_next_cursor, activity_feed_page.next_cursor)
        |> assign(:unread_activity_count, unread_count)
+       |> stream(
+         :activity_preview_items,
+         Enum.take(activity_feed_page.items, @activity_preview_limit),
+         reset: true
+       )
        |> stream(:activity_items, activity_feed_page.items, reset: true)}
     else
       {:error, _reason} ->
@@ -114,6 +130,11 @@ defmodule DiscordCloneWeb.ActivityLive do
         {:noreply,
          socket
          |> assign(:activity_next_cursor, activity_feed_page.next_cursor)
+         |> stream(
+           :activity_preview_items,
+           Enum.take(activity_feed_page.items, @activity_preview_limit),
+           reset: true
+         )
          |> stream(:activity_items, activity_feed_page.items, reset: true)}
 
       {:error, _reason} ->
@@ -129,6 +150,7 @@ defmodule DiscordCloneWeb.ActivityLive do
         workspace_stream={@streams.workspaces}
         current_scope={@current_scope}
         unread_activity_count={@unread_activity_count}
+        activity_preview_stream={@streams.activity_preview_items}
         main_state={:activity}
       >
         <section
@@ -310,15 +332,55 @@ defmodule DiscordCloneWeb.ActivityLive do
     load_activity_feed_pages(scope, page_count, nil, [])
   end
 
-  defp refresh_unread_count({:activity_changed, _payload}, %{view: __MODULE__} = socket) do
+  defp refresh_activity_summary({:activity_changed, _payload}, %{view: __MODULE__} = socket) do
     {:cont, assign_unread_activity_count(socket)}
   end
 
-  defp refresh_unread_count({:activity_changed, _payload}, socket) do
-    {:halt, assign_unread_activity_count(socket)}
+  defp refresh_activity_summary({:activity_changed, _payload}, socket) do
+    {:halt, assign_activity_summary(socket)}
   end
 
-  defp refresh_unread_count(_message, socket), do: {:cont, socket}
+  defp refresh_activity_summary(_message, socket), do: {:cont, socket}
+
+  defp assign_activity_summary(socket) do
+    {:ok, unread_count} = Chat.unread_activity_count(socket.assigns.current_scope)
+    {:ok, activity_feed_page} = Chat.list_activity_feed(socket.assigns.current_scope)
+
+    socket
+    |> assign(:unread_activity_count, unread_count)
+    |> stream(
+      :activity_preview_items,
+      Enum.take(activity_feed_page.items, @activity_preview_limit),
+      reset: true
+    )
+  end
+
+  defp handle_activity_preview_event(
+         "open_activity_preview_item",
+         %{"activity-item-id" => activity_item_id},
+         socket
+       ) do
+    socket =
+      case Chat.open_activity_item(socket.assigns.current_scope, activity_item_id) do
+        {:ok, destination} ->
+          socket
+          |> assign_unread_activity_count()
+          |> push_navigate(
+            to:
+              ~p"/workspaces/#{destination.workspace_id}/channels/#{destination.channel_id}?message_id=#{destination.message_id}"
+          )
+
+        {:error, _reason} ->
+          put_flash(socket, :error, "Activity is no longer available.")
+      end
+
+    {:halt, socket}
+  end
+
+  defp handle_activity_preview_event(_event, _params, socket), do: {:cont, socket}
+
+  defp assign_activity_shell(socket, __MODULE__), do: assign_unread_activity_count(socket)
+  defp assign_activity_shell(socket, _view), do: assign_activity_summary(socket)
 
   defp assign_unread_activity_count(socket) do
     {:ok, unread_count} = Chat.unread_activity_count(socket.assigns.current_scope)
