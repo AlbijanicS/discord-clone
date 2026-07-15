@@ -10,11 +10,13 @@ defmodule DiscordClone.Chat do
 
   alias Ecto.Multi
   alias DiscordClone.Accounts.{Scope, User}
+  alias DiscordClone.Activities.ActivityItem
 
   alias DiscordClone.Chat.{
     ChannelReadState,
     Emoji,
     Message,
+    MentionParser,
     MessageReaction,
     MessageWindow,
     Runtime,
@@ -41,6 +43,22 @@ defmodule DiscordClone.Chat do
   def change_message(attrs \\ %{}) do
     Message.changeset(%Message{}, attrs)
   end
+
+  @doc "Returns the scoped user's global unread activity count."
+  @spec unread_activity_count(term()) :: {:ok, non_neg_integer()} | {:error, :unauthenticated}
+  def unread_activity_count(%Scope{user: %User{id: user_id}}) do
+    count =
+      Repo.aggregate(
+        from(activity_item in ActivityItem,
+          where: activity_item.recipient_user_id == ^user_id and is_nil(activity_item.read_at)
+        ),
+        :count
+      )
+
+    {:ok, count}
+  end
+
+  def unread_activity_count(_scope), do: {:error, :unauthenticated}
 
   @doc "Initializes zero-unread read states for a user across a workspace's channels."
   @spec initialize_workspace_reads_for_user(Ecto.UUID.t(), Ecto.UUID.t()) ::
@@ -609,6 +627,7 @@ defmodule DiscordClone.Chat do
              locked_channel
              |> Ecto.Changeset.change(last_message_seq: next_seq)
              |> Repo.update() do
+        insert_direct_mention_activity!(message, channel, user_id)
         read_state_changes = Unread.fanout_on_send!(channel, user_id, next_seq)
         {message, read_state_changes}
       else
@@ -616,6 +635,38 @@ defmodule DiscordClone.Chat do
           Repo.rollback({:invalid_message, changeset})
       end
     end)
+  end
+
+  defp insert_direct_mention_activity!(%Message{} = message, %Channel{} = channel, actor_id) do
+    message.content
+    |> MentionParser.usernames()
+    |> direct_mention_recipient_ids(channel.workspace_id, actor_id)
+    |> Enum.each(fn recipient_user_id ->
+      %ActivityItem{
+        recipient_user_id: recipient_user_id,
+        actor_user_id: actor_id,
+        source_message_id: message.id,
+        source_channel_id: channel.id,
+        workspace_id: channel.workspace_id
+      }
+      |> ActivityItem.create_changeset(ActivityItem.user_mention_kind())
+      |> Repo.insert!()
+    end)
+  end
+
+  defp direct_mention_recipient_ids([], _workspace_id, _actor_id), do: []
+
+  defp direct_mention_recipient_ids(usernames, workspace_id, actor_id) do
+    Repo.all(
+      from membership in WorkspaceMembership,
+        join: user in assoc(membership, :user),
+        where:
+          membership.workspace_id == ^workspace_id and user.id != ^actor_id and
+            user.username in ^usernames,
+        order_by: [asc: user.id],
+        lock: "FOR SHARE",
+        select: user.id
+    )
   end
 
   defp validate_reply_target(_changeset, _channel_id, _next_seq, nil), do: {:ok, nil}

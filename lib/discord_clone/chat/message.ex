@@ -17,6 +17,9 @@ defmodule DiscordClone.Chat.Message do
 
     has_many :message_reactions, DiscordClone.Chat.MessageReaction
 
+    has_many :activity_items, DiscordClone.Activities.ActivityItem,
+      foreign_key: :source_message_id
+
     timestamps(type: :utc_datetime_usec)
   end
 

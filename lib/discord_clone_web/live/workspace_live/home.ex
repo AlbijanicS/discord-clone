@@ -30,6 +30,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Home do
         workspace_form={@workspace_form}
         show_workspace_form?={@show_workspace_form?}
         current_scope={@current_scope}
+        unread_activity_count={@unread_activity_count}
         main_state={:no_workspace}
       />
     </Layouts.app>

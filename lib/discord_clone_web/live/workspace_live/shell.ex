@@ -28,6 +28,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   attr :banned_members, :list, default: []
   attr :online_user_ids, :any, default: MapSet.new()
   attr :channel_unread_counts, :map, default: %{}
+  attr :unread_activity_count, :integer, default: 0
 
   slot :inner_block
 
@@ -399,6 +400,26 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
             <div class="min-w-0 flex-1">
               <p class="truncate text-sm font-semibold">{@current_scope.user.username}</p>
               <p class="truncate text-xs text-base-content/50">{@current_scope.user.email}</p>
+            </div>
+            <div
+              id="global-activity-bell"
+              class={[
+                "relative flex size-8 shrink-0 items-center justify-center rounded text-slate-400 transition",
+                "hover:bg-slate-800 hover:text-slate-100"
+              ]}
+              aria-label={activity_unread_label(@unread_activity_count)}
+              title={activity_unread_label(@unread_activity_count)}
+            >
+              <.icon name="hero-bell" class="size-4" />
+              <span
+                id="global-activity-unread-count"
+                class={[
+                  "absolute -right-1.5 -top-1.5 flex min-w-4 items-center justify-center rounded-full",
+                  "bg-indigo-500 px-1 text-[0.625rem] font-bold leading-4 text-white shadow-sm ring-2 ring-slate-800"
+                ]}
+              >
+                {@unread_activity_count}
+              </span>
             </div>
             <.link
               href={~p"/users/settings"}
@@ -846,6 +867,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
 
   defp audit_event_time(%DateTime{} = datetime),
     do: Calendar.strftime(datetime, "%b %-d, %Y %H:%M")
+
+  defp activity_unread_label(1), do: "1 unread activity"
+  defp activity_unread_label(count), do: "#{count} unread activities"
 
   defp workspace_shell_class(true),
     do:

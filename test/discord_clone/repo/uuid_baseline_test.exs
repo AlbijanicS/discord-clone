@@ -17,6 +17,7 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
     workspace_audit_events
     messages
     message_reactions
+    activity_items
     channel_reads
     channel_read_states
     channel_unread_spans
@@ -138,6 +139,7 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
           workspace_bans_workspace_id_target_user_id_index
           messages_channel_id_seq_index
           message_reactions_message_id_user_id_emoji_index
+          activity_items_recipient_user_id_source_message_id_index
           channel_reads_channel_id_user_id_index
           channel_read_states_channel_id_user_id_index
         ) do
@@ -209,6 +211,11 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
 
   defp expected_foreign_key_delete_actions do
     %{
+      "activity_items_actor_user_id_fkey" => "nilify_all",
+      "activity_items_recipient_user_id_fkey" => "delete_all",
+      "activity_items_source_channel_id_fkey" => "delete_all",
+      "activity_items_source_message_id_fkey" => "delete_all",
+      "activity_items_workspace_id_fkey" => "delete_all",
       "channel_read_states_channel_id_fkey" => "delete_all",
       "channel_read_states_user_id_fkey" => "delete_all",
       "channel_reads_channel_id_fkey" => "delete_all",

@@ -12,6 +12,10 @@ defmodule DiscordClone.Workspaces.Channel do
     belongs_to :workspace, DiscordClone.Workspaces.Workspace
 
     has_many :messages, DiscordClone.Chat.Message
+
+    has_many :activity_items, DiscordClone.Activities.ActivityItem,
+      foreign_key: :source_channel_id
+
     has_many :channel_reads, DiscordClone.Chat.ChannelRead
     has_many :channel_read_states, DiscordClone.Chat.ChannelReadState
     has_many :channel_unread_spans, DiscordClone.Chat.ChannelUnreadSpan

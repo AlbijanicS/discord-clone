@@ -54,7 +54,10 @@ defmodule DiscordCloneWeb.Router do
     post "/invites/:code/accept", InviteController, :accept
 
     live_session :require_authenticated_user,
-      on_mount: [{DiscordCloneWeb.UserAuth, :require_authenticated}] do
+      on_mount: [
+        {DiscordCloneWeb.UserAuth, :require_authenticated},
+        {DiscordCloneWeb.ActivityLive, :assign_unread_count}
+      ] do
       live "/workspaces", WorkspaceLive.Home, :index
       live "/workspaces/:workspace_id", WorkspaceLive.Entry, :show
       live "/workspaces/:workspace_id/audit-log", WorkspaceLive.AuditLog, :index

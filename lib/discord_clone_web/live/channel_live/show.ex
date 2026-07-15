@@ -130,6 +130,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         channel_rename_form={@channel_rename_form}
         context_menu_position={@context_menu_position}
         current_scope={@current_scope}
+        unread_activity_count={@unread_activity_count}
         main_state={:channel}
         online_user_ids={@online_user_ids}
         channel_unread_counts={@channel_unread_counts}

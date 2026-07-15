@@ -33,6 +33,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
         workspace_rename_form={@workspace_rename_form}
         context_menu_position={@context_menu_position}
         current_scope={@current_scope}
+        unread_activity_count={@unread_activity_count}
         main_state={:empty_channel}
       />
     </Layouts.app>
