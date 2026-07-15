@@ -6,7 +6,7 @@ defmodule DiscordClone.Accounts do
   import Ecto.Query, warn: false
   alias DiscordClone.{Repo, UUIDIdentifier}
 
-  alias DiscordClone.Accounts.{User, UserToken, UserNotifier}
+  alias DiscordClone.Accounts.{Scope, User, UserToken, UserNotifier}
 
   ## Database getters
 
@@ -107,6 +107,22 @@ defmodule DiscordClone.Accounts do
   end
 
   def sudo_mode?(_user, _minutes), do: false
+
+  @doc """
+  Returns an `%Ecto.Changeset{}` for changing the username.
+  """
+  def change_user_username(%Scope{user: %User{} = user}, attrs \\ %{}, opts \\ []) do
+    User.username_changeset(user, attrs, opts)
+  end
+
+  @doc """
+  Updates the username using registration's username rules.
+  """
+  def update_user_username(%Scope{user: %User{} = user}, attrs) do
+    user
+    |> User.username_changeset(attrs)
+    |> Repo.update()
+  end
 
   @doc """
   Returns an `%Ecto.Changeset{}` for changing the user email.

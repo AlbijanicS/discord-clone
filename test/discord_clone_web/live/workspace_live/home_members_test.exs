@@ -142,6 +142,53 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMembersTest do
              )
     end
 
+    test "does not render the offline section when every member is online", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      refute has_element?(view, "#workspace-members-offline-section")
+    end
+
+    test "does not render the offline section in the static render of a solo workspace", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      conn = get(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      refute html_response(conn, 200) =~ "workspace-members-offline-section"
+    end
+
+    test "removes the offline header when the last offline member comes online", %{
+      conn: conn,
+      scope: owner_scope
+    } do
+      member_scope =
+        %{username: "late_joiner"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope, "member")
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#workspace-members-offline-section", "Offline")
+
+      member_pid = start_live_view_process()
+      assert :ok = Chat.join_workspace_presence(member_scope, workspace.id, member_pid)
+
+      render(view)
+      refute has_element?(view, "#workspace-members-offline-section")
+    end
+
     test "shows member row actions to owners and hides them from regular members", %{
       conn: owner_conn,
       scope: owner_scope

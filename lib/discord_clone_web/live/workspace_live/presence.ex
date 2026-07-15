@@ -2,7 +2,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Presence do
   @moduledoc false
 
   import Phoenix.Component, only: [assign: 3]
-  import Phoenix.LiveView, only: [connected?: 1, stream: 3, stream: 4, stream_configure: 3]
+  import Phoenix.LiveView, only: [connected?: 1, stream: 4, stream_configure: 3]
 
   alias DiscordClone.Chat
 
@@ -10,26 +10,42 @@ defmodule DiscordCloneWeb.WorkspaceLive.Presence do
     socket
     |> assign(:workspace_members, members)
     |> stream_configure(:workspace_members, dom_id: &sidebar_item_dom_id/1)
-    |> stream(:workspace_members, sidebar_items(members, MapSet.new()))
     |> join_workspace(workspace_id)
   end
 
+  # Streaming the sidebar exactly once per mount matters: two stream calls in
+  # the same render cycle merge into a single client patch, and items from the
+  # first batch that the second batch no longer contains (e.g. a stale
+  # "Offline" section header) are never removed from the DOM.
   def join_workspace(socket, workspace_id) do
+    socket
+    |> assign_online_user_ids(workspace_id)
+    |> refresh_workspace_members()
+  end
+
+  defp assign_online_user_ids(socket, workspace_id) do
     if connected?(socket) do
       with :ok <- Chat.subscribe_to_workspace_presence(socket.assigns.current_scope, workspace_id),
            :ok <- Chat.join_workspace_presence(socket.assigns.current_scope, workspace_id),
            {:ok, online_user_ids} <-
              Chat.list_online_workspace_user_ids(socket.assigns.current_scope, workspace_id) do
-        socket
-        |> assign(:online_user_ids, MapSet.new(online_user_ids))
-        |> refresh_workspace_members()
+        assign(socket, :online_user_ids, MapSet.new(online_user_ids))
       else
-        {:error, _reason} -> assign(socket, :online_user_ids, MapSet.new())
+        {:error, _reason} -> assign(socket, :online_user_ids, seed_online_user_ids(socket))
       end
     else
-      assign(socket, :online_user_ids, MapSet.new())
+      assign(socket, :online_user_ids, seed_online_user_ids(socket))
     end
   end
+
+  # The current user is always online from their own point of view; seeding the
+  # set with their id keeps the static render from listing them under Offline
+  # before the real presence data arrives on connect.
+  defp seed_online_user_ids(%{assigns: %{current_scope: %{user: %{id: user_id}}}}) do
+    MapSet.new([user_id])
+  end
+
+  defp seed_online_user_ids(_socket), do: MapSet.new()
 
   def user_joined(socket, payload), do: update_online_user_ids(socket, payload, :join)
   def user_left(socket, payload), do: update_online_user_ids(socket, payload, :leave)

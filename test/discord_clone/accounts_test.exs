@@ -70,6 +70,15 @@ defmodule DiscordClone.AccountsTest do
                errors_on(changeset)
     end
 
+    test "rejects the reserved everyone username after normalization" do
+      for username <- ["everyone", "EVERYONE", "  Everyone  "] do
+        {:error, changeset} =
+          Accounts.register_user(%{email: unique_user_email(), username: username})
+
+        assert errors_on(changeset).username == ["is reserved"]
+      end
+    end
+
     test "validates maximum values for email for security" do
       too_long = String.duplicate("db", 100)
 
@@ -137,6 +146,44 @@ defmodule DiscordClone.AccountsTest do
 
       # not authenticated
       refute Accounts.sudo_mode?(%User{})
+    end
+  end
+
+  describe "update_user_username/2" do
+    test "updates and normalizes the username" do
+      scope = user_scope_fixture()
+      user = scope.user
+
+      assert {:ok, updated_user} =
+               Accounts.update_user_username(scope, %{username: "  New_Username  "})
+
+      assert updated_user.username == "new_username"
+      assert Repo.reload!(user).username == "new_username"
+    end
+
+    test "preserves case-insensitive username uniqueness" do
+      scope = user_scope_fixture()
+      user = scope.user
+      existing_user = user_fixture()
+
+      assert {:error, changeset} =
+               Accounts.update_user_username(scope, %{
+                 username: String.upcase(existing_user.username)
+               })
+
+      assert errors_on(changeset).username == ["has already been taken"]
+      assert Repo.reload!(user).username == user.username
+    end
+
+    test "rejects the reserved everyone username after normalization" do
+      scope = user_scope_fixture()
+      user = scope.user
+
+      for username <- ["everyone", "EVERYONE", "  Everyone  "] do
+        assert {:error, changeset} = Accounts.update_user_username(scope, %{username: username})
+        assert errors_on(changeset).username == ["is reserved"]
+        assert Repo.reload!(user).username == user.username
+      end
     end
   end
 

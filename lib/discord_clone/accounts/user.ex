@@ -40,6 +40,18 @@ defmodule DiscordClone.Accounts.User do
   end
 
   @doc """
+  A user changeset for changing the username.
+
+  It shares registration's normalization, format, reserved-name, and
+  uniqueness rules.
+  """
+  def username_changeset(user, attrs, opts \\ []) do
+    user
+    |> cast(attrs, [:username])
+    |> validate_username(opts)
+  end
+
+  @doc """
   A user changeset for registering or changing the email.
 
   It requires the email to change otherwise an error is added.
@@ -89,6 +101,7 @@ defmodule DiscordClone.Accounts.User do
       |> update_change(:username, &normalize_username/1)
       |> validate_required([:username])
       |> validate_length(:username, min: 3, max: 32)
+      |> validate_exclusion(:username, ["everyone"])
       |> validate_format(:username, ~r/^[a-z0-9_]+$/,
         message: "must use only lowercase letters, numbers, and underscores"
       )
@@ -97,6 +110,10 @@ defmodule DiscordClone.Accounts.User do
       changeset
       |> unsafe_validate_unique(:username, DiscordClone.Repo)
       |> unique_constraint(:username)
+      |> check_constraint(:username,
+        name: :users_username_not_reserved,
+        message: "is reserved"
+      )
     else
       changeset
     end

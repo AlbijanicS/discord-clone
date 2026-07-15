@@ -196,33 +196,15 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               Skip to latest
             </button>
           </div>
-          <div
-            id="channel-messages"
-            phx-update="stream"
-            phx-hook="ChannelMessages"
-            data-has-older-messages={to_string(@has_older_messages?)}
-            data-has-newer-messages={to_string(@message_window_meta.has_newer?)}
-            data-loading-older={to_string(@loading_older_messages?)}
-            data-loading-newer={to_string(@loading_newer_messages?)}
-            data-scroll-target-kind={ScrollAnchoring.scroll_target_kind(@message_scroll_target)}
-            data-scroll-target-seq={ScrollAnchoring.scroll_target_seq(@message_scroll_target)}
-            class="min-h-0 flex-1 scroll-pb-6 overflow-y-auto px-5 py-6 [overflow-anchor:none]"
-          >
-            <div
-              id="older-messages-loading"
-              data-loading={to_string(@loading_older_messages?)}
-              aria-live="polite"
-              class={[
-                "py-2 text-center text-xs font-semibold uppercase tracking-wide text-base-content/45",
-                !@loading_older_messages? && "sr-only"
-              ]}
-            >
-              Loading older messages
-            </div>
+          <div class="relative min-h-0 flex-1">
+            <%!-- The empty state is a sibling of (not a child inside) the
+            phx-update="stream" container: LiveView does not patch non-stream
+            children of a stream container after the first render, so an empty
+            state placed inside would linger until a full reload. --%>
             <div
               :if={is_nil(@oldest_message)}
               id="channel-empty-state"
-              class="flex h-full items-center justify-center text-center"
+              class="pointer-events-none absolute inset-0 flex items-center justify-center text-center"
             >
               <div>
                 <p class="text-lg font-semibold">No messages yet</p>
@@ -231,172 +213,198 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                 </p>
               </div>
             </div>
-            <article
-              :for={{dom_id, row} <- @streams.messages}
-              id={dom_id}
-              data-message-row={row_kind(row)}
-              data-message-id={row.message.id}
-              data-message-seq={row.message.seq}
-              data-visible-read-observe="true"
-              data-hover-surface="message-row"
-              class={[
-                "group relative grid w-full grid-cols-[2.75rem_minmax(0,1fr)] gap-x-3 rounded-md px-3 transition-colors duration-150 hover:bg-base-200/70 focus-within:bg-base-200/70",
-                if(row.row_kind == :compact, do: "py-0.5", else: "py-1.5")
-              ]}
+            <div
+              id="channel-messages"
+              phx-update="stream"
+              phx-hook="ChannelMessages"
+              data-has-older-messages={to_string(@has_older_messages?)}
+              data-has-newer-messages={to_string(@message_window_meta.has_newer?)}
+              data-loading-older={to_string(@loading_older_messages?)}
+              data-loading-newer={to_string(@loading_newer_messages?)}
+              data-scroll-target-kind={ScrollAnchoring.scroll_target_kind(@message_scroll_target)}
+              data-scroll-target-seq={ScrollAnchoring.scroll_target_seq(@message_scroll_target)}
+              class="absolute inset-0 scroll-pb-6 overflow-y-auto px-5 py-6 [overflow-anchor:none]"
             >
               <div
-                :if={row.message.seq == @unread_divider_seq}
-                id="channel-unread-divider"
-                data-unread-divider-seq={row.message.seq}
-                class="col-span-2 mb-2 flex items-center gap-3 text-xs font-semibold uppercase tracking-wide text-primary"
+                id="older-messages-loading"
+                data-loading={to_string(@loading_older_messages?)}
+                aria-live="polite"
+                class={[
+                  "py-2 text-center text-xs font-semibold uppercase tracking-wide text-base-content/45",
+                  !@loading_older_messages? && "sr-only"
+                ]}
               >
-                <span class="h-px flex-1 bg-primary/30"></span>
-                <span
-                  id="channel-unread-divider-marker"
-                  data-message-id={row.message.id}
-                  class="rounded bg-primary/10 px-2 py-1 ring-1 ring-primary/20"
-                >
-                  New messages
-                </span>
-                <span class="h-px flex-1 bg-primary/30"></span>
+                Loading older messages
               </div>
-              <div
-                :if={row.row_kind == :full}
-                id={"#{dom_id}-avatar"}
-                class="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-sm font-semibold text-primary ring-1 ring-primary/20 transition group-hover:bg-primary/20"
-                aria-hidden="true"
+              <article
+                :for={{dom_id, row} <- @streams.messages}
+                id={dom_id}
+                data-message-row={row_kind(row)}
+                data-message-id={row.message.id}
+                data-message-seq={row.message.seq}
+                data-visible-read-observe="true"
+                data-hover-surface="message-row"
+                class={[
+                  "group relative grid w-full grid-cols-[2.75rem_minmax(0,1fr)] gap-x-3 rounded-md px-3 transition-colors duration-150 hover:bg-base-200/70 focus-within:bg-base-200/70",
+                  if(row.row_kind == :compact, do: "py-0.5", else: "py-1.5")
+                ]}
               >
-                {user_initial(row.message.user)}
-              </div>
-              <div :if={row.row_kind == :compact} id={"#{dom_id}-spacer"} aria-hidden="true"></div>
-              <div id={"#{dom_id}-body"} class="relative min-w-0 pr-40">
                 <div
-                  :if={!message_deleted?(row.message)}
-                  id={"#{dom_id}-hover-actions"}
-                  class={[
-                    "absolute right-0 z-20 flex items-center gap-2",
-                    if(row.row_kind == :compact, do: "top-0", else: "top-0.5")
-                  ]}
+                  :if={row.message.seq == @unread_divider_seq}
+                  id="channel-unread-divider"
+                  data-unread-divider-seq={row.message.seq}
+                  class="col-span-2 mb-2 flex items-center gap-3 text-xs font-semibold uppercase tracking-wide text-primary"
                 >
-                  <div
-                    id={"#{dom_id}-reaction-palette"}
-                    class="pointer-events-none flex items-center gap-0.5 rounded-lg bg-base-100/95 p-1 opacity-0 shadow-lg shadow-base-300/20 ring-1 ring-base-content/10 backdrop-blur-sm transition duration-150 group-hover:pointer-events-auto group-hover:opacity-100"
-                    aria-label="Reaction palette"
+                  <span class="h-px flex-1 bg-primary/30"></span>
+                  <span
+                    id="channel-unread-divider-marker"
+                    data-message-id={row.message.id}
+                    class="rounded bg-primary/10 px-2 py-1 ring-1 ring-primary/20"
                   >
-                    <button
-                      :for={{{emoji, label}, index} <- Enum.with_index(reaction_palette())}
-                      id={reaction_option_id(row.message.id, index)}
-                      type="button"
-                      phx-click="toggle_reaction"
-                      phx-value-message-id={row.message.id}
-                      phx-value-emoji={emoji}
-                      class="flex size-8 items-center justify-center rounded-md text-base leading-none transition hover:bg-base-200 focus:outline-none focus:ring-2 focus:ring-primary/25"
-                      aria-label={label}
-                      title={label}
-                    >
-                      <span aria-hidden="true">{emoji}</span>
-                    </button>
-                  </div>
-                  <details
-                    :if={
-                      message_menu?(
-                        row,
-                        @member_by_user_id,
-                        @member_actions_by_user_id,
-                        @current_scope
-                      )
-                    }
-                    id={"#{dom_id}-actions"}
-                    phx-hook="MessageActionsMenu"
-                    class="relative"
-                  >
-                    <summary
-                      class="btn btn-square btn-sm btn-ghost list-none rounded-lg bg-base-100/95 opacity-0 shadow-lg shadow-base-300/20 ring-1 ring-base-content/10 backdrop-blur-sm transition duration-150 group-hover:opacity-100 [&::-webkit-details-marker]:hidden"
-                      aria-label="Open message actions"
-                      data-message-menu-summary
-                    >
-                      <.icon name="hero-ellipsis-horizontal" class="size-4" />
-                    </summary>
-                    <div
-                      data-message-menu-panel
-                      class="fixed z-50 w-52 rounded border border-base-300 bg-base-100 p-1 shadow-2xl shadow-base-300/30"
-                    >
-                      <button
-                        :if={
-                          Chat.can_delete_message?(@current_scope, row.message, @member_by_user_id)
-                        }
-                        id={"#{dom_id}-delete"}
-                        type="button"
-                        class="block w-full rounded px-3 py-2 text-left text-xs font-medium text-error transition hover:bg-error/10"
-                        phx-click="delete_message"
-                        phx-value-message-id={row.message.id}
-                      >
-                        Delete message
-                      </button>
-                      <MemberActionsMenu.menu_items
-                        id_prefix={dom_id}
-                        actions={message_author_actions(@member_actions_by_user_id, row)}
-                        user_id={row.message.user_id}
-                        current_scope={@current_scope}
-                        workspace={@selected_workspace}
-                      />
-                    </div>
-                  </details>
+                    New messages
+                  </span>
+                  <span class="h-px flex-1 bg-primary/30"></span>
                 </div>
                 <div
                   :if={row.row_kind == :full}
-                  id={"#{dom_id}-header"}
-                  class="flex min-h-5 flex-wrap items-baseline gap-2 pr-40"
+                  id={"#{dom_id}-avatar"}
+                  class="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-sm font-semibold text-primary ring-1 ring-primary/20 transition group-hover:bg-primary/20"
+                  aria-hidden="true"
                 >
-                  <span
-                    id={"#{dom_id}-author"}
-                    class="text-sm font-semibold leading-5 text-base-content"
-                  >
-                    {row.message.user.username}
-                  </span>
-                  <time
-                    id={"#{dom_id}-timestamp"}
-                    datetime={DateTime.to_iso8601(row.message.inserted_at)}
-                    class="text-xs font-medium leading-5 text-base-content/50"
-                  >
-                    {compact_time(row.message.inserted_at)}
-                  </time>
+                  {user_initial(row.message.user)}
                 </div>
-                {message_content(row, dom_id)}
-                <%= if !message_deleted?(row.message) &&
-                          reaction_summaries_for(@reaction_summaries, row.message.id) != [] do %>
+                <div :if={row.row_kind == :compact} id={"#{dom_id}-spacer"} aria-hidden="true"></div>
+                <div id={"#{dom_id}-body"} class="relative min-w-0 pr-40">
                   <div
-                    id={"#{dom_id}-reactions"}
-                    class="mt-1.5 flex flex-wrap items-center gap-1.5"
-                    aria-label="Message reactions"
+                    :if={!message_deleted?(row.message)}
+                    id={"#{dom_id}-hover-actions"}
+                    class={[
+                      "absolute right-0 z-20 flex items-center gap-2",
+                      if(row.row_kind == :compact, do: "top-0", else: "top-0.5")
+                    ]}
+                  >
+                    <div
+                      id={"#{dom_id}-reaction-palette"}
+                      class="pointer-events-none flex items-center gap-0.5 rounded-lg bg-base-100/95 p-1 opacity-0 shadow-lg shadow-base-300/20 ring-1 ring-base-content/10 backdrop-blur-sm transition duration-150 group-hover:pointer-events-auto group-hover:opacity-100"
+                      aria-label="Reaction palette"
+                    >
+                      <button
+                        :for={{{emoji, label}, index} <- Enum.with_index(reaction_palette())}
+                        id={reaction_option_id(row.message.id, index)}
+                        type="button"
+                        phx-click="toggle_reaction"
+                        phx-value-message-id={row.message.id}
+                        phx-value-emoji={emoji}
+                        class="flex size-8 items-center justify-center rounded-md text-base leading-none transition hover:bg-base-200 focus:outline-none focus:ring-2 focus:ring-primary/25"
+                        aria-label={label}
+                        title={label}
+                      >
+                        <span aria-hidden="true">{emoji}</span>
+                      </button>
+                    </div>
+                    <details
+                      :if={
+                        message_menu?(
+                          row,
+                          @member_by_user_id,
+                          @member_actions_by_user_id,
+                          @current_scope
+                        )
+                      }
+                      id={"#{dom_id}-actions"}
+                      phx-hook="MessageActionsMenu"
+                      class="relative"
+                    >
+                      <summary
+                        class="btn btn-square btn-sm btn-ghost list-none rounded-lg bg-base-100/95 opacity-0 shadow-lg shadow-base-300/20 ring-1 ring-base-content/10 backdrop-blur-sm transition duration-150 group-hover:opacity-100 [&::-webkit-details-marker]:hidden"
+                        aria-label="Open message actions"
+                        data-message-menu-summary
+                      >
+                        <.icon name="hero-ellipsis-horizontal" class="size-4" />
+                      </summary>
+                      <div
+                        data-message-menu-panel
+                        class="fixed z-50 w-52 rounded border border-base-300 bg-base-100 p-1 shadow-2xl shadow-base-300/30"
+                      >
+                        <button
+                          :if={
+                            Chat.can_delete_message?(@current_scope, row.message, @member_by_user_id)
+                          }
+                          id={"#{dom_id}-delete"}
+                          type="button"
+                          class="block w-full rounded px-3 py-2 text-left text-xs font-medium text-error transition hover:bg-error/10"
+                          phx-click="delete_message"
+                          phx-value-message-id={row.message.id}
+                        >
+                          Delete message
+                        </button>
+                        <MemberActionsMenu.menu_items
+                          id_prefix={dom_id}
+                          actions={message_author_actions(@member_actions_by_user_id, row)}
+                          user_id={row.message.user_id}
+                          current_scope={@current_scope}
+                          workspace={@selected_workspace}
+                        />
+                      </div>
+                    </details>
+                  </div>
+                  <div
+                    :if={row.row_kind == :full}
+                    id={"#{dom_id}-header"}
+                    class="flex min-h-5 flex-wrap items-baseline gap-2 pr-40"
                   >
                     <span
-                      :for={
-                        {summary, index} <-
-                          Enum.with_index(reaction_summaries_for(@reaction_summaries, row.message.id))
-                      }
-                      id={reaction_pill_id(row.message.id, index)}
-                      data-current-user-reacted={to_string(summary.reacted?)}
-                      class={reaction_pill_class(summary)}
-                      aria-label={reaction_pill_label(summary)}
+                      id={"#{dom_id}-author"}
+                      class="text-sm font-semibold leading-5 text-base-content"
                     >
-                      <span aria-hidden="true">{summary.emoji}</span>
-                      <span>{summary.count}</span>
+                      {row.message.user.username}
                     </span>
+                    <time
+                      id={"#{dom_id}-timestamp"}
+                      datetime={DateTime.to_iso8601(row.message.inserted_at)}
+                      class="text-xs font-medium leading-5 text-base-content/50"
+                    >
+                      {compact_time(row.message.inserted_at)}
+                    </time>
                   </div>
-                <% end %>
+                  {message_content(row, dom_id)}
+                  <%= if !message_deleted?(row.message) &&
+                          reaction_summaries_for(@reaction_summaries, row.message.id) != [] do %>
+                    <div
+                      id={"#{dom_id}-reactions"}
+                      class="mt-1.5 flex flex-wrap items-center gap-1.5"
+                      aria-label="Message reactions"
+                    >
+                      <span
+                        :for={
+                          {summary, index} <-
+                            Enum.with_index(
+                              reaction_summaries_for(@reaction_summaries, row.message.id)
+                            )
+                        }
+                        id={reaction_pill_id(row.message.id, index)}
+                        data-current-user-reacted={to_string(summary.reacted?)}
+                        class={reaction_pill_class(summary)}
+                        aria-label={reaction_pill_label(summary)}
+                      >
+                        <span aria-hidden="true">{summary.emoji}</span>
+                        <span>{summary.count}</span>
+                      </span>
+                    </div>
+                  <% end %>
+                </div>
+              </article>
+              <div
+                id="newer-messages-loading"
+                data-loading={to_string(@loading_newer_messages?)}
+                aria-live="polite"
+                class={[
+                  "py-2 text-center text-xs font-semibold uppercase tracking-wide text-base-content/45",
+                  !@loading_newer_messages? && "sr-only"
+                ]}
+              >
+                Loading newer messages
               </div>
-            </article>
-            <div
-              id="newer-messages-loading"
-              data-loading={to_string(@loading_newer_messages?)}
-              aria-live="polite"
-              class={[
-                "py-2 text-center text-xs font-semibold uppercase tracking-wide text-base-content/45",
-                !@loading_newer_messages? && "sr-only"
-              ]}
-            >
-              Loading newer messages
             </div>
           </div>
           <% typing_members =
@@ -465,6 +473,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       {:noreply,
        socket
        |> assign(:latest_message, message)
+       |> ensure_oldest_message(message)
        |> assign(
          :message_window_meta,
          MessageWindowState.latest_window_meta(socket.assigns.message_window_meta, message)
@@ -832,6 +841,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
            socket
            |> assign(:message_form, message_form())
            |> assign(:latest_message, message)
+           |> ensure_oldest_message(message)
            |> put_message_row(row)
            |> push_event("clear_message_composer", %{input_id: "message_content"})
            |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})
@@ -1308,6 +1318,16 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     socket
     |> maybe_assign_boundary_message(:oldest_message, message)
     |> maybe_assign_boundary_message(:latest_message, message)
+  end
+
+  # A message appended to a previously empty window is that window's only
+  # boundary, so it becomes the `oldest_message` too — without this the
+  # `is_nil(@oldest_message)` empty state stays rendered after the first message.
+  defp ensure_oldest_message(socket, message) do
+    case socket.assigns.oldest_message do
+      nil -> assign(socket, :oldest_message, message)
+      _oldest -> socket
+    end
   end
 
   defp maybe_assign_boundary_message(socket, assign_name, message) do

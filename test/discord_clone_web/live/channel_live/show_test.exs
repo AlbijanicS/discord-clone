@@ -77,6 +77,7 @@ defmodule DiscordCloneWeb.ChannelLive.ShowTest do
       message = Repo.get_by!(Message, content: "hello team")
 
       assert has_element?(view, "#message-#{message.id}-content", "hello team")
+      refute has_element?(view, "#channel-empty-state")
     end
 
     test "ignores a blank message submission", %{conn: conn, scope: scope} do

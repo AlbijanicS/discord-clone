@@ -7,13 +7,14 @@ defmodule DiscordCloneWeb.UserLive.SettingsTest do
 
   describe "Settings page" do
     test "renders settings page", %{conn: conn} do
-      {:ok, _lv, html} =
+      {:ok, lv, html} =
         conn
         |> log_in_user(user_fixture())
         |> live(~p"/users/settings")
 
       assert html =~ "Change Email"
       assert html =~ "Save Password"
+      assert has_element?(lv, "#username_form")
     end
 
     test "redirects if user is not logged in", %{conn: conn} do
@@ -86,6 +87,35 @@ defmodule DiscordCloneWeb.UserLive.SettingsTest do
 
       assert result =~ "Change Email"
       assert result =~ "did not change"
+    end
+  end
+
+  describe "update username form" do
+    setup %{conn: conn} do
+      user = user_fixture()
+      %{conn: log_in_user(conn, user), user: user}
+    end
+
+    test "updates and normalizes the username", %{conn: conn, user: user} do
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+
+      lv
+      |> form("#username_form", %{"user" => %{"username" => "  New_Username  "}})
+      |> render_submit()
+
+      assert has_element?(lv, "#flash-info", "Username changed successfully.")
+      assert has_element?(lv, "#username_form input[value='new_username']")
+      assert Accounts.get_user!(user.id).username == "new_username"
+    end
+
+    test "renders a field error for the reserved everyone username", %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+
+      lv
+      |> element("#username_form")
+      |> render_change(%{"user" => %{"username" => " EVERYONE "}})
+
+      assert has_element?(lv, "#username_form p", "is reserved")
     end
   end
 

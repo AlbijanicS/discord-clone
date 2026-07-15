@@ -34,6 +34,16 @@ defmodule DiscordCloneWeb.UserLive.RegistrationTest do
       assert result =~ "must have the @ sign and no spaces"
       assert result =~ "must use only lowercase letters"
     end
+
+    test "renders a field error for the reserved everyone username", %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/users/register")
+
+      lv
+      |> element("#registration_form")
+      |> render_change(user: %{"email" => unique_user_email(), "username" => " EVERYONE "})
+
+      assert has_element?(lv, "#registration_form p", "is reserved")
+    end
   end
 
   describe "register user" do

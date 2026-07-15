@@ -30,6 +30,31 @@ _Avoid_: Global role
 A named conversation space inside a workspace.
 _Avoid_: Room
 
+**Message Reply**:
+A Channel message that references exactly one earlier message in the same
+Channel and remains part of the normal Channel timeline.
+_Avoid_: Direct reply, thread
+
+**User Mention**:
+An explicit `@username` reference to a Workspace Member within a Channel
+message.
+_Avoid_: Implicit reply mention, ping
+
+**Everyone Mention**:
+An explicit `@everyone` reference that addresses the Workspace-wide audience
+from within a Channel message.
+_Avoid_: User mention, role mention
+
+**Activity Feed**:
+A User's global collection of relevant activity across every Workspace in
+which they participate.
+_Avoid_: Workspace activity, Activity Page
+
+**Activity Item**:
+A durable mention entry in a User's Activity Feed that links to its source
+message and records whether the User has read it.
+_Avoid_: Notification
+
 **Landing Channel**:
 The default channel a user should enter when opening or joining a workspace.
 New workspaces start with a `general` landing channel, and later renaming that
@@ -59,6 +84,36 @@ _Avoid_: Unread range
 - A **Workspace Member** has one **Workspace Role**
 - A **Workspace** contains one or more **Channels** when created through the
   public workspace workflow
+- A **Message Reply** references a message in the same **Channel**
+- A **Message Reply** does not create a thread or nested conversation
+- A **Message Reply** may reference another **Message Reply**, but preserves only
+  one direct reference rather than a reply chain
+- A **Message Reply** does not implicitly create a **User Mention** for the
+  referenced message's author
+- Channel messages support **User Mentions** and **Everyone Mentions**, but not
+  role or Channel mentions
+- Only Workspace owners and admins may create an **Everyone Mention**; an
+  `@everyone` written by a regular Workspace Member remains plain message text
+- `everyone` is reserved and cannot be used as a User's username
+- Mention recipients are resolved when a message is sent; username changes and
+  later Workspace membership changes do not retarget that message
+- A User's **Activity Feed** spans all of their Workspaces rather than the
+  currently selected Workspace
+- A User's **Activity Feed** includes **User Mentions** addressed to that User
+  and authorized **Everyone Mentions** in their Workspaces
+- A User's own messages never create entries in that User's **Activity Feed**
+- Opening an **Activity Item** navigates to its source message in the source
+  Workspace and Channel and marks that item as read
+- Opening the **Activity Feed** does not itself mark **Activity Items** as read
+- A User may mark every **Activity Item** as read, and the activity bell count
+  reflects unread items
+- **Activity Item** read state is independent from Channel **Read State**;
+  changing either one does not automatically clear the other
+- Losing Workspace membership permanently removes that Workspace's entries from
+  the former member's **Activity Feed**
+- Deleting the message referenced by a **Message Reply** preserves the reply and
+  replaces its quoted preview with a deleted-message placeholder
+- A deleted message cannot become the target of a new **Message Reply**
 - A **Workspace Member** may create **Channels** until role-specific channel
   permissions are introduced
 - A **User** who is not a **Workspace Member** must not be able to view or
