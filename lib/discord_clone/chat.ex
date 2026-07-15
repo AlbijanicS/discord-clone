@@ -369,7 +369,7 @@ defmodule DiscordClone.Chat do
 
   def fetch_message(%Scope{user: %User{id: user_id}}, message_id) do
     case get_member_message(message_id, user_id) do
-      %Message{} = message -> {:ok, Repo.preload(message, :user)}
+      %Message{} = message -> {:ok, preload_message_for_display(message)}
       nil -> {:error, :not_found}
     end
   end
@@ -512,7 +512,7 @@ defmodule DiscordClone.Chat do
         |> where([message], message.seq < ^cursor_seq)
         |> order_by([message], desc: message.seq)
         |> limit(^@recent_message_limit)
-        |> preload(:user)
+        |> preload(^Message.display_preloads())
         |> Repo.all()
         |> Enum.reverse()
 
@@ -534,9 +534,12 @@ defmodule DiscordClone.Chat do
           "user_id" => user_id
         })
 
-      case insert_sequenced_message(changeset, user_id, channel) do
+      reply_to_message_id =
+        Map.get(attrs, "reply_to_message_id") || Map.get(attrs, :reply_to_message_id)
+
+      case insert_sequenced_message(changeset, user_id, channel, reply_to_message_id) do
         {:ok, {message, read_state_changes}} ->
-          message = Repo.preload(message, :user)
+          message = preload_message_for_display(message)
           :ok = Runtime.put_recent_message(message)
           :ok = Runtime.user_stopped_typing(channel_id, user_id)
           :ok = Unread.broadcast_changes(read_state_changes)
@@ -556,14 +559,22 @@ defmodule DiscordClone.Chat do
 
   def send_message(_scope, _channel_id, _attrs), do: {:error, :unauthenticated}
 
-  defp insert_sequenced_message(changeset, user_id, %Channel{id: channel_id} = channel) do
+  defp insert_sequenced_message(
+         changeset,
+         user_id,
+         %Channel{id: channel_id} = channel,
+         reply_to_message_id
+       ) do
     Repo.transaction(fn ->
       locked_channel = lock_channel_for_update!(channel_id)
       next_seq = locked_channel.last_message_seq + 1
 
-      with {:ok, message} <-
+      with {:ok, reply_to_message_id} <-
+             validate_reply_target(changeset, channel_id, next_seq, reply_to_message_id),
+           {:ok, message} <-
              changeset
              |> Ecto.Changeset.put_change(:seq, next_seq)
+             |> Ecto.Changeset.put_change(:reply_to_message_id, reply_to_message_id)
              |> Repo.insert(),
            {:ok, _channel} <-
              locked_channel
@@ -572,9 +583,43 @@ defmodule DiscordClone.Chat do
         read_state_changes = Unread.fanout_on_send!(channel, user_id, next_seq)
         {message, read_state_changes}
       else
-        {:error, changeset} -> Repo.rollback({:invalid_message, changeset})
+        {:error, %Ecto.Changeset{} = changeset} ->
+          Repo.rollback({:invalid_message, changeset})
       end
     end)
+  end
+
+  defp validate_reply_target(_changeset, _channel_id, _next_seq, nil), do: {:ok, nil}
+
+  defp validate_reply_target(changeset, channel_id, next_seq, reply_to_message_id) do
+    target =
+      UUIDIdentifier.cast_or(reply_to_message_id, nil, fn reply_to_message_id ->
+        Repo.one(
+          from message in Message,
+            where:
+              message.id == ^reply_to_message_id and message.channel_id == ^channel_id and
+                message.seq < ^next_seq and is_nil(message.deleted_at),
+            lock: "FOR SHARE",
+            select: message.id
+        )
+      end)
+
+    case target do
+      nil ->
+        {:error,
+         Ecto.Changeset.add_error(
+           changeset,
+           :reply_to_message_id,
+           "is not an earlier message in this channel"
+         )}
+
+      target ->
+        {:ok, target}
+    end
+  end
+
+  defp preload_message_for_display(message) do
+    Repo.preload(message, Message.display_preloads())
   end
 
   def toggle_reaction(%Scope{user: %User{id: user_id}}, message_id, emoji) do

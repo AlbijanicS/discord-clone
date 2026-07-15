@@ -2991,6 +2991,133 @@ defmodule DiscordClone.ChatTest do
   end
 
   describe "send_message/3" do
+    test "persists one Message Reply target and batch-loads its preview in message windows" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+
+      assert {:ok, parent} =
+               Chat.send_message(scope, channel_id, %{"content" => "original message"})
+
+      assert {:ok, first_reply} =
+               Chat.send_message(scope, channel_id, %{
+                 "content" => "first reply",
+                 "reply_to_message_id" => parent.id
+               })
+
+      assert {:ok, nested_reply} =
+               Chat.send_message(scope, channel_id, %{
+                 "content" => "reply to a reply",
+                 "reply_to_message_id" => first_reply.id
+               })
+
+      assert first_reply.reply_to_message_id == parent.id
+      assert nested_reply.reply_to_message_id == first_reply.id
+      assert Ecto.assoc_loaded?(nested_reply.reply_to_message)
+      assert nested_reply.reply_to_message.id == first_reply.id
+      refute Ecto.assoc_loaded?(nested_reply.reply_to_message.reply_to_message)
+
+      assert {:ok, %{messages: messages}} = Chat.load_latest_message_window(scope, channel_id)
+      loaded_nested_reply = Enum.find(messages, &(&1.id == nested_reply.id))
+
+      assert Ecto.assoc_loaded?(loaded_nested_reply.reply_to_message)
+      assert Ecto.assoc_loaded?(loaded_nested_reply.reply_to_message.user)
+      assert loaded_nested_reply.reply_to_message.id == first_reply.id
+      assert loaded_nested_reply.reply_to_message.user.username == scope.user.username
+      refute Ecto.assoc_loaded?(loaded_nested_reply.reply_to_message.reply_to_message)
+
+      assert {:ok, runtime_pid} = Chat.ensure_channel_runtime(scope, channel_id)
+      runtime_ref = Process.monitor(runtime_pid)
+      Process.exit(runtime_pid, :kill)
+      assert_receive {:DOWN, ^runtime_ref, :process, ^runtime_pid, :killed}
+      _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
+
+      assert {:ok, recent_messages} = Chat.list_recent_messages(scope, channel_id)
+      reloaded_nested_reply = Enum.find(recent_messages, &(&1.id == nested_reply.id))
+      assert reloaded_nested_reply.reply_to_message.id == first_reply.id
+      assert Ecto.assoc_loaded?(reloaded_nested_reply.reply_to_message.user)
+
+      assert {:ok, unrelated_message} =
+               Chat.send_message(scope, channel_id, %{"content" => "another target"})
+
+      assert {:ok, updated_reply} =
+               first_reply
+               |> Message.changeset(%{
+                 "content" => "edited reply body",
+                 "reply_to_message_id" => unrelated_message.id
+               })
+               |> Repo.update()
+
+      assert updated_reply.reply_to_message_id == parent.id
+    end
+
+    test "loads reply previews for a bounded window with a constant number of queries" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+      {:ok, parent} = Chat.send_message(scope, channel_id, %{"content" => "parent"})
+
+      for index <- 1..20 do
+        assert {:ok, _reply} =
+                 Chat.send_message(scope, channel_id, %{
+                   "content" => "reply #{index}",
+                   "reply_to_message_id" => parent.id
+                 })
+      end
+
+      test_pid = self()
+      handler_id = "reply-window-query-count-#{System.unique_integer([:positive])}"
+
+      :ok =
+        :telemetry.attach(
+          handler_id,
+          [:discord_clone, :repo, :query],
+          fn _event, _measurements, _metadata, _config ->
+            if self() == test_pid, do: send(test_pid, :reply_window_query)
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      assert {:ok, %{messages: messages}} = Chat.load_latest_message_window(scope, channel_id)
+      assert length(messages) == 21
+      assert Enum.all?(Enum.drop(messages, 1), &Ecto.assoc_loaded?(&1.reply_to_message))
+      assert drain_reply_window_queries() <= 6
+    end
+
+    test "rejects missing, cross-channel, future-sequence, and deleted reply targets" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, other_channel} = Workspaces.create_channel(scope, workspace.id, %{name: "off-topic"})
+      channel_id = workspace.default_channel_id
+
+      assert_reply_target_rejected(scope, channel_id, Ecto.UUID.generate())
+
+      assert {:ok, cross_channel_message} =
+               Chat.send_message(scope, other_channel.id, %{"content" => "elsewhere"})
+
+      assert_reply_target_rejected(scope, channel_id, cross_channel_message.id)
+
+      future_message =
+        Repo.insert!(%Message{
+          channel_id: channel_id,
+          user_id: scope.user.id,
+          content: "out of sequence",
+          seq: 10
+        })
+
+      assert_reply_target_rejected(scope, channel_id, future_message.id)
+
+      Repo.delete!(future_message)
+
+      assert {:ok, deleted_message} =
+               Chat.send_message(scope, channel_id, %{"content" => "soon deleted"})
+
+      assert {:ok, _deleted_message} = Chat.delete_message(scope, deleted_message.id)
+      assert_reply_target_rejected(scope, channel_id, deleted_message.id)
+    end
+
     test "persists trimmed content in the selected channel with the author preloaded" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
@@ -3533,6 +3660,25 @@ defmodule DiscordClone.ChatTest do
   end
 
   defp now, do: DateTime.utc_now(:second)
+
+  defp assert_reply_target_rejected(scope, channel_id, reply_to_message_id) do
+    assert {:error, :invalid_message, changeset} =
+             Chat.send_message(scope, channel_id, %{
+               "content" => "invalid reply",
+               "reply_to_message_id" => reply_to_message_id
+             })
+
+    assert %{reply_to_message_id: ["is not an earlier message in this channel"]} =
+             errors_on(changeset)
+  end
+
+  defp drain_reply_window_queries(count \\ 0) do
+    receive do
+      :reply_window_query -> drain_reply_window_queries(count + 1)
+    after
+      0 -> count
+    end
+  end
 
   defp count_reactions(message_id, user_id, emoji) do
     Repo.one(

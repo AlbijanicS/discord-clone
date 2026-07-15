@@ -47,7 +47,7 @@ defmodule DiscordClone.Chat.MessageWindow do
     |> where([message], message.channel_id == ^channel_id)
     |> where([message], message.seq >= ^from_seq and message.seq <= ^to_seq)
     |> order_by([message], asc: message.seq)
-    |> preload(:user)
+    |> preload(^Message.display_preloads())
   end
 
   defp message_window(messages, latest_seq) do

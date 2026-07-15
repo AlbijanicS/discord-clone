@@ -182,7 +182,7 @@ defmodule DiscordClone.Chat.Runtime do
     |> where([message], message.channel_id == ^channel_id)
     |> order_by([message], desc: message.seq)
     |> limit(^@recent_message_limit)
-    |> preload(:user)
+    |> preload(^Message.display_preloads())
     |> Repo.all()
     |> Enum.reverse()
   end

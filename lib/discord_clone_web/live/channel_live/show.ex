@@ -60,6 +60,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:channel_form, channel_form(workspace.id))
         |> assign(:show_channel_form?, false)
         |> assign(:message_form, message_form())
+        |> assign(:reply_target, nil)
         |> assign(:current_member_moderation_state, current_member_moderation_state)
         |> assign(:oldest_message, List.first(messages))
         |> assign(:latest_message, List.last(messages))
@@ -283,6 +284,19 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                       if(row.row_kind == :compact, do: "top-0", else: "top-0.5")
                     ]}
                   >
+                    <button
+                      id={"#{dom_id}-reply"}
+                      type="button"
+                      phx-click="begin_reply"
+                      phx-value-message-id={row.message.id}
+                      class={[
+                        "flex size-8 items-center justify-center rounded-lg bg-base-100/95 text-base-content/65 opacity-0 shadow-lg shadow-base-300/20 ring-1 ring-base-content/10 backdrop-blur-sm transition duration-150 hover:bg-base-200 hover:text-base-content group-hover:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-primary/25"
+                      ]}
+                      aria-label={"Reply to message from #{row.message.user.username}"}
+                      title="Reply"
+                    >
+                      <.icon name="hero-arrow-uturn-left" class={["size-4"]} />
+                    </button>
                     <div
                       id={"#{dom_id}-reaction-palette"}
                       class="pointer-events-none flex items-center gap-0.5 rounded-lg bg-base-100/95 p-1 opacity-0 shadow-lg shadow-base-300/20 ring-1 ring-base-content/10 backdrop-blur-sm transition duration-150 group-hover:pointer-events-auto group-hover:opacity-100"
@@ -347,6 +361,30 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                         />
                       </div>
                     </details>
+                  </div>
+                  <div
+                    :if={
+                      !is_nil(row.message.reply_to_message_id) &&
+                        !message_deleted?(row.message.reply_to_message)
+                    }
+                    id={"#{dom_id}-reply-preview"}
+                    class={[
+                      "mb-1.5 flex min-w-0 items-center gap-2 border-l-2 border-primary/35 pl-2 text-xs text-base-content/55"
+                    ]}
+                    aria-label="Replying to message"
+                  >
+                    <span
+                      id={"#{dom_id}-reply-preview-author"}
+                      class={["shrink-0 font-semibold text-primary/85"]}
+                    >
+                      {row.message.reply_to_message.user.username}
+                    </span>
+                    <span
+                      id={"#{dom_id}-reply-preview-content"}
+                      class={["truncate"]}
+                    >
+                      {truncate_reply_content(row.message.reply_to_message.content)}
+                    </span>
                   </div>
                   <div
                     :if={row.row_kind == :full}
@@ -426,6 +464,41 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
             id="message-composer-panel"
             class="bg-base-100/95 px-5 pb-4 pt-3 shadow-[0_-12px_28px_rgb(0_0_0/0.10),0_-1px_0_rgb(255_255_255/0.04)]"
           >
+            <div
+              :if={!is_nil(@reply_target)}
+              id="message-reply-target"
+              data-message-id={@reply_target && @reply_target.id}
+              class={[
+                "mb-2 flex items-center gap-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 shadow-sm"
+              ]}
+            >
+              <div class={["min-w-0 flex-1"]}>
+                <p class={["text-xs text-base-content/55"]}>
+                  Replying to
+                  <span id="message-reply-target-author" class={["font-semibold text-primary"]}>
+                    {@reply_target && @reply_target.user.username}
+                  </span>
+                </p>
+                <p
+                  id="message-reply-target-content"
+                  class={["mt-0.5 truncate text-sm text-base-content/75"]}
+                >
+                  {truncate_reply_content(@reply_target && @reply_target.content)}
+                </p>
+              </div>
+              <button
+                id="message-reply-target-cancel"
+                type="button"
+                phx-click="cancel_reply"
+                class={[
+                  "flex size-8 shrink-0 items-center justify-center rounded-md text-base-content/55 transition hover:bg-base-200 hover:text-base-content focus:outline-none focus:ring-2 focus:ring-primary/25"
+                ]}
+                aria-label="Cancel reply"
+                title="Cancel reply"
+              >
+                <.icon name="hero-x-mark" class={["size-4"]} />
+              </button>
+            </div>
             <.form
               for={@message_form}
               id="message-composer-form"
@@ -827,42 +900,31 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   def handle_event("send_message", %{"message" => message_params}, socket) do
     if blank_message?(message_params) do
-      {:noreply, assign(socket, :message_form, message_form())}
+      {:noreply, assign(socket, :message_form, to_form(message_params, as: :message))}
     else
-      case Chat.send_message(
-             socket.assigns.current_scope,
-             socket.assigns.selected_channel.id,
-             message_params
-           ) do
-        {:ok, message} ->
-          row = MessageRows.annotate_next(socket.assigns.latest_message, message)
-
-          {:noreply,
-           socket
-           |> assign(:message_form, message_form())
-           |> assign(:latest_message, message)
-           |> ensure_oldest_message(message)
-           |> put_message_row(row)
-           |> push_event("clear_message_composer", %{input_id: "message_content"})
-           |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})
-           |> stream_insert(:messages, row)
-           |> MessageWindowState.trim(:older)}
-
-        {:error, :invalid_message, changeset} ->
-          {:noreply,
-           assign(socket, :message_form, to_form(changeset, as: :message, action: :insert))}
-
-        {:error, _reason} ->
-          {:noreply,
-           socket
-           |> put_flash(:error, "Channel not found or you do not have access.")
-           |> push_navigate(to: ~p"/workspaces")}
-      end
+      send_message(message_params, socket)
     end
+  end
+
+  def handle_event("begin_reply", %{"message-id" => message_id}, socket) do
+    with {:ok, message} <- Chat.fetch_message(socket.assigns.current_scope, message_id),
+         true <- message.channel_id == socket.assigns.selected_channel.id,
+         false <- message_deleted?(message) do
+      {:noreply, assign(socket, :reply_target, message)}
+    else
+      _invalid_target ->
+        {:noreply, put_flash(socket, :error, "That message is no longer available to reply to.")}
+    end
+  end
+
+  def handle_event("cancel_reply", _params, socket) do
+    {:noreply, assign(socket, :reply_target, nil)}
   end
 
   def handle_event("message_typing", %{"message" => %{"content" => content}}, socket)
       when is_binary(content) do
+    socket = assign(socket, :message_form, message_form(%{content: content}))
+
     if String.trim(content) == "" do
       stop_typing(socket)
     else
@@ -1180,6 +1242,53 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     |> to_form(as: :message)
   end
 
+  defp send_message(message_params, socket) do
+    message_params = put_reply_target(message_params, socket.assigns.reply_target)
+
+    case Chat.send_message(
+           socket.assigns.current_scope,
+           socket.assigns.selected_channel.id,
+           message_params
+         ) do
+      {:ok, message} ->
+        row = MessageRows.annotate_next(socket.assigns.latest_message, message)
+
+        {:noreply,
+         socket
+         |> assign(:message_form, message_form())
+         |> assign(:reply_target, nil)
+         |> assign(:latest_message, message)
+         |> ensure_oldest_message(message)
+         |> put_message_row(row)
+         |> push_event("clear_message_composer", %{input_id: "message_content"})
+         |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})
+         |> stream_insert(:messages, row)
+         |> MessageWindowState.trim(:older)}
+
+      {:error, :invalid_message, changeset} ->
+        {:noreply,
+         assign(socket, :message_form, to_form(changeset, as: :message, action: :insert))}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Channel not found or you do not have access.")
+         |> push_navigate(to: ~p"/workspaces")}
+    end
+  end
+
+  defp put_reply_target(message_params, nil), do: message_params
+
+  defp put_reply_target(message_params, reply_target) do
+    Map.put(message_params, "reply_to_message_id", reply_target.id)
+  end
+
+  defp blank_message?(%{"content" => content}) when is_binary(content) do
+    String.trim(content) == ""
+  end
+
+  defp blank_message?(_message_params), do: false
+
   defp current_member_moderation_state(socket, workspace_id) do
     Workspaces.member_moderation_state(
       socket.assigns.current_scope,
@@ -1250,16 +1359,6 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   end
 
   defp restream_author_message_rows(socket, _payload), do: socket
-
-  defp blank_message?(%{"content" => content}) when is_binary(content) do
-    String.trim(content) == ""
-  end
-
-  defp blank_message?(%{content: content}) when is_binary(content) do
-    String.trim(content) == ""
-  end
-
-  defp blank_message?(_params), do: false
 
   defp reaction_summaries_for(reaction_summaries, message_id) do
     Map.get(reaction_summaries, message_id, [])
@@ -1341,6 +1440,16 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   defp message_deleted?(%{deleted_at: %DateTime{}}), do: true
   defp message_deleted?(_message), do: false
+
+  defp truncate_reply_content(nil), do: ""
+
+  defp truncate_reply_content(content) when is_binary(content) do
+    if String.length(content) > 96 do
+      String.slice(content, 0, 95) <> "…"
+    else
+      content
+    end
+  end
 
   defp member_by_user_id(members), do: Map.new(members, &{&1.user_id, &1})
 

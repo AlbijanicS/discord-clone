@@ -53,6 +53,7 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
                  WHEN 'c' THEN 'delete_all'
                  WHEN 'n' THEN 'nilify_all'
                  WHEN 'r' THEN 'restrict'
+                 WHEN 'a' THEN 'no_action'
                  ELSE con.confdeltype::text
                END,
                pg_catalog.format_type(source_attribute.atttypid, source_attribute.atttypmod),
@@ -98,6 +99,7 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
 
     for name <- ~w(
           channels_last_message_seq_non_negative
+          messages_reply_target_not_self
           messages_seq_positive
           channel_read_states_unread_count_non_negative
           channel_read_states_unread_summary_consistent
@@ -219,6 +221,7 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
       "message_reactions_user_id_fkey" => "delete_all",
       "messages_channel_id_fkey" => "delete_all",
       "messages_deleted_by_user_id_fkey" => "nilify_all",
+      "messages_reply_to_message_id_fkey" => "no_action",
       "messages_user_id_fkey" => "nilify_all",
       "users_tokens_user_id_fkey" => "delete_all",
       "workspace_audit_events_actor_user_id_fkey" => "nilify_all",

@@ -93,6 +93,116 @@ defmodule DiscordCloneWeb.ChannelLive.ShowTest do
       assert has_element?(view, "#channel-empty-state")
       assert Repo.aggregate(Message, :count) == 0
     end
+
+    test "selects and cancels a reply target without losing the draft", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, parent} =
+        Chat.send_message(scope, workspace.default_channel_id, %{
+          content:
+            "A deliberately long parent message that should be shortened in the reply composer preview so the selected target stays compact and readable."
+        })
+
+      {:ok, deleted} =
+        Chat.send_message(scope, workspace.default_channel_id, %{content: "deleted target"})
+
+      {:ok, _deleted} = Chat.delete_message(scope, deleted.id)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      refute has_element?(view, "#message-#{deleted.id}-reply")
+
+      view
+      |> form("#message-composer-form", message: %{content: "draft reply"})
+      |> render_change()
+
+      view
+      |> element("#message-#{parent.id}-reply")
+      |> render_click()
+
+      assert has_element?(view, "#message-reply-target")
+      assert has_element?(view, "#message-reply-target-author", scope.user.username)
+      assert has_element?(view, "#message-reply-target-content", "…")
+      assert has_element?(view, "#message-reply-target-cancel[aria-label='Cancel reply']")
+      assert has_element?(view, "#message_content[value='draft reply']")
+
+      view
+      |> element("#message-reply-target-cancel")
+      |> render_click()
+
+      refute has_element?(view, "#message-reply-target")
+      assert has_element?(view, "#message_content[value='draft reply']")
+    end
+
+    test "sends a flat reply, renders its direct-parent preview, and clears the target", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+      {:ok, parent} = Chat.send_message(scope, channel_id, %{content: "root message"})
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{channel_id}")
+
+      view |> element("#message-#{parent.id}-reply") |> render_click()
+
+      view
+      |> form("#message-composer-form", message: %{content: "reply body"})
+      |> render_submit()
+
+      reply = Repo.get_by!(Message, content: "reply body")
+
+      assert reply.reply_to_message_id == parent.id
+      refute has_element?(view, "#message-reply-target")
+      assert has_element?(view, "#message-#{reply.id}-reply-preview")
+      assert has_element?(view, "#message-#{reply.id}-reply-preview-author", scope.user.username)
+      assert has_element?(view, "#message-#{reply.id}-reply-preview-content", "root message")
+
+      view |> element("#message-#{reply.id}-reply") |> render_click()
+
+      view
+      |> form("#message-composer-form", message: %{content: "nested reply"})
+      |> render_submit()
+
+      nested_reply = Repo.get_by!(Message, content: "nested reply")
+
+      assert nested_reply.reply_to_message_id == reply.id
+      assert has_element?(view, "#message-#{nested_reply.id}-reply-preview-content", "reply body")
+
+      refute has_element?(
+               view,
+               "#message-#{nested_reply.id}-reply-preview-content",
+               "root message"
+             )
+    end
+
+    test "preserves a valid reply target and draft when message validation fails", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+      {:ok, parent} = Chat.send_message(scope, channel_id, %{content: "reply here"})
+      oversized_draft = String.duplicate("x", 4_001)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{channel_id}")
+
+      view |> element("#message-#{parent.id}-reply") |> render_click()
+
+      view
+      |> form("#message-composer-form", message: %{content: oversized_draft})
+      |> render_submit()
+
+      assert has_element?(view, "#message-reply-target[data-message-id='#{parent.id}']")
+      assert has_element?(view, "#message_content[value='#{oversized_draft}']")
+      assert Repo.aggregate(Message, :count) == 1
+    end
   end
 
   describe "deleting messages" do
