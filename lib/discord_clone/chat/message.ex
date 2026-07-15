@@ -7,6 +7,7 @@ defmodule DiscordClone.Chat.Message do
 
   schema "messages" do
     field :content, :string
+    field :mention_recognition, :map, default: %{}
     field :seq, :integer
     field :deleted_at, :utc_datetime
 

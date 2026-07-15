@@ -706,10 +706,13 @@ defmodule DiscordClone.Chat do
 
       with {:ok, reply_to_message_id} <-
              validate_reply_target(changeset, channel_id, next_seq, reply_to_message_id),
+           mention_recognition <-
+             resolve_mention_recognition(changeset, channel.workspace_id, user_id),
            {:ok, message} <-
              changeset
              |> Ecto.Changeset.put_change(:seq, next_seq)
              |> Ecto.Changeset.put_change(:reply_to_message_id, reply_to_message_id)
+             |> Ecto.Changeset.put_change(:mention_recognition, mention_recognition)
              |> Repo.insert(),
            {:ok, _channel} <-
              locked_channel
@@ -723,6 +726,42 @@ defmodule DiscordClone.Chat do
           Repo.rollback({:invalid_message, changeset})
       end
     end)
+  end
+
+  defp resolve_mention_recognition(changeset, workspace_id, actor_id) do
+    usernames =
+      changeset
+      |> Ecto.Changeset.get_field(:content)
+      |> MentionParser.usernames()
+
+    everyone? = "everyone" in usernames
+    direct_usernames = List.delete(usernames, "everyone")
+
+    resolved_usernames =
+      Repo.all(
+        from membership in WorkspaceMembership,
+          join: user in assoc(membership, :user),
+          where:
+            membership.workspace_id == ^workspace_id and
+              fragment("lower(?)", user.username) in ^direct_usernames,
+          select: fragment("lower(?)", user.username),
+          lock: "FOR SHARE"
+      )
+
+    everyone_authorized? =
+      everyone? and
+        Repo.exists?(
+          from membership in WorkspaceMembership,
+            where:
+              membership.workspace_id == ^workspace_id and membership.user_id == ^actor_id and
+                membership.role in ^[Roles.owner(), Roles.admin()],
+            lock: "FOR SHARE"
+        )
+
+    %{
+      "usernames" => resolved_usernames,
+      "everyone" => everyone_authorized?
+    }
   end
 
   defp insert_mention_activity!(%Message{} = message, %Channel{} = channel, actor_id) do

@@ -2,8 +2,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   use DiscordCloneWeb, :live_view
 
   alias DiscordClone.{Chat, Workspaces}
-  alias DiscordClone.Chat.Emoji
-  alias DiscordClone.Chat.PresenceEvents
+  alias DiscordClone.Chat.{Emoji, MentionParser, PresenceEvents}
   alias DiscordCloneWeb.ChannelLive.MessageRows
   alias DiscordCloneWeb.ChannelLive.MessageWindowState
   alias DiscordCloneWeb.ChannelLive.ScrollAnchoring
@@ -13,6 +12,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   alias DiscordCloneWeb.WorkspaceLive.Shell
   alias DiscordCloneWeb.WorkspaceLive.WorkspaceEvents
   alias DiscordCloneWeb.WorkspaceLive.WorkspaceManagementEvents
+  alias DiscordClone.Workspaces.Roles
 
   @reaction_palette [
     {"👍", "React with 👍 to message"},
@@ -22,6 +22,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     {"👀", "React with 👀 to message"}
   ]
   @message_highlight_duration_ms 2_400
+  @max_mention_suggestions 8
+  @active_mention_pattern ~r/(?<![A-Za-z0-9_@])@([A-Za-z0-9_]{0,32})$/u
 
   @impl true
   def mount(
@@ -65,6 +67,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:channel_form, channel_form(workspace.id))
         |> assign(:show_channel_form?, false)
         |> assign(:message_form, message_form())
+        |> assign(:mention_context, nil)
+        |> assign(:mention_suggestion_count, 0)
+        |> assign(:mention_active_index, 0)
+        |> assign(:mention_active_option_id, nil)
         |> assign(:reply_target, nil)
         |> assign(
           :message_navigation_target_id,
@@ -103,9 +109,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         )
         |> assign(:message_rows_by_id, message_rows_by_id(message_rows))
         |> stream_configure(:messages, dom_id: &"message-#{&1.id}")
+        |> stream_configure(:mention_suggestions, dom_id: &mention_option_id/1)
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
         |> stream(:messages, message_rows)
+        |> stream(:mention_suggestions, [])
         |> Presence.prepare_workspace(workspace.id, members)
 
       {:ok, socket}
@@ -545,13 +553,49 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
             >
               <div
                 id="message-composer-shell"
-                class="min-w-0 flex-1 rounded-lg bg-base-200/80 px-3 py-2 shadow-inner shadow-base-300/30 ring-1 ring-base-300/60 transition focus-within:bg-base-200 focus-within:ring-primary/35"
+                class={[
+                  "relative min-w-0 flex-1 rounded-lg bg-base-200/80 px-3 py-2 shadow-inner shadow-base-300/30 ring-1 ring-base-300/60 transition focus-within:bg-base-200 focus-within:ring-primary/35"
+                ]}
               >
+                <div
+                  :if={@mention_suggestion_count > 0}
+                  id="message-mention-autocomplete"
+                  phx-update="stream"
+                  role="listbox"
+                  aria-label="Mention suggestions"
+                  class={[
+                    "absolute bottom-full left-0 z-30 mb-2 w-full overflow-hidden rounded-lg border border-base-300 bg-base-100 p-1 shadow-2xl shadow-base-300/30"
+                  ]}
+                >
+                  <button
+                    :for={{dom_id, suggestion} <- @streams.mention_suggestions}
+                    id={dom_id}
+                    type="button"
+                    phx-click="select_mention"
+                    phx-value-username={suggestion.username}
+                    role="option"
+                    aria-selected={to_string(suggestion.index == @mention_active_index)}
+                    class={[
+                      "flex w-full items-center rounded-md px-3 py-2 text-left text-sm transition",
+                      if(suggestion.index == @mention_active_index,
+                        do: "bg-primary/10 font-semibold text-primary",
+                        else: "text-base-content/75 hover:bg-base-200"
+                      )
+                    ]}
+                  >
+                    @<span>{suggestion.username}</span>
+                  </button>
+                </div>
                 <.input
                   field={@message_form[:content]}
                   type="text"
                   placeholder={"Message ##{@selected_channel.name}"}
                   autocomplete="off"
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-controls="message-mention-autocomplete"
+                  aria-expanded={to_string(@mention_suggestion_count > 0)}
+                  aria-activedescendant={@mention_active_option_id}
                   phx-throttle="3000"
                   disabled={current_member_participation_blocked?(@current_member_moderation_state)}
                   class="w-full appearance-none border-0 bg-transparent px-1 py-2 text-sm leading-5 text-base-content outline-none ring-0 transition placeholder:text-base-content/40 focus:border-0 focus:outline-none focus:ring-0"
@@ -776,6 +820,35 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
+  def handle_event("mention_keydown", %{"key" => "Escape"}, socket) do
+    {:noreply, clear_mention_autocomplete(socket)}
+  end
+
+  def handle_event("mention_keydown", %{"key" => key}, socket)
+      when key in ["ArrowDown", "ArrowUp"] do
+    suggestions = current_mention_suggestions(socket)
+    suggestion_count = length(suggestions)
+
+    if suggestion_count == 0 do
+      {:noreply, socket}
+    else
+      offset = if key == "ArrowDown", do: 1, else: -1
+      active_index = Integer.mod(socket.assigns.mention_active_index + offset, suggestion_count)
+      {:noreply, put_mention_suggestions(socket, suggestions, active_index)}
+    end
+  end
+
+  def handle_event("mention_keydown", %{"key" => "Enter"}, socket) do
+    {:noreply, select_active_mention(socket)}
+  end
+
+  def handle_event("mention_keydown", _params, socket), do: {:noreply, socket}
+
+  def handle_event("select_mention", %{"username" => username}, socket) do
+    suggestion = Enum.find(current_mention_suggestions(socket), &(&1.username == username))
+    {:noreply, select_mention(socket, suggestion)}
+  end
+
   def handle_event(
         "load_newer_messages",
         _params,
@@ -984,6 +1057,26 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   def handle_event("cancel_reply", _params, socket) do
     {:noreply, assign(socket, :reply_target, nil)}
+  end
+
+  def handle_event(
+        "mention_query",
+        %{"before_cursor" => before_cursor, "after_cursor" => after_cursor},
+        socket
+      )
+      when is_binary(before_cursor) and is_binary(after_cursor) do
+    case active_mention_context(before_cursor, after_cursor) do
+      nil ->
+        {:noreply, clear_mention_autocomplete(socket)}
+
+      mention_context ->
+        suggestions = mention_suggestions(socket, mention_context.query)
+
+        {:noreply,
+         socket
+         |> assign(:mention_context, mention_context)
+         |> put_mention_suggestions(suggestions)}
+    end
   end
 
   def handle_event("message_typing", %{"message" => %{"content" => content}}, socket)
@@ -1307,6 +1400,115 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     |> to_form(as: :message)
   end
 
+  defp active_mention_context(before_cursor, after_cursor) do
+    case Regex.run(@active_mention_pattern, before_cursor, return: :index) do
+      [{mention_start, _mention_length}, {query_start, query_length}] ->
+        [{0, suffix_length}] =
+          Regex.run(~r/^[A-Za-z0-9_]*/u, after_cursor, return: :index, capture: :first)
+
+        if query_length + suffix_length <= 32 do
+          %{
+            prefix: binary_part(before_cursor, 0, mention_start),
+            query: binary_part(before_cursor, query_start, query_length) |> String.downcase(),
+            after:
+              binary_part(after_cursor, suffix_length, byte_size(after_cursor) - suffix_length)
+          }
+        end
+
+      nil ->
+        nil
+    end
+  end
+
+  defp mention_suggestions(socket, query) do
+    member_suggestions =
+      Enum.map(socket.assigns.workspace_members, &%{username: &1.user.username, kind: :user})
+
+    suggestions =
+      if can_mention_everyone?(socket) do
+        [%{username: "everyone", kind: :everyone} | member_suggestions]
+      else
+        member_suggestions
+      end
+
+    suggestions
+    |> Enum.filter(&String.starts_with?(String.downcase(&1.username), query))
+    |> Enum.sort_by(&String.downcase(&1.username))
+    |> Enum.take(@max_mention_suggestions)
+    |> Enum.with_index()
+    |> Enum.map(fn {suggestion, index} -> Map.put(suggestion, :index, index) end)
+  end
+
+  defp can_mention_everyone?(socket) do
+    current_user_id = socket.assigns.current_scope.user.id
+
+    Enum.any?(socket.assigns.workspace_members, fn membership ->
+      membership.user_id == current_user_id and
+        (Roles.owner?(membership.role) or Roles.admin?(membership.role))
+    end)
+  end
+
+  defp clear_mention_autocomplete(socket) do
+    socket
+    |> assign(:mention_context, nil)
+    |> put_mention_suggestions([])
+  end
+
+  defp select_active_mention(socket) do
+    suggestion = Enum.at(current_mention_suggestions(socket), socket.assigns.mention_active_index)
+    select_mention(socket, suggestion)
+  end
+
+  defp select_mention(socket, nil), do: socket
+
+  defp select_mention(%{assigns: %{mention_context: nil}} = socket, _suggestion), do: socket
+
+  defp select_mention(socket, suggestion) do
+    mention_context = socket.assigns.mention_context
+    mention = "@#{suggestion.username}"
+    before_cursor = mention_context.prefix <> mention <> mention_separator(mention_context.after)
+    content = before_cursor <> mention_context.after
+
+    socket
+    |> assign(:message_form, message_form(%{content: content}))
+    |> clear_mention_autocomplete()
+    |> push_event("mention_selected", %{
+      input_id: "message_content",
+      before_cursor: before_cursor,
+      content: content
+    })
+  end
+
+  defp mention_separator(""), do: " "
+
+  defp mention_separator(after_cursor) do
+    if Regex.match?(~r/^[A-Za-z0-9_@]/u, after_cursor), do: " ", else: ""
+  end
+
+  defp mention_option_id(suggestion), do: "message-mention-option-#{suggestion.username}"
+
+  defp current_mention_suggestions(%{assigns: %{mention_context: nil}}), do: []
+
+  defp current_mention_suggestions(socket) do
+    mention_suggestions(socket, socket.assigns.mention_context.query)
+  end
+
+  defp put_mention_suggestions(socket, suggestions, preferred_index \\ 0) do
+    active_index = min(preferred_index, max(length(suggestions) - 1, 0))
+
+    active_option_id =
+      case Enum.at(suggestions, active_index) do
+        nil -> nil
+        suggestion -> mention_option_id(suggestion)
+      end
+
+    socket
+    |> assign(:mention_suggestion_count, length(suggestions))
+    |> assign(:mention_active_index, active_index)
+    |> assign(:mention_active_option_id, active_option_id)
+    |> stream(:mention_suggestions, suggestions, reset: true)
+  end
+
   defp send_message(message_params, socket) do
     message_params = put_reply_target(message_params, socket.assigns.reply_target)
 
@@ -1321,6 +1523,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         {:noreply,
          socket
          |> assign(:message_form, message_form())
+         |> clear_mention_autocomplete()
          |> assign(:reply_target, nil)
          |> assign(:latest_message, message)
          |> ensure_oldest_message(message)
@@ -1414,6 +1617,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
           )
         )
         |> Presence.refresh_workspace_members(members)
+        |> refresh_mention_suggestions()
         |> restream_author_message_rows(payload)
       else
         _error -> socket
@@ -1626,12 +1830,67 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         ]
       )
 
-    {:safe, content} =
-      row.message.content
-      |> Emoji.render_shortcodes()
-      |> Phoenix.HTML.html_escape()
+    content =
+      render_message_content(
+        row.message.content,
+        dom_id,
+        row.message.mention_recognition
+      )
 
     {:safe, ["<p", attrs, ">", content, "</p>"]}
+  end
+
+  defp render_message_content(content, dom_id, recognition) do
+    content
+    |> Emoji.render_shortcodes()
+    |> MentionParser.segments()
+    |> Enum.map_reduce(0, fn
+      {:text, text}, mention_index ->
+        {:safe, escaped_text} = Phoenix.HTML.html_escape(text)
+        {escaped_text, mention_index}
+
+      {:mention, kind, source, username}, mention_index ->
+        rendered_mention =
+          if recognized_mention?(recognition, kind, username) do
+            id = "#{dom_id}-mention-#{mention_index}"
+            {:safe, span} = mention_span(id, kind, source)
+            span
+          else
+            {:safe, escaped_source} = Phoenix.HTML.html_escape(source)
+            escaped_source
+          end
+
+        {rendered_mention, mention_index + 1}
+    end)
+    |> elem(0)
+  end
+
+  defp recognized_mention?(recognition, :user, username) do
+    username in Map.get(recognition || %{}, "usernames", [])
+  end
+
+  defp recognized_mention?(recognition, :everyone, _username) do
+    Map.get(recognition || %{}, "everyone", false)
+  end
+
+  defp mention_span(id, kind, source) do
+    {:safe, attrs} =
+      Phoenix.HTML.attributes_escape(
+        id: id,
+        data_mention_kind: Atom.to_string(kind),
+        class: mention_class(kind)
+      )
+
+    {:safe, escaped_source} = Phoenix.HTML.html_escape(source)
+    {:safe, ["<span", attrs, ">", escaped_source, "</span>"]}
+  end
+
+  defp mention_class(:everyone) do
+    "rounded bg-amber-300/10 px-0.5 font-semibold text-amber-300 ring-1 ring-amber-300/20"
+  end
+
+  defp mention_class(:user) do
+    "rounded bg-primary/10 px-0.5 font-semibold text-primary ring-1 ring-primary/20"
   end
 
   defp deleted_message_placeholder(dom_id) do
@@ -2189,9 +2448,19 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         )
       )
       |> Presence.refresh_workspace_members(members)
+      |> refresh_mention_suggestions()
     else
       _error -> socket
     end
+  end
+
+  defp refresh_mention_suggestions(%{assigns: %{mention_context: nil}} = socket), do: socket
+
+  defp refresh_mention_suggestions(socket) do
+    suggestions = mention_suggestions(socket, socket.assigns.mention_context.query)
+    active_index = min(socket.assigns.mention_active_index, max(length(suggestions) - 1, 0))
+
+    put_mention_suggestions(socket, suggestions, active_index)
   end
 
   defp selected_channel_unread_count(channel_unread_counts, selected_channel) do
