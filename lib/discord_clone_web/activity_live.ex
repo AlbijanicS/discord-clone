@@ -7,8 +7,20 @@ defmodule DiscordCloneWeb.ActivityLive do
   alias DiscordCloneWeb.WorkspaceLive.Shell
 
   def on_mount(:assign_unread_count, _params, _session, socket) do
-    {:ok, unread_count} = Chat.unread_activity_count(socket.assigns.current_scope)
-    {:cont, assign(socket, :unread_activity_count, unread_count)}
+    if activity_consumer?(socket.view) do
+      if connected?(socket) do
+        :ok = Chat.subscribe_to_activity(socket.assigns.current_scope)
+      end
+
+      socket =
+        socket
+        |> assign_unread_activity_count()
+        |> attach_hook(:activity_unread_count, :handle_info, &refresh_unread_count/2)
+
+      {:cont, socket}
+    else
+      {:cont, socket}
+    end
   end
 
   @impl true
@@ -89,6 +101,23 @@ defmodule DiscordCloneWeb.ActivityLive do
 
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "Activity is no longer available.")}
+    end
+  end
+
+  @impl true
+  def handle_info({:activity_changed, _payload}, socket) do
+    case list_loaded_activity_feed_pages(
+           socket.assigns.current_scope,
+           socket.assigns.activity_feed_pages_loaded
+         ) do
+      {:ok, activity_feed_page} ->
+        {:noreply,
+         socket
+         |> assign(:activity_next_cursor, activity_feed_page.next_cursor)
+         |> stream(:activity_items, activity_feed_page.items, reset: true)}
+
+      {:error, _reason} ->
+        {:noreply, socket}
     end
   end
 
@@ -279,6 +308,32 @@ defmodule DiscordCloneWeb.ActivityLive do
 
   defp list_loaded_activity_feed_pages(scope, page_count) do
     load_activity_feed_pages(scope, page_count, nil, [])
+  end
+
+  defp refresh_unread_count({:activity_changed, _payload}, %{view: __MODULE__} = socket) do
+    {:cont, assign_unread_activity_count(socket)}
+  end
+
+  defp refresh_unread_count({:activity_changed, _payload}, socket) do
+    {:halt, assign_unread_activity_count(socket)}
+  end
+
+  defp refresh_unread_count(_message, socket), do: {:cont, socket}
+
+  defp assign_unread_activity_count(socket) do
+    {:ok, unread_count} = Chat.unread_activity_count(socket.assigns.current_scope)
+    assign(socket, :unread_activity_count, unread_count)
+  end
+
+  defp activity_consumer?(view) do
+    view in [
+      __MODULE__,
+      DiscordCloneWeb.ChannelLive.Show,
+      DiscordCloneWeb.WorkspaceLive.AuditLog,
+      DiscordCloneWeb.WorkspaceLive.Entry,
+      DiscordCloneWeb.WorkspaceLive.Home,
+      DiscordCloneWeb.WorkspaceLive.InviteNew
+    ]
   end
 
   defp load_activity_feed_pages(_scope, 0, next_cursor, feed_pages) do

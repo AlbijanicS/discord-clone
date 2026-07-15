@@ -867,7 +867,11 @@ defmodule DiscordClone.Workspaces do
       |> Multi.delete(:membership, membership)
       |> Repo.transaction()
       |> case do
-        {:ok, %{membership: membership}} ->
+        {:ok, %{membership: membership, activity_items: {removed_count, _}}} ->
+          if removed_count > 0 do
+            :ok = Chat.broadcast_activity_removed(user_id, %{workspace_id: workspace_id})
+          end
+
           {:ok, membership}
 
         {:error, failed_operation, failed_value, changes_so_far} ->
@@ -1505,8 +1509,13 @@ defmodule DiscordClone.Workspaces do
     )
     |> Repo.transaction()
     |> case do
-      {:ok, %{membership: membership}} ->
+      {:ok, %{membership: membership, activity_items: {removed_count, _}}} ->
         Enum.each(active_timeouts, &Chat.cancel_workspace_timeout_expiry/1)
+
+        if removed_count > 0 do
+          :ok = Chat.broadcast_activity_removed(target_user_id, %{workspace_id: workspace.id})
+        end
+
         :ok = broadcast_workspace_audit_changed(workspace.id)
         :ok = broadcast_workspace_access_revoked(workspace.id, target_user_id)
         {:ok, membership}
@@ -1556,21 +1565,36 @@ defmodule DiscordClone.Workspaces do
     end)
     |> delete_workspace_activity(target_user_id, workspace.id)
     |> Multi.delete(:membership, target_membership)
-    |> Multi.insert(:audit_event, fn %{message_cleanup: cleaned_messages} ->
+    |> Multi.insert(:audit_event, fn %{message_cleanup: cleanup} ->
       WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
         workspace_id: workspace.id,
         actor_user_id: actor_user_id,
         target_user_id: target_user_id,
         event_type: "member_banned",
         reason: reason,
-        metadata: ban_cleanup_metadata(cleanup_window, cleaned_messages)
+        metadata: ban_cleanup_metadata(cleanup_window, cleanup.messages)
       })
     end)
     |> Repo.transaction()
     |> case do
-      {:ok, %{ban: ban, message_cleanup: cleaned_messages}} ->
+      {:ok,
+       %{
+         ban: ban,
+         message_cleanup: cleanup,
+         activity_items: {removed_count, _}
+       }} ->
         Enum.each(active_timeouts, &Chat.cancel_workspace_timeout_expiry/1)
-        :ok = Chat.broadcast_cleaned_messages(cleaned_messages)
+
+        if removed_count > 0 do
+          :ok = Chat.broadcast_activity_removed(target_user_id, %{workspace_id: workspace.id})
+        end
+
+        :ok =
+          Chat.broadcast_activity_removals(cleanup.activity_recipient_ids, %{
+            workspace_id: workspace.id
+          })
+
+        :ok = Chat.broadcast_cleaned_messages(cleanup.messages)
         :ok = broadcast_workspace_audit_changed(workspace.id)
         :ok = broadcast_workspace_access_revoked(workspace.id, target_user_id)
         {:ok, ban}
@@ -1645,10 +1669,10 @@ defmodule DiscordClone.Workspaces do
   end
 
   defp clean_up_banned_member_messages(_workspace, _target_user_id, _actor_user_id, :none),
-    do: {:ok, []}
+    do: {:ok, %{messages: [], activity_recipient_ids: []}}
 
   defp clean_up_banned_member_messages(workspace, target_user_id, actor_user_id, cleanup_window) do
-    Chat.soft_delete_user_workspace_messages(
+    Chat.soft_delete_user_workspace_messages_with_activity_facts(
       workspace.id,
       target_user_id,
       actor_user_id,

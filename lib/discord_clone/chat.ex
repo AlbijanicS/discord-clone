@@ -43,6 +43,14 @@ defmodule DiscordClone.Chat do
   @type window_result :: {:ok, map()} | {:error, reason()}
   @type activity_feed_cursor :: %{inserted_at: DateTime.t(), id: Ecto.UUID.t()}
 
+  @doc "Subscribes the scoped user to private Activity change facts."
+  @spec subscribe_to_activity(term()) :: :ok | {:error, :unauthenticated}
+  def subscribe_to_activity(%Scope{user: %User{id: user_id}}) do
+    Phoenix.PubSub.subscribe(DiscordClone.PubSub, activity_topic(user_id))
+  end
+
+  def subscribe_to_activity(_scope), do: {:error, :unauthenticated}
+
   def change_message(attrs \\ %{}) do
     Message.changeset(%Message{}, attrs)
   end
@@ -121,6 +129,10 @@ defmodule DiscordClone.Chat do
         []
       )
 
+    if updated_count > 0 do
+      :ok = broadcast_activity_change(user_id, %{action: :all_read, updated_count: updated_count})
+    end
+
     {:ok, updated_count}
   end
 
@@ -192,21 +204,38 @@ defmodule DiscordClone.Chat do
           )
 
         if destination do
-          Repo.update_all(
-            from(activity_item in ActivityItem,
-              where:
-                activity_item.id == ^activity_item_id and
-                  activity_item.recipient_user_id == ^user_id and
-                  is_nil(activity_item.read_at)
-            ),
-            set: [read_at: DateTime.utc_now(:microsecond)]
-          )
+          {updated_count, _} =
+            Repo.update_all(
+              from(activity_item in ActivityItem,
+                where:
+                  activity_item.id == ^activity_item_id and
+                    activity_item.recipient_user_id == ^user_id and
+                    is_nil(activity_item.read_at)
+              ),
+              set: [read_at: DateTime.utc_now(:microsecond)]
+            )
 
-          destination
+          {destination, updated_count}
         else
           Repo.rollback(:not_found)
         end
       end)
+      |> case do
+        {:ok, {destination, 0}} ->
+          {:ok, destination}
+
+        {:ok, {destination, _updated_count}} ->
+          :ok =
+            broadcast_activity_change(user_id, %{
+              action: :read,
+              activity_item_id: activity_item_id
+            })
+
+          {:ok, destination}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     else
       :error -> {:error, :not_found}
     end
@@ -243,15 +272,62 @@ defmodule DiscordClone.Chat do
   preloaded) so callers can broadcast refreshes after committing.
   """
   def soft_delete_user_workspace_messages(workspace_id, target_user_id, actor_user_id, bound) do
+    case soft_delete_user_workspace_messages_with_activity(
+           workspace_id,
+           target_user_id,
+           actor_user_id,
+           bound
+         ) do
+      {:ok, %{messages: messages, activity_recipient_ids: activity_recipient_ids}} ->
+        :ok = broadcast_activity_removals(activity_recipient_ids, %{workspace_id: workspace_id})
+        {:ok, messages}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc false
+  def soft_delete_user_workspace_messages_with_activity_facts(
+        workspace_id,
+        target_user_id,
+        actor_user_id,
+        bound
+      ) do
+    soft_delete_user_workspace_messages_with_activity(
+      workspace_id,
+      target_user_id,
+      actor_user_id,
+      bound
+    )
+  end
+
+  defp soft_delete_user_workspace_messages_with_activity(
+         workspace_id,
+         target_user_id,
+         actor_user_id,
+         bound
+       ) do
     deleted_at = DateTime.utc_now(:second)
 
     message_ids =
       Repo.all(cleanup_message_ids_query(workspace_id, target_user_id, bound))
 
     if message_ids == [] do
-      {:ok, []}
+      {:ok, %{messages: [], activity_recipient_ids: []}}
     else
       Multi.new()
+      |> Multi.run(:activity_recipient_ids, fn repo, _changes ->
+        recipient_ids =
+          repo.all(
+            from activity_item in ActivityItem,
+              where: activity_item.source_message_id in ^message_ids,
+              select: activity_item.recipient_user_id,
+              distinct: true
+          )
+
+        {:ok, recipient_ids}
+      end)
       |> Multi.delete_all(
         :activity_items,
         from(activity_item in ActivityItem,
@@ -280,8 +356,11 @@ defmodule DiscordClone.Chat do
       end)
       |> Repo.transaction()
       |> case do
-        {:ok, %{deleted_messages: messages}} -> {:ok, messages}
-        {:error, _operation, reason, _changes} -> {:error, reason}
+        {:ok, %{deleted_messages: messages, activity_recipient_ids: activity_recipient_ids}} ->
+          {:ok, %{messages: messages, activity_recipient_ids: activity_recipient_ids}}
+
+        {:error, _operation, reason, _changes} ->
+          {:error, reason}
       end
     end
   end
@@ -316,6 +395,16 @@ defmodule DiscordClone.Chat do
     end)
 
     :ok
+  end
+
+  @doc false
+  def broadcast_activity_removed(user_id, %{workspace_id: workspace_id}) do
+    broadcast_activity_change(user_id, %{action: :removed, workspace_id: workspace_id})
+  end
+
+  @doc false
+  def broadcast_activity_removals(user_ids, %{workspace_id: workspace_id}) do
+    broadcast_activity_changes(user_ids, %{action: :removed, workspace_id: workspace_id})
   end
 
   def schedule_workspace_timeout_expiry(%WorkspaceModeration{} = moderation) do
@@ -756,13 +845,20 @@ defmodule DiscordClone.Chat do
         Map.get(attrs, "reply_to_message_id") || Map.get(attrs, :reply_to_message_id)
 
       case insert_sequenced_message(changeset, user_id, channel, reply_to_message_id) do
-        {:ok, {message, read_state_changes}} ->
+        {:ok, {message, read_state_changes, activity_recipient_ids}} ->
           message = preload_message_for_display(message)
           :ok = Runtime.put_recent_message(message)
           :ok = Runtime.user_stopped_typing(channel_id, user_id)
           :ok = Unread.broadcast_changes(read_state_changes)
           :ok = broadcast_message_created(message)
           :ok = broadcast_workspace_message_created(channel.workspace_id, message)
+
+          :ok =
+            broadcast_activity_changes(activity_recipient_ids, %{
+              action: :created,
+              source_message_id: message.id
+            })
+
           {:ok, message}
 
         {:error, {:invalid_message, changeset}} ->
@@ -801,9 +897,9 @@ defmodule DiscordClone.Chat do
              locked_channel
              |> Ecto.Changeset.change(last_message_seq: next_seq)
              |> Repo.update() do
-        insert_mention_activity!(message, channel, user_id)
+        activity_recipient_ids = insert_mention_activity!(message, channel, user_id)
         read_state_changes = Unread.fanout_on_send!(channel, user_id, next_seq)
-        {message, read_state_changes}
+        {message, read_state_changes, activity_recipient_ids}
       else
         {:error, %Ecto.Changeset{} = changeset} ->
           Repo.rollback({:invalid_message, changeset})
@@ -880,7 +976,10 @@ defmodule DiscordClone.Chat do
           updated_at: ^message.inserted_at
         }
 
-    Repo.insert_all(ActivityItem, activity_rows_query)
+    {_count, activity_items} =
+      Repo.insert_all(ActivityItem, activity_rows_query, returning: [:recipient_user_id])
+
+    Enum.map(activity_items, & &1.recipient_user_id)
   end
 
   defp validate_reply_target(_changeset, _channel_id, _next_seq, nil), do: {:ok, nil}
@@ -1110,6 +1209,17 @@ defmodule DiscordClone.Chat do
 
     multi =
       Multi.new()
+      |> Multi.run(:activity_recipient_ids, fn repo, _changes ->
+        recipient_ids =
+          repo.all(
+            from activity_item in ActivityItem,
+              where: activity_item.source_message_id == ^message.id,
+              select: activity_item.recipient_user_id,
+              distinct: true
+          )
+
+        {:ok, recipient_ids}
+      end)
       |> Multi.delete_all(
         :activity_items,
         from(activity_item in ActivityItem,
@@ -1130,10 +1240,17 @@ defmodule DiscordClone.Chat do
       |> maybe_insert_message_delete_audit(message, user_id)
 
     case Repo.transaction(multi) do
-      {:ok, %{message: message}} ->
+      {:ok, %{message: message, activity_recipient_ids: activity_recipient_ids}} ->
         message = Repo.preload(message, :user)
         :ok = Runtime.put_recent_message(message)
         :ok = broadcast_message_deleted(message)
+
+        :ok =
+          broadcast_activity_changes(activity_recipient_ids, %{
+            action: :removed,
+            source_message_id: message.id
+          })
+
         {:ok, message}
 
       {:error, :message, changeset, _changes_so_far} ->
@@ -1230,6 +1347,23 @@ defmodule DiscordClone.Chat do
   defp channel_messages_topic(channel_id), do: "chat:channel:#{channel_id}"
   defp channel_reactions_topic(channel_id), do: "chat:channel:#{channel_id}:reactions"
   defp workspace_messages_topic(workspace_id), do: "chat:workspace:#{workspace_id}:messages"
+  defp activity_topic(user_id), do: "chat:user:#{user_id}:activity"
+
+  defp broadcast_activity_change(user_id, payload) do
+    Phoenix.PubSub.broadcast(
+      DiscordClone.PubSub,
+      activity_topic(user_id),
+      {:activity_changed, payload}
+    )
+  end
+
+  defp broadcast_activity_changes(user_ids, payload) do
+    Enum.each(Enum.uniq(user_ids), fn user_id ->
+      :ok = broadcast_activity_change(user_id, payload)
+    end)
+
+    :ok
+  end
 
   defp broadcast_reaction_changed(%Message{} = message, emoji) do
     Phoenix.PubSub.broadcast_from(
