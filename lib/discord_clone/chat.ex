@@ -416,6 +416,35 @@ defmodule DiscordClone.Chat do
     do: {:error, :unauthenticated}
 
   @doc """
+  Resolves a live Message inside an accessible Channel and loads a bounded
+  sequence-centered window containing it.
+
+  Missing, deleted, cross-Channel, malformed, and inaccessible targets are all
+  reported as `:not_found` so callers do not reveal Message existence.
+  """
+  @spec navigate_to_message(term(), Ecto.UUID.t(), Ecto.UUID.t()) :: window_result()
+  def navigate_to_message(%Scope{user: %User{id: user_id}}, channel_id, message_id) do
+    with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
+      Repo.transaction(fn ->
+        case get_live_channel_message(channel.id, message_id) do
+          %Message{} = target ->
+            channel
+            |> MessageWindow.load_around_channel(target.seq)
+            |> Map.put(:target, preload_message_for_display(target))
+
+          nil ->
+            Repo.rollback(:not_found)
+        end
+      end)
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def navigate_to_message(_scope, _channel_id, _message_id),
+    do: {:error, :unauthenticated}
+
+  @doc """
   Loads the message window immediately before `before_seq` for an accessible channel.
 
   Invalid cursors and inaccessible channels return normalized error reasons.
@@ -760,6 +789,19 @@ defmodule DiscordClone.Chat do
           where: message.id == ^message_id,
           limit: 1,
           preload: [channel: channel]
+      )
+    end)
+  end
+
+  defp get_live_channel_message(channel_id, message_id) do
+    UUIDIdentifier.cast_or(message_id, nil, fn message_id ->
+      Repo.one(
+        from message in Message,
+          where:
+            message.id == ^message_id and message.channel_id == ^channel_id and
+              is_nil(message.deleted_at),
+          lock: "FOR SHARE",
+          limit: 1
       )
     end)
   end

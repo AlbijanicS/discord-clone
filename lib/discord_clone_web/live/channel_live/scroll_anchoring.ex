@@ -93,6 +93,15 @@ defmodule DiscordCloneWeb.ChannelLive.ScrollAnchoring do
   def scroll_target_seq(_target), do: nil
 
   @doc """
+  Returns the unique token for a user-initiated scroll target, or `nil`.
+
+  The browser includes this token in its de-duplication key so navigating to
+  the same Message more than once still performs a fresh scroll.
+  """
+  def scroll_target_token(%{token: token}) when is_integer(token), do: token
+  def scroll_target_token(_target), do: nil
+
+  @doc """
   Parses a value into an integer, returning `{:ok, integer}` or `:error`.
   """
   def parse_integer(value) when is_integer(value), do: {:ok, value}

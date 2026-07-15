@@ -228,6 +228,168 @@ defmodule DiscordCloneWeb.ChannelLive.ShowTest do
     end
   end
 
+  describe "reply parent navigation" do
+    setup :register_and_log_in_user
+
+    test "loads, scrolls to, and highlights a live parent outside the current window", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+      {:ok, parent} = Chat.send_message(scope, channel_id, %{content: "distant parent"})
+
+      for index <- 1..55 do
+        {:ok, _message} = Chat.send_message(scope, channel_id, %{content: "filler #{index}"})
+      end
+
+      {:ok, reply} =
+        Chat.send_message(scope, channel_id, %{
+          content: "reply near the latest edge",
+          reply_to_message_id: parent.id
+        })
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{channel_id}")
+
+      refute has_element?(view, "#message-#{parent.id}")
+      assert has_element?(view, "#message-#{reply.id}-reply-preview")
+
+      view
+      |> element("#message-#{reply.id}-reply-preview")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#message-#{parent.id}[data-reply-navigation-target='true'].reply-target-highlight"
+             )
+
+      assert has_element?(
+               view,
+               "#channel-messages[data-scroll-target-kind='sequence'][data-scroll-target-seq='#{parent.seq}']"
+             )
+    end
+
+    test "keeps replies but replaces a deleted parent's preview with a non-clickable placeholder",
+         %{
+           conn: conn,
+           scope: scope
+         } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+      {:ok, parent} = Chat.send_message(scope, channel_id, %{content: "sensitive parent"})
+
+      {:ok, reply} =
+        Chat.send_message(scope, channel_id, %{
+          content: "durable reply",
+          reply_to_message_id: parent.id
+        })
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{channel_id}")
+
+      assert has_element?(view, "#message-#{reply.id}-reply-preview")
+      {:ok, _deleted_parent} = Chat.delete_message(scope, parent.id)
+
+      assert has_element?(
+               view,
+               "#message-#{reply.id}-deleted-reply-preview:not(button)",
+               "Message deleted"
+             )
+
+      refute has_element?(view, "#message-#{reply.id}-reply-preview")
+      refute has_element?(view, "#message-#{reply.id}-reply-preview-author")
+      refute has_element?(view, "#message-#{reply.id}-reply-preview-content")
+      assert Repo.get!(Message, reply.id).reply_to_message_id == parent.id
+    end
+
+    test "preserves the draft and clears a selected target deleted before send", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+      {:ok, parent} = Chat.send_message(scope, channel_id, %{content: "reply target"})
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{channel_id}")
+
+      view |> element("#message-#{parent.id}-reply") |> render_click()
+
+      view
+      |> form("#message-composer-form", message: %{content: "carefully written draft"})
+      |> render_change()
+
+      {:ok, _deleted_parent} = Chat.delete_message(scope, parent.id)
+
+      refute has_element?(view, "#message-reply-target")
+      assert has_element?(view, "#message_content[value='carefully written draft']")
+      assert has_element?(view, "#flash-error", "reply target was deleted")
+    end
+
+    test "recovers when the target is deleted during the send race", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      channel_id = workspace.default_channel_id
+      {:ok, parent} = Chat.send_message(scope, channel_id, %{content: "racy target"})
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{channel_id}")
+
+      view |> element("#message-#{parent.id}-reply") |> render_click()
+
+      parent
+      |> Message.soft_delete_changeset(%{
+        deleted_at: DateTime.utc_now(:second),
+        deleted_by_user_id: scope.user.id
+      })
+      |> Repo.update!()
+
+      view
+      |> form("#message-composer-form", message: %{content: "draft sent during deletion"})
+      |> render_submit()
+
+      refute has_element?(view, "#message-reply-target")
+      assert has_element?(view, "#message_content[value='draft sent during deletion']")
+      assert has_element?(view, "#flash-error", "reply target was deleted")
+      refute Repo.get_by(Message, content: "draft sent during deletion")
+    end
+
+    test "gives the same safe feedback for deleted and inaccessible navigation targets", %{
+      conn: conn,
+      scope: scope
+    } do
+      inaccessible_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, inaccessible_workspace} =
+        Workspaces.create_workspace(inaccessible_scope, %{name: "Private"})
+
+      {:ok, inaccessible_message} =
+        Chat.send_message(inaccessible_scope, inaccessible_workspace.default_channel_id, %{
+          content: "private message"
+        })
+
+      {:ok, deleted_message} =
+        Chat.send_message(scope, workspace.default_channel_id, %{content: "deleted message"})
+
+      {:ok, _deleted_message} = Chat.delete_message(scope, deleted_message.id)
+
+      {:ok, view, _html} =
+        live(
+          conn,
+          ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+        )
+
+      for target_id <- [deleted_message.id, inaccessible_message.id, "not-a-uuid"] do
+        render_hook(view, "navigate_reply_parent", %{"message-id" => target_id})
+        assert has_element?(view, "#flash-error", "replied message is no longer available")
+      end
+    end
+  end
+
   describe "toggling reactions" do
     setup :register_and_log_in_user
 

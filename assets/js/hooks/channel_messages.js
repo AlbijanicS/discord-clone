@@ -252,7 +252,8 @@ const ChannelMessages = {
   applyScrollTarget() {
     const kind = this.el.dataset.scrollTargetKind
     const seq = this.el.dataset.scrollTargetSeq || ""
-    const key = `${kind || "none"}:${seq}`
+    const token = this.el.dataset.scrollTargetToken || ""
+    const key = `${kind || "none"}:${seq}:${token}`
 
     if (!kind || this.appliedScrollTargetKey === key) {
       return

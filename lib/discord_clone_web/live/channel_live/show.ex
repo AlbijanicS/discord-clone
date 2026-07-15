@@ -21,6 +21,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     {"🎉", "React with 🎉 to message"},
     {"👀", "React with 👀 to message"}
   ]
+  @reply_highlight_duration_ms 2_400
 
   @impl true
   def mount(%{"workspace_id" => workspace_id, "channel_id" => channel_id}, _session, socket) do
@@ -61,6 +62,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:show_channel_form?, false)
         |> assign(:message_form, message_form())
         |> assign(:reply_target, nil)
+        |> assign(:reply_navigation_target_id, nil)
+        |> assign(:reply_navigation_target_token, nil)
         |> assign(:current_member_moderation_state, current_member_moderation_state)
         |> assign(:oldest_message, List.first(messages))
         |> assign(:latest_message, List.last(messages))
@@ -224,6 +227,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               data-loading-newer={to_string(@loading_newer_messages?)}
               data-scroll-target-kind={ScrollAnchoring.scroll_target_kind(@message_scroll_target)}
               data-scroll-target-seq={ScrollAnchoring.scroll_target_seq(@message_scroll_target)}
+              data-scroll-target-token={ScrollAnchoring.scroll_target_token(@message_scroll_target)}
               class="absolute inset-0 scroll-pb-6 overflow-y-auto px-5 py-6 [overflow-anchor:none]"
             >
               <div
@@ -243,10 +247,15 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                 data-message-row={row_kind(row)}
                 data-message-id={row.message.id}
                 data-message-seq={row.message.seq}
+                data-reply-navigation-target={
+                  to_string(row.message.id == @reply_navigation_target_id)
+                }
                 data-visible-read-observe="true"
                 data-hover-surface="message-row"
+                style={reply_highlight_style(row.message.id, @reply_navigation_target_id)}
                 class={[
                   "group relative grid w-full grid-cols-[2.75rem_minmax(0,1fr)] gap-x-3 rounded-md px-3 transition-colors duration-150 hover:bg-base-200/70 focus-within:bg-base-200/70",
+                  row.message.id == @reply_navigation_target_id && "reply-target-highlight",
                   if(row.row_kind == :compact, do: "py-0.5", else: "py-1.5")
                 ]}
               >
@@ -362,16 +371,19 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                       </div>
                     </details>
                   </div>
-                  <div
+                  <button
                     :if={
                       !is_nil(row.message.reply_to_message_id) &&
                         !message_deleted?(row.message.reply_to_message)
                     }
                     id={"#{dom_id}-reply-preview"}
+                    type="button"
+                    phx-click="navigate_reply_parent"
+                    phx-value-message-id={row.message.reply_to_message_id}
                     class={[
-                      "mb-1.5 flex min-w-0 items-center gap-2 border-l-2 border-primary/35 pl-2 text-xs text-base-content/55"
+                      "mb-1.5 flex min-w-0 max-w-full items-center gap-2 border-l-2 border-primary/35 pl-2 text-left text-xs text-base-content/55 transition hover:border-primary hover:text-base-content/75 focus:outline-none focus:ring-2 focus:ring-primary/25"
                     ]}
-                    aria-label="Replying to message"
+                    aria-label="Go to replied message"
                   >
                     <span
                       id={"#{dom_id}-reply-preview-author"}
@@ -385,6 +397,18 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                     >
                       {truncate_reply_content(row.message.reply_to_message.content)}
                     </span>
+                  </button>
+                  <div
+                    :if={
+                      !is_nil(row.message.reply_to_message_id) &&
+                        message_deleted?(row.message.reply_to_message)
+                    }
+                    id={"#{dom_id}-deleted-reply-preview"}
+                    class="mb-1.5 flex min-w-0 items-center gap-2 border-l-2 border-base-content/20 pl-2 text-xs italic text-base-content/45"
+                    aria-label="Replied message was deleted"
+                  >
+                    <.icon name="hero-no-symbol" class="size-3.5 shrink-0" />
+                    <span>Message deleted</span>
                   </div>
                   <div
                     :if={row.row_kind == :full}
@@ -567,6 +591,22 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   def handle_info({:message_deleted, payload}, socket) do
     {:noreply, refresh_deleted_message(socket, payload)}
+  end
+
+  def handle_info({:clear_reply_navigation_target, target_id, token}, socket) do
+    if socket.assigns.reply_navigation_target_id == target_id and
+         socket.assigns.reply_navigation_target_token == token do
+      socket =
+        socket
+        |> assign(:reply_navigation_target_id, nil)
+        |> assign(:reply_navigation_target_token, nil)
+        |> assign(:message_scroll_target, nil)
+        |> restream_message_row(target_id)
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_info({:workspace_message_created, %{workspace_id: workspace_id} = payload}, socket) do
@@ -903,6 +943,36 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       {:noreply, assign(socket, :message_form, to_form(message_params, as: :message))}
     else
       send_message(message_params, socket)
+    end
+  end
+
+  def handle_event("navigate_reply_parent", %{"message-id" => message_id}, socket) do
+    case Chat.navigate_to_message(
+           socket.assigns.current_scope,
+           socket.assigns.selected_channel.id,
+           message_id
+         ) do
+      {:ok, %{target: target} = message_window} ->
+        token = System.unique_integer([:positive])
+
+        Process.send_after(
+          self(),
+          {:clear_reply_navigation_target, target.id, token},
+          @reply_highlight_duration_ms
+        )
+
+        {:noreply,
+         socket
+         |> assign(:reply_navigation_target_id, target.id)
+         |> assign(:reply_navigation_target_token, token)
+         |> replace_message_window(message_window, %{
+           kind: :sequence,
+           seq: target.seq,
+           token: token
+         })}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "That replied message is no longer available.")}
     end
   end
 
@@ -1267,7 +1337,9 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
       {:error, :invalid_message, changeset} ->
         {:noreply,
-         assign(socket, :message_form, to_form(changeset, as: :message, action: :insert))}
+         socket
+         |> assign(:message_form, to_form(changeset, as: :message, action: :insert))
+         |> recover_invalid_reply_target(changeset)}
 
       {:error, _reason} ->
         {:noreply,
@@ -1281,6 +1353,17 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   defp put_reply_target(message_params, reply_target) do
     Map.put(message_params, "reply_to_message_id", reply_target.id)
+  end
+
+  defp recover_invalid_reply_target(%{assigns: %{reply_target: nil}} = socket, _changeset),
+    do: socket
+
+  defp recover_invalid_reply_target(socket, changeset) do
+    if Keyword.has_key?(changeset.errors, :reply_to_message_id) do
+      clear_deleted_reply_target(socket)
+    else
+      socket
+    end
   end
 
   defp blank_message?(%{"content" => content}) when is_binary(content) do
@@ -1389,21 +1472,19 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   defp refresh_deleted_message(socket, %{channel_id: channel_id, message_id: message_id}) do
     if socket.assigns.selected_channel.id == channel_id do
-      case {Map.fetch(socket.assigns.message_rows_by_id, message_id),
-            Chat.fetch_message(socket.assigns.current_scope, message_id)} do
-        {{:ok, row}, {:ok, message}} ->
-          row = %{row | message: message}
-
+      case Chat.fetch_message(socket.assigns.current_scope, message_id) do
+        {:ok, message} ->
           socket
           |> assign(
             :reaction_summaries,
             Map.delete(socket.assigns.reaction_summaries, message_id)
           )
           |> maybe_assign_deleted_boundary_message(message)
-          |> put_message_row(row)
-          |> stream_insert(:messages, row)
+          |> maybe_refresh_deleted_message_row(message)
+          |> refresh_deleted_reply_previews(message)
+          |> recover_deleted_reply_target(message)
 
-        _not_visible_or_inaccessible ->
+        {:error, _reason} ->
           socket
       end
     else
@@ -1412,6 +1493,46 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   end
 
   defp refresh_deleted_message(socket, _payload), do: socket
+
+  defp maybe_refresh_deleted_message_row(socket, message) do
+    case Map.fetch(socket.assigns.message_rows_by_id, message.id) do
+      {:ok, row} ->
+        replace_message_row(socket, row, message)
+
+      :error ->
+        socket
+    end
+  end
+
+  defp refresh_deleted_reply_previews(socket, deleted_message) do
+    socket.assigns.message_rows_by_id
+    |> Map.values()
+    |> Enum.filter(&(&1.message.reply_to_message_id == deleted_message.id))
+    |> Enum.reduce(socket, fn row, socket ->
+      message = %{row.message | reply_to_message: deleted_message}
+      replace_message_row(socket, row, message)
+    end)
+  end
+
+  defp recover_deleted_reply_target(%{assigns: %{reply_target: %{id: id}}} = socket, %{id: id}) do
+    clear_deleted_reply_target(socket)
+  end
+
+  defp recover_deleted_reply_target(socket, _deleted_message), do: socket
+
+  defp clear_deleted_reply_target(socket) do
+    socket
+    |> assign(:reply_target, nil)
+    |> put_flash(:error, "Your reply target was deleted. Your draft was preserved.")
+  end
+
+  defp replace_message_row(socket, row, message) do
+    row = %{row | message: message}
+
+    socket
+    |> put_message_row(row)
+    |> stream_insert(:messages, row)
+  end
 
   defp maybe_assign_deleted_boundary_message(socket, message) do
     socket
@@ -1440,6 +1561,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   defp message_deleted?(%{deleted_at: %DateTime{}}), do: true
   defp message_deleted?(_message), do: false
+
+  defp reply_highlight_style(message_id, message_id),
+    do: "--reply-highlight-duration: #{@reply_highlight_duration_ms}ms"
+
+  defp reply_highlight_style(_message_id, _target_id), do: nil
 
   defp truncate_reply_content(nil), do: ""
 

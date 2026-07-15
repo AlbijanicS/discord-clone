@@ -99,6 +99,25 @@
 /* Use the data attribute for dark mode  */
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
+/* Briefly call out the exact row reached through a reply preview. */
+
+@keyframes reply-target-highlight {
+  0%,
+  35% {
+    background-color: color-mix(in oklab, var(--color-primary) 22%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-primary) 42%, transparent);
+  }
+
+  100% {
+    background-color: transparent;
+    box-shadow: inset 0 0 0 1px transparent;
+  }
+}
+
+.reply-target-highlight {
+  animation: reply-target-highlight var(--reply-highlight-duration) ease-out;
+}
+
 /* Make LiveView wrapper divs transparent for layout */
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 

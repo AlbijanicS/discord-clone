@@ -3614,6 +3614,57 @@ defmodule DiscordClone.ChatTest do
     end
   end
 
+  describe "navigate_to_message/3" do
+    test "loads an authorized live target and hides every unavailable target as not found" do
+      scope = user_scope_fixture()
+      outsider_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      {:ok, other_channel} = Workspaces.create_channel(scope, workspace.id, %{name: "off-topic"})
+      channel_id = workspace.default_channel_id
+
+      messages =
+        for index <- 1..60 do
+          {:ok, message} =
+            Chat.send_message(scope, channel_id, %{"content" => "message #{index}"})
+
+          message
+        end
+
+      target = Enum.at(messages, 19)
+
+      assert {:ok, %{target: resolved_target, messages: window_messages, meta: meta}} =
+               Chat.navigate_to_message(scope, channel_id, target.id)
+
+      assert resolved_target.id == target.id
+      assert resolved_target.seq == target.seq
+      assert Enum.any?(window_messages, &(&1.id == target.id))
+      assert meta.has_older?
+      assert meta.has_newer?
+
+      {:ok, cross_channel_target} =
+        Chat.send_message(scope, other_channel.id, %{"content" => "elsewhere"})
+
+      {:ok, deleted_target} =
+        Chat.send_message(scope, channel_id, %{"content" => "soon deleted"})
+
+      {:ok, _deleted_target} = Chat.delete_message(scope, deleted_target.id)
+
+      unavailable_target_ids = [
+        "not-a-uuid",
+        Ecto.UUID.generate(),
+        cross_channel_target.id,
+        deleted_target.id
+      ]
+
+      for target_id <- unavailable_target_ids do
+        assert Chat.navigate_to_message(scope, channel_id, target_id) == {:error, :not_found}
+      end
+
+      assert Chat.navigate_to_message(outsider_scope, channel_id, target.id) ==
+               {:error, :not_found}
+    end
+  end
+
   defp insert_message!(channel_id, user_id, content, inserted_at) do
     inserted_at = %{inserted_at | microsecond: {elem(inserted_at.microsecond, 0), 6}}
 
