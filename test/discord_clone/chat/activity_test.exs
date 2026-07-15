@@ -213,6 +213,96 @@ defmodule DiscordClone.Chat.ActivityTest do
     end
   end
 
+  describe "list_activity_feed/1" do
+    test "returns only the scoped user's accessible activity newest first with display associations" do
+      recipient_scope = user_scope_fixture(user_fixture(%{username: "feed_recipient"}))
+      other_scope = user_scope_fixture(user_fixture(%{username: "other_recipient"}))
+      first_author_scope = user_scope_fixture(user_fixture(%{username: "first_author"}))
+      second_author_scope = user_scope_fixture(user_fixture(%{username: "second_author"}))
+
+      {:ok, first_workspace} =
+        Workspaces.create_workspace(first_author_scope, %{name: "First Workspace"})
+
+      {:ok, second_workspace} =
+        Workspaces.create_workspace(second_author_scope, %{name: "Second Workspace"})
+
+      add_workspace_member!(first_workspace, recipient_scope)
+      add_workspace_member!(first_workspace, other_scope)
+      add_workspace_member!(second_workspace, recipient_scope)
+
+      assert {:ok, first_message} =
+               Chat.send_message(first_author_scope, first_workspace.default_channel_id, %{
+                 content: "first request @feed_recipient"
+               })
+
+      assert {:ok, second_message} =
+               Chat.send_message(second_author_scope, second_workspace.default_channel_id, %{
+                 content: "second request @feed_recipient"
+               })
+
+      assert {:ok, _other_message} =
+               Chat.send_message(first_author_scope, first_workspace.default_channel_id, %{
+                 content: "private request @other_recipient"
+               })
+
+      [first_item] = activity_items_for_message(first_message.id)
+      [second_item] = activity_items_for_message(second_message.id)
+      shared_inserted_at = ~U[2026-07-15 10:00:00.000000Z]
+
+      Repo.update_all(
+        from(activity_item in ActivityItem,
+          where: activity_item.id in ^[first_item.id, second_item.id]
+        ),
+        set: [inserted_at: shared_inserted_at]
+      )
+
+      expected_ids = Enum.sort([first_item.id, second_item.id], :desc)
+
+      assert {:ok, activity_items} = Chat.list_activity_feed(recipient_scope)
+      assert Enum.map(activity_items, & &1.id) == expected_ids
+
+      assert Enum.map(activity_items, & &1.source_message.content) ==
+               expected_preview_order(expected_ids, first_item, first_message, second_message)
+
+      assert Enum.all?(activity_items, fn activity_item ->
+               activity_item.recipient_user_id == recipient_scope.user.id and
+                 activity_item.kind == "user_mention" and
+                 Ecto.assoc_loaded?(activity_item.workspace) and
+                 Ecto.assoc_loaded?(activity_item.source_channel) and
+                 Ecto.assoc_loaded?(activity_item.source_message) and
+                 Ecto.assoc_loaded?(activity_item.actor_user)
+             end)
+
+      assert Enum.sort(Enum.map(activity_items, & &1.workspace.name)) ==
+               ["First Workspace", "Second Workspace"]
+
+      assert Enum.sort(Enum.map(activity_items, & &1.source_channel.name)) ==
+               ["general", "general"]
+
+      assert Enum.sort(Enum.map(activity_items, & &1.actor_user.username)) ==
+               ["first_author", "second_author"]
+
+      assert {:ok, 2} = Chat.unread_activity_count(recipient_scope)
+
+      first_membership =
+        Repo.get_by!(WorkspaceMembership,
+          workspace_id: first_workspace.id,
+          user_id: recipient_scope.user.id
+        )
+
+      Repo.delete!(first_membership)
+
+      assert {:ok, [remaining_item]} = Chat.list_activity_feed(recipient_scope)
+      assert remaining_item.workspace.id == second_workspace.id
+      assert {:ok, 2} = Chat.unread_activity_count(recipient_scope)
+    end
+
+    test "requires an authenticated scope" do
+      assert Chat.list_activity_feed(nil) == {:error, :unauthenticated}
+      assert Chat.list_activity_feed(%Scope{}) == {:error, :unauthenticated}
+    end
+  end
+
   defp add_workspace_member!(workspace, scope) do
     %WorkspaceMembership{}
     |> WorkspaceMembership.changeset(%{
@@ -229,5 +319,19 @@ defmodule DiscordClone.Chat.ActivityTest do
         where: activity_item.recipient_user_id == ^user_id,
         order_by: [desc: activity_item.inserted_at, desc: activity_item.id]
     )
+  end
+
+  defp activity_items_for_message(message_id) do
+    Repo.all(
+      from activity_item in ActivityItem, where: activity_item.source_message_id == ^message_id
+    )
+  end
+
+  defp expected_preview_order(expected_ids, first_item, first_message, second_message) do
+    if List.first(expected_ids) == first_item.id do
+      [first_message.content, second_message.content]
+    else
+      [second_message.content, first_message.content]
+    end
   end
 end

@@ -60,6 +60,26 @@ defmodule DiscordClone.Chat do
 
   def unread_activity_count(_scope), do: {:error, :unauthenticated}
 
+  @doc "Returns the scoped user's accessible global Activity Feed newest first."
+  @spec list_activity_feed(term()) :: {:ok, [ActivityItem.t()]} | {:error, :unauthenticated}
+  def list_activity_feed(%Scope{user: %User{id: user_id}}) do
+    activity_items =
+      Repo.all(
+        from activity_item in ActivityItem,
+          join: membership in WorkspaceMembership,
+          on:
+            membership.workspace_id == activity_item.workspace_id and
+              membership.user_id == ^user_id,
+          where: activity_item.recipient_user_id == ^user_id,
+          order_by: [desc: activity_item.inserted_at, desc: activity_item.id],
+          preload: [:workspace, :source_channel, :source_message, :actor_user]
+      )
+
+    {:ok, activity_items}
+  end
+
+  def list_activity_feed(_scope), do: {:error, :unauthenticated}
+
   @doc "Initializes zero-unread read states for a user across a workspace's channels."
   @spec initialize_workspace_reads_for_user(Ecto.UUID.t(), Ecto.UUID.t()) ::
           :ok | {:error, reason()}

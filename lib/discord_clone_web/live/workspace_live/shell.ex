@@ -401,8 +401,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
               <p class="truncate text-sm font-semibold">{@current_scope.user.username}</p>
               <p class="truncate text-xs text-base-content/50">{@current_scope.user.email}</p>
             </div>
-            <div
+            <.link
               id="global-activity-bell"
+              navigate={~p"/activity"}
               class={[
                 "relative flex size-8 shrink-0 items-center justify-center rounded text-slate-400 transition",
                 "hover:bg-slate-800 hover:text-slate-100"
@@ -420,7 +421,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
               >
                 {@unread_activity_count}
               </span>
-            </div>
+            </.link>
             <.link
               href={~p"/users/settings"}
               class="btn btn-square btn-xs btn-ghost"
@@ -449,6 +450,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
               </p>
             </header>
             <div id="channel-main" class="min-h-0 flex-1">
+              {render_slot(@inner_block)}
+            </div>
+          <% :activity -> %>
+            <div id="activity-main" class={["min-h-0 min-w-0"]}>
               {render_slot(@inner_block)}
             </div>
           <% :empty_channel -> %>

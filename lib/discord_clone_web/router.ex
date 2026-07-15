@@ -63,6 +63,7 @@ defmodule DiscordCloneWeb.Router do
       live "/workspaces/:workspace_id/audit-log", WorkspaceLive.AuditLog, :index
       live "/workspaces/:workspace_id/invites/new", WorkspaceLive.InviteNew, :new
       live "/workspaces/:workspace_id/channels/:channel_id", ChannelLive.Show, :show
+      live "/activity", ActivityLive, :index
       live "/users/settings", UserLive.Settings, :edit
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
     end
