@@ -14,15 +14,63 @@ defmodule DiscordCloneWeb.ActivityLive do
   @impl true
   def mount(_params, _session, socket) do
     {:ok, workspaces} = Workspaces.list_workspaces(socket.assigns.current_scope)
-    {:ok, activity_items} = Chat.list_activity_feed(socket.assigns.current_scope)
+    {:ok, activity_feed_page} = Chat.list_activity_feed(socket.assigns.current_scope)
 
     socket =
       socket
+      |> assign(:activity_feed_pages_loaded, 1)
+      |> assign(:activity_next_cursor, activity_feed_page.next_cursor)
       |> stream(:workspaces, workspaces)
       |> stream_configure(:activity_items, dom_id: &"activity-item-#{&1.id}")
-      |> stream(:activity_items, activity_items)
+      |> stream(:activity_items, activity_feed_page.items)
 
     {:ok, socket}
+  end
+
+  @impl true
+  def handle_event(
+        "load_older_activity",
+        _params,
+        %{assigns: %{activity_next_cursor: nil}} = socket
+      ) do
+    {:noreply, socket}
+  end
+
+  def handle_event("load_older_activity", _params, socket) do
+    case Chat.list_activity_feed(
+           socket.assigns.current_scope,
+           socket.assigns.activity_next_cursor
+         ) do
+      {:ok, activity_feed_page} ->
+        {:noreply,
+         socket
+         |> update(:activity_feed_pages_loaded, &(&1 + 1))
+         |> assign(:activity_next_cursor, activity_feed_page.next_cursor)
+         |> stream(:activity_items, activity_feed_page.items, at: -1)}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Older activity could not be loaded.")}
+    end
+  end
+
+  @impl true
+  def handle_event("mark_all_activity_read", _params, socket) do
+    with {:ok, _updated_count} <- Chat.mark_all_activity_read(socket.assigns.current_scope),
+         {:ok, activity_feed_page} <-
+           list_loaded_activity_feed_pages(
+             socket.assigns.current_scope,
+             socket.assigns.activity_feed_pages_loaded
+           ),
+         {:ok, unread_count} <- Chat.unread_activity_count(socket.assigns.current_scope) do
+      {:noreply,
+       socket
+       |> assign(:activity_next_cursor, activity_feed_page.next_cursor)
+       |> assign(:unread_activity_count, unread_count)
+       |> stream(:activity_items, activity_feed_page.items, reset: true)}
+    else
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Activity could not be marked read.")}
+    end
   end
 
   @impl true
@@ -75,11 +123,30 @@ defmodule DiscordCloneWeb.ActivityLive do
                 Mentions from every workspace you can access, gathered in one private feed.
               </p>
             </div>
-            <div class={[
-              "rounded-full border border-base-300 bg-base-200/70 px-3 py-1.5",
-              "text-xs font-semibold text-base-content/70"
-            ]}>
-              {@unread_activity_count} unread
+            <div class={["flex items-center gap-2"]}>
+              <button
+                id="activity-mark-all-read"
+                type="button"
+                phx-click="mark_all_activity_read"
+                disabled={@unread_activity_count == 0}
+                class={[
+                  "inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold",
+                  "transition duration-200 focus-visible:outline-none focus-visible:ring-2",
+                  "focus-visible:ring-primary focus-visible:ring-offset-2",
+                  "border-base-300 bg-base-100 text-base-content/75 hover:border-primary/30",
+                  "hover:bg-primary/5 hover:text-primary",
+                  "disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:border-base-300",
+                  "disabled:hover:bg-base-100 disabled:hover:text-base-content/75"
+                ]}
+              >
+                <.icon name="hero-check" class="size-4" /> Mark all as read
+              </button>
+              <div class={[
+                "rounded-full border border-base-300 bg-base-200/70 px-3 py-1.5",
+                "text-xs font-semibold text-base-content/70"
+              ]}>
+                {@unread_activity_count} unread
+              </div>
             </div>
           </header>
 
@@ -106,9 +173,14 @@ defmodule DiscordCloneWeb.ActivityLive do
             <article
               :for={{dom_id, activity_item} <- @streams.activity_items}
               id={dom_id}
+              data-read-state={if(activity_item.read_at, do: "read", else: "unread")}
               class={[
-                "group rounded-2xl border border-base-300 bg-base-100 shadow-sm",
-                "transition duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md"
+                "group rounded-2xl border shadow-sm transition duration-200",
+                "hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md",
+                if(activity_item.read_at,
+                  do: "border-base-300/70 bg-base-100/65",
+                  else: "border-primary/20 bg-base-100 ring-1 ring-primary/5"
+                )
               ]}
             >
               <button
@@ -126,7 +198,10 @@ defmodule DiscordCloneWeb.ActivityLive do
               >
                 <div class={[
                   "flex size-10 shrink-0 items-center justify-center rounded-xl",
-                  "bg-primary/10 text-primary ring-1 ring-primary/15"
+                  if(activity_item.read_at,
+                    do: "bg-base-200 text-base-content/40 ring-1 ring-base-300",
+                    else: "bg-primary/10 text-primary ring-1 ring-primary/15"
+                  )
                 ]}>
                   <.icon name="hero-at-symbol" class="size-5" />
                 </div>
@@ -170,6 +245,23 @@ defmodule DiscordCloneWeb.ActivityLive do
               </button>
             </article>
           </div>
+
+          <div :if={@activity_next_cursor} id="activity-load-older-control" class={["pt-5"]}>
+            <button
+              id="activity-load-older"
+              type="button"
+              phx-click="load_older_activity"
+              class={[
+                "mx-auto flex items-center gap-2 rounded-xl border border-base-300 bg-base-100",
+                "px-4 py-2.5 text-sm font-semibold text-base-content/70 shadow-sm",
+                "transition duration-200 hover:border-primary/30 hover:bg-primary/5 hover:text-primary",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+                "focus-visible:ring-offset-2"
+              ]}
+            >
+              <.icon name="hero-arrow-down" class="size-4" /> Load older activity
+            </button>
+          </div>
         </section>
       </Shell.app>
     </Layouts.app>
@@ -184,4 +276,33 @@ defmodule DiscordCloneWeb.ActivityLive do
   defp activity_kind_label(_kind), do: "Activity"
 
   defp activity_time(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%b %-d, %H:%M")
+
+  defp list_loaded_activity_feed_pages(scope, page_count) do
+    load_activity_feed_pages(scope, page_count, nil, [])
+  end
+
+  defp load_activity_feed_pages(_scope, 0, next_cursor, feed_pages) do
+    {:ok, %{items: feed_pages |> Enum.reverse() |> List.flatten(), next_cursor: next_cursor}}
+  end
+
+  defp load_activity_feed_pages(scope, pages_remaining, cursor, feed_pages) do
+    case Chat.list_activity_feed(scope, cursor) do
+      {:ok, activity_feed_page} ->
+        next_feed_pages = [activity_feed_page.items | feed_pages]
+
+        if activity_feed_page.next_cursor do
+          load_activity_feed_pages(
+            scope,
+            pages_remaining - 1,
+            activity_feed_page.next_cursor,
+            next_feed_pages
+          )
+        else
+          load_activity_feed_pages(scope, 0, nil, next_feed_pages)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 end

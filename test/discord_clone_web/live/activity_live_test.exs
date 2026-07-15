@@ -141,6 +141,111 @@ defmodule DiscordCloneWeb.ActivityLiveTest do
       assert is_nil(Repo.get!(ActivityItem, second_item.id).read_at)
     end
 
+    test "streams an initial 50 items and loads the remaining older page", %{conn: conn} do
+      recipient_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      recipient_conn = log_in_user(conn, recipient_scope.user)
+      author_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(author_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, recipient_scope)
+
+      first_fifty_item_ids =
+        for index <- 1..50 do
+          assert {:ok, message} =
+                   Chat.send_message(author_scope, workspace.default_channel_id, %{
+                     content: "paged request #{index} @#{recipient_scope.user.username}"
+                   })
+
+          activity_item_for_message!(message.id).id
+        end
+
+      {:ok, boundary_view, _html} = live(recipient_conn, ~p"/activity")
+
+      assert length(activity_row_ids(boundary_view)) == 50
+      refute has_element?(boundary_view, "#activity-load-older")
+
+      two_older_item_ids =
+        for index <- 51..52 do
+          assert {:ok, message} =
+                   Chat.send_message(author_scope, workspace.default_channel_id, %{
+                     content: "paged request #{index} @#{recipient_scope.user.username}"
+                   })
+
+          activity_item_for_message!(message.id).id
+        end
+
+      item_ids = first_fifty_item_ids ++ two_older_item_ids
+      {:ok, view, _html} = live(recipient_conn, ~p"/activity")
+
+      assert length(activity_row_ids(view)) == 50
+      assert has_element?(view, "#activity-load-older", "Load older activity")
+
+      view
+      |> element("#activity-load-older")
+      |> render_click()
+
+      assert length(activity_row_ids(view)) == 52
+
+      assert MapSet.new(activity_row_ids(view)) ==
+               MapSet.new(Enum.map(item_ids, &"activity-item-#{&1}"))
+
+      refute has_element?(view, "#activity-load-older")
+
+      view
+      |> element("#activity-mark-all-read")
+      |> render_click()
+
+      assert length(activity_row_ids(view)) == 52
+      refute has_element?(view, "#activity-feed > article[data-read-state='unread']")
+    end
+
+    test "styles read items and marks the current feed read without changing the route", %{
+      conn: conn
+    } do
+      recipient_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      recipient_conn = log_in_user(conn, recipient_scope.user)
+      author_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(author_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, recipient_scope)
+
+      assert {:ok, first_message} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{
+                 content: "handled @#{recipient_scope.user.username}"
+               })
+
+      assert {:ok, second_message} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{
+                 content: "waiting @#{recipient_scope.user.username}"
+               })
+
+      first_item = activity_item_for_message!(first_message.id)
+      second_item = activity_item_for_message!(second_message.id)
+      assert {:ok, _destination} = Chat.open_activity_item(recipient_scope, first_item.id)
+
+      {:ok, view, _html} = live(recipient_conn, ~p"/activity")
+
+      assert has_element?(
+               view,
+               "#activity-item-#{first_item.id}[data-read-state='read']"
+             )
+
+      assert has_element?(
+               view,
+               "#activity-item-#{second_item.id}[data-read-state='unread']"
+             )
+
+      assert has_element?(view, "#activity-mark-all-read:not([disabled])", "Mark all as read")
+
+      view
+      |> element("#activity-mark-all-read")
+      |> render_click()
+
+      assert has_element?(view, "#global-activity-unread-count", "0")
+      assert has_element?(view, "#activity-mark-all-read[disabled]", "Mark all as read")
+      assert has_element?(view, "#activity-item-#{first_item.id}[data-read-state='read']")
+      assert has_element?(view, "#activity-item-#{second_item.id}[data-read-state='read']")
+      refute has_element?(view, "#activity-feed > article[data-read-state='unread']")
+    end
+
     test "opens an out-of-window source, marks only that item read, and refreshes the bell", %{
       conn: conn
     } do

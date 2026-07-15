@@ -35,11 +35,13 @@ defmodule DiscordClone.Chat do
 
   @recent_message_limit 100
   @message_page_size 50
+  @activity_feed_page_size 50
   @small_unread_landing_limit 50
   @large_unread_landing_backtrack div(@message_page_size, 2) - 5
 
   @type reason :: atom()
   @type window_result :: {:ok, map()} | {:error, reason()}
+  @type activity_feed_cursor :: %{inserted_at: DateTime.t(), id: Ecto.UUID.t()}
 
   def change_message(attrs \\ %{}) do
     Message.changeset(%Message{}, attrs)
@@ -61,11 +63,15 @@ defmodule DiscordClone.Chat do
 
   def unread_activity_count(_scope), do: {:error, :unauthenticated}
 
-  @doc "Returns the scoped user's accessible global Activity Feed newest first."
-  @spec list_activity_feed(term()) :: {:ok, [ActivityItem.t()]} | {:error, :unauthenticated}
-  def list_activity_feed(%Scope{user: %User{id: user_id}}) do
-    activity_items =
-      Repo.all(
+  @doc "Returns one stable page of the scoped user's accessible global Activity Feed."
+  @spec list_activity_feed(term(), nil | activity_feed_cursor()) ::
+          {:ok, %{items: [ActivityItem.t()], next_cursor: nil | activity_feed_cursor()}}
+          | {:error, :unauthenticated | :invalid_cursor}
+  def list_activity_feed(scope, cursor \\ nil)
+
+  def list_activity_feed(%Scope{user: %User{id: user_id}}, cursor) do
+    with {:ok, cursor} <- cast_activity_cursor(cursor) do
+      query =
         from activity_item in ActivityItem,
           join: membership in WorkspaceMembership,
           on:
@@ -73,13 +79,76 @@ defmodule DiscordClone.Chat do
               membership.user_id == ^user_id,
           where: activity_item.recipient_user_id == ^user_id,
           order_by: [desc: activity_item.inserted_at, desc: activity_item.id],
+          limit: ^(@activity_feed_page_size + 1),
           preload: [:workspace, :source_channel, :source_message, :actor_user]
-      )
 
-    {:ok, activity_items}
+      activity_items =
+        query
+        |> activity_feed_after(cursor)
+        |> Repo.all()
+
+      {items, overflow} = Enum.split(activity_items, @activity_feed_page_size)
+
+      next_cursor =
+        case overflow do
+          [] -> nil
+          [_extra_item] -> activity_feed_cursor(List.last(items))
+        end
+
+      {:ok, %{items: items, next_cursor: next_cursor}}
+    end
   end
 
-  def list_activity_feed(_scope), do: {:error, :unauthenticated}
+  def list_activity_feed(_scope, _cursor), do: {:error, :unauthenticated}
+
+  @doc "Marks the scoped user's currently committed unread Activity Items read."
+  @spec mark_all_activity_read(term()) ::
+          {:ok, non_neg_integer()} | {:error, :unauthenticated}
+  def mark_all_activity_read(%Scope{user: %User{id: user_id}}) do
+    {updated_count, _} =
+      Repo.update_all(
+        from(activity_item in ActivityItem,
+          where:
+            activity_item.recipient_user_id == ^user_id and is_nil(activity_item.read_at) and
+              activity_item.inserted_at <= fragment("statement_timestamp()"),
+          update: [
+            set: [
+              read_at: fragment("statement_timestamp()"),
+              updated_at: fragment("statement_timestamp()")
+            ]
+          ]
+        ),
+        []
+      )
+
+    {:ok, updated_count}
+  end
+
+  def mark_all_activity_read(_scope), do: {:error, :unauthenticated}
+
+  defp cast_activity_cursor(nil), do: {:ok, nil}
+
+  defp cast_activity_cursor(%{inserted_at: %DateTime{} = inserted_at, id: id}) do
+    case Ecto.UUID.cast(id) do
+      {:ok, id} -> {:ok, %{inserted_at: inserted_at, id: id}}
+      :error -> {:error, :invalid_cursor}
+    end
+  end
+
+  defp cast_activity_cursor(_cursor), do: {:error, :invalid_cursor}
+
+  defp activity_feed_after(query, nil), do: query
+
+  defp activity_feed_after(query, %{inserted_at: inserted_at, id: id}) do
+    from activity_item in query,
+      where:
+        activity_item.inserted_at < ^inserted_at or
+          (activity_item.inserted_at == ^inserted_at and activity_item.id < ^id)
+  end
+
+  defp activity_feed_cursor(%ActivityItem{id: id, inserted_at: inserted_at}) do
+    %{id: id, inserted_at: inserted_at}
+  end
 
   @doc """
   Opens one Activity Item for the scoped recipient.

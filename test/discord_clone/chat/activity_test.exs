@@ -5,6 +5,7 @@ defmodule DiscordClone.Chat.ActivityTest do
   alias DiscordClone.Accounts.Scope
   alias DiscordClone.Activities.ActivityItem
   alias DiscordClone.Chat
+  alias DiscordClone.Chat.ChannelUnreadSpan
   alias DiscordClone.Repo
   alias DiscordClone.Workspaces
   alias DiscordClone.Workspaces.Roles
@@ -344,7 +345,7 @@ defmodule DiscordClone.Chat.ActivityTest do
     end
   end
 
-  describe "list_activity_feed/1" do
+  describe "list_activity_feed/2" do
     test "returns only the scoped user's accessible activity newest first with display associations" do
       recipient_scope = user_scope_fixture(user_fixture(%{username: "feed_recipient"}))
       other_scope = user_scope_fixture(user_fixture(%{username: "other_recipient"}))
@@ -389,8 +390,10 @@ defmodule DiscordClone.Chat.ActivityTest do
 
       expected_ids = Enum.sort([first_item.id, second_item.id], :desc)
 
-      assert {:ok, activity_items} = Chat.list_activity_feed(recipient_scope)
+      assert {:ok, page} = Chat.list_activity_feed(recipient_scope)
+      activity_items = page.items
       assert Enum.map(activity_items, & &1.id) == expected_ids
+      assert is_nil(page.next_cursor)
 
       assert Enum.map(activity_items, & &1.source_message.content) ==
                expected_preview_order(expected_ids, first_item, first_message, second_message)
@@ -423,14 +426,184 @@ defmodule DiscordClone.Chat.ActivityTest do
 
       Repo.delete!(first_membership)
 
-      assert {:ok, [remaining_item]} = Chat.list_activity_feed(recipient_scope)
+      assert {:ok, %{items: [remaining_item], next_cursor: nil}} =
+               Chat.list_activity_feed(recipient_scope)
+
       assert remaining_item.workspace.id == second_workspace.id
       assert {:ok, 2} = Chat.unread_activity_count(recipient_scope)
+    end
+
+    test "paginates 50 at a time without duplicates or gaps when newer activity arrives" do
+      recipient_scope = user_scope_fixture(user_fixture(%{username: "paged_recipient"}))
+      author_scope = user_scope_fixture(user_fixture(%{username: "paged_author"}))
+      {:ok, workspace} = Workspaces.create_workspace(author_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, recipient_scope)
+
+      first_fifty_items =
+        for index <- 1..50 do
+          assert {:ok, message} =
+                   Chat.send_message(author_scope, workspace.default_channel_id, %{
+                     content: "request #{index} @paged_recipient"
+                   })
+
+          [activity_item] = activity_items_for_message(message.id)
+          activity_item
+        end
+
+      first_fifty_ids = Enum.map(first_fifty_items, & &1.id)
+
+      Repo.update_all(
+        from(activity_item in ActivityItem, where: activity_item.id in ^first_fifty_ids),
+        set: [inserted_at: ~U[2026-07-15 10:00:00.000000Z]]
+      )
+
+      assert {:ok, exact_boundary_page} = Chat.list_activity_feed(recipient_scope)
+      assert length(exact_boundary_page.items) == 50
+      assert is_nil(exact_boundary_page.next_cursor)
+
+      two_older_items =
+        for index <- 51..52 do
+          assert {:ok, message} =
+                   Chat.send_message(author_scope, workspace.default_channel_id, %{
+                     content: "request #{index} @paged_recipient"
+                   })
+
+          [activity_item] = activity_items_for_message(message.id)
+          activity_item
+        end
+
+      original_items = first_fifty_items ++ two_older_items
+      original_ids = Enum.map(original_items, & &1.id)
+
+      Repo.update_all(
+        from(activity_item in ActivityItem, where: activity_item.id in ^original_ids),
+        set: [inserted_at: ~U[2026-07-15 10:00:00.000000Z]]
+      )
+
+      assert {:ok, first_page} = Chat.list_activity_feed(recipient_scope)
+      assert length(first_page.items) == 50
+      assert first_page.next_cursor
+
+      assert {:ok, concurrent_message} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{
+                 content: "new arrival @paged_recipient"
+               })
+
+      [concurrent_item] = activity_items_for_message(concurrent_message.id)
+
+      assert {:ok, second_page} =
+               Chat.list_activity_feed(recipient_scope, first_page.next_cursor)
+
+      assert length(second_page.items) == 2
+      assert is_nil(second_page.next_cursor)
+
+      paged_ids = Enum.map(first_page.items ++ second_page.items, & &1.id)
+
+      assert MapSet.new(paged_ids) == MapSet.new(original_ids)
+      refute concurrent_item.id in paged_ids
     end
 
     test "requires an authenticated scope" do
       assert Chat.list_activity_feed(nil) == {:error, :unauthenticated}
       assert Chat.list_activity_feed(%Scope{}) == {:error, :unauthenticated}
+    end
+  end
+
+  describe "mark_all_activity_read/1" do
+    test "marks the current cutoff read without changing Channel Read State" do
+      recipient_scope = user_scope_fixture(user_fixture(%{username: "read_recipient"}))
+      author_scope = user_scope_fixture(user_fixture(%{username: "read_author"}))
+      {:ok, workspace} = Workspaces.create_workspace(author_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, recipient_scope)
+
+      assert {:ok, _first_message} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{
+                 content: "first @read_recipient"
+               })
+
+      assert {:ok, _second_message} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{
+                 content: "second @read_recipient"
+               })
+
+      assert {:ok, cutoff_race_source} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{
+                 content: "committed while mark-all runs"
+               })
+
+      Ecto.Adapters.SQL.query!(
+        Repo,
+        """
+        CREATE FUNCTION insert_activity_after_mark_all_cutoff()
+        RETURNS trigger AS $$
+        BEGIN
+          INSERT INTO activity_items (
+            id,
+            recipient_user_id,
+            actor_user_id,
+            source_message_id,
+            source_channel_id,
+            workspace_id,
+            kind,
+            inserted_at,
+            updated_at
+          ) VALUES (
+            gen_random_uuid(),
+            '#{recipient_scope.user.id}',
+            '#{author_scope.user.id}',
+            '#{cutoff_race_source.id}',
+            '#{workspace.default_channel_id}',
+            '#{workspace.id}',
+            'user_mention',
+            statement_timestamp(),
+            statement_timestamp()
+          );
+
+          RETURN NULL;
+        END;
+        $$ LANGUAGE plpgsql;
+
+        """,
+        []
+      )
+
+      Ecto.Adapters.SQL.query!(
+        Repo,
+        """
+        CREATE TRIGGER activity_after_mark_all_cutoff
+        AFTER UPDATE ON activity_items
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION insert_activity_after_mark_all_cutoff()
+        """,
+        []
+      )
+
+      assert {:ok, summaries_before} =
+               Chat.list_channel_read_summaries(recipient_scope, workspace.id)
+
+      spans_before = unread_spans(workspace.default_channel_id, recipient_scope.user.id)
+
+      assert {:ok, 2} = Chat.unread_activity_count(recipient_scope)
+      assert {:ok, 2} = Chat.mark_all_activity_read(recipient_scope)
+      assert {:ok, 1} = Chat.unread_activity_count(recipient_scope)
+
+      assert {:ok, summaries_after} =
+               Chat.list_channel_read_summaries(recipient_scope, workspace.id)
+
+      assert summaries_after == summaries_before
+      assert unread_spans(workspace.default_channel_id, recipient_scope.user.id) == spans_before
+
+      assert :ok = Chat.mark_channel_read(recipient_scope, workspace.default_channel_id)
+      assert {:ok, 1} = Chat.unread_activity_count(recipient_scope)
+
+      assert {:ok, page} = Chat.list_activity_feed(recipient_scope)
+      assert Enum.count(page.items, &is_nil(&1.read_at)) == 1
+      assert Enum.count(page.items, &match?(%DateTime{}, &1.read_at)) == 2
+    end
+
+    test "requires an authenticated scope" do
+      assert Chat.mark_all_activity_read(nil) == {:error, :unauthenticated}
+      assert Chat.mark_all_activity_read(%Scope{}) == {:error, :unauthenticated}
     end
   end
 
@@ -454,6 +627,11 @@ defmodule DiscordClone.Chat.ActivityTest do
       [first_item] = activity_items_for_message(first_message.id)
       [second_item] = activity_items_for_message(second_message.id)
 
+      assert {:ok, summaries_before} =
+               Chat.list_channel_read_summaries(recipient_scope, workspace.id)
+
+      spans_before = unread_spans(workspace.default_channel_id, recipient_scope.user.id)
+
       assert {:ok, destination} = Chat.open_activity_item(recipient_scope, first_item.id)
 
       assert destination == %{
@@ -465,6 +643,11 @@ defmodule DiscordClone.Chat.ActivityTest do
       assert %DateTime{} = Repo.get!(ActivityItem, first_item.id).read_at
       assert is_nil(Repo.get!(ActivityItem, second_item.id).read_at)
       assert {:ok, 1} = Chat.unread_activity_count(recipient_scope)
+
+      assert {:ok, ^summaries_before} =
+               Chat.list_channel_read_summaries(recipient_scope, workspace.id)
+
+      assert unread_spans(workspace.default_channel_id, recipient_scope.user.id) == spans_before
     end
 
     test "uses one privacy-safe result without changing read state for invalid sources" do
@@ -556,6 +739,15 @@ defmodule DiscordClone.Chat.ActivityTest do
   defp activity_items_for_message(message_id) do
     Repo.all(
       from activity_item in ActivityItem, where: activity_item.source_message_id == ^message_id
+    )
+  end
+
+  defp unread_spans(channel_id, user_id) do
+    Repo.all(
+      from span in ChannelUnreadSpan,
+        where: span.channel_id == ^channel_id and span.user_id == ^user_id,
+        order_by: [asc: span.from_seq, asc: span.to_seq],
+        select: {span.from_seq, span.to_seq}
     )
   end
 
