@@ -324,8 +324,8 @@ defmodule DiscordCloneWeb.ActivityLiveTest do
         assert has_element?(view, "#flash-error", "Activity is no longer available")
       end
 
-      assert is_nil(Repo.get!(ActivityItem, source_item.id).read_at)
-      assert {:ok, 1} = Chat.unread_activity_count(recipient_scope)
+      refute Repo.get(ActivityItem, source_item.id)
+      assert {:ok, 0} = Chat.unread_activity_count(recipient_scope)
     end
   end
 

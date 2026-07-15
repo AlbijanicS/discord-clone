@@ -1,6 +1,7 @@
 defmodule DiscordClone.WorkspacesTest do
   use DiscordClone.DataCase
 
+  alias DiscordClone.Activities.ActivityItem
   alias DiscordClone.Chat
 
   alias DiscordClone.Chat.{
@@ -1060,6 +1061,49 @@ defmodule DiscordClone.WorkspacesTest do
   end
 
   describe "kick_member/4" do
+    test "permanently removes only the kicked member's workspace activity" do
+      owner_scope = user_scope_fixture(user_fixture(%{username: "kick_owner"}))
+      kicked_scope = user_scope_fixture(user_fixture(%{username: "kick_target"}))
+      retained_scope = user_scope_fixture(user_fixture(%{username: "kick_retained"}))
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Kick Workspace"})
+      add_workspace_member!(workspace, kicked_scope, "member")
+      add_workspace_member!(workspace, retained_scope, "member")
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      {:ok, source_message} =
+        Chat.send_message(owner_scope, workspace.default_channel_id, %{
+          content: "hello @kick_target and @kick_retained"
+        })
+
+      assert Repo.get_by(ActivityItem,
+               recipient_user_id: kicked_scope.user.id,
+               source_message_id: source_message.id
+             )
+
+      assert {:ok, _membership} =
+               Workspaces.kick_member(owner_scope, workspace.id, kicked_scope.user.id, %{
+                 "reason" => "Access removed"
+               })
+
+      refute Repo.get_by(ActivityItem,
+               recipient_user_id: kicked_scope.user.id,
+               source_message_id: source_message.id
+             )
+
+      assert Repo.get_by(ActivityItem,
+               recipient_user_id: retained_scope.user.id,
+               source_message_id: source_message.id
+             )
+
+      assert {:ok, %{already_member?: false}} =
+               Workspaces.accept_workspace_invite(kicked_scope, invite.code)
+
+      refute Repo.get_by(ActivityItem,
+               recipient_user_id: kicked_scope.user.id,
+               workspace_id: workspace.id
+             )
+    end
+
     test "owners can kick members and admins with a required reason and audit event" do
       owner_scope = user_scope_fixture()
       admin_scope = user_scope_fixture()
@@ -1263,6 +1307,35 @@ defmodule DiscordClone.WorkspacesTest do
   end
 
   describe "ban_member/4" do
+    test "permanently removes only the banned member's workspace activity" do
+      owner_scope = user_scope_fixture(user_fixture(%{username: "ban_owner"}))
+      banned_scope = user_scope_fixture(user_fixture(%{username: "ban_target"}))
+      retained_scope = user_scope_fixture(user_fixture(%{username: "ban_retained"}))
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Ban Workspace"})
+      add_workspace_member!(workspace, banned_scope, "member")
+      add_workspace_member!(workspace, retained_scope, "member")
+
+      {:ok, source_message} =
+        Chat.send_message(owner_scope, workspace.default_channel_id, %{
+          content: "hello @ban_target and @ban_retained"
+        })
+
+      assert {:ok, _ban} =
+               Workspaces.ban_member(owner_scope, workspace.id, banned_scope.user.id, %{
+                 "reason" => "Access removed"
+               })
+
+      refute Repo.get_by(ActivityItem,
+               recipient_user_id: banned_scope.user.id,
+               source_message_id: source_message.id
+             )
+
+      assert Repo.get_by(ActivityItem,
+               recipient_user_id: retained_scope.user.id,
+               source_message_id: source_message.id
+             )
+    end
+
     test "owners can ban members and admins with a durable ban record and audit event" do
       owner_scope = user_scope_fixture()
       admin_scope = user_scope_fixture()
@@ -3055,7 +3128,96 @@ defmodule DiscordClone.WorkspacesTest do
     end
   end
 
+  describe "workspace activity cleanup transactions" do
+    test "rolls leave, kick, and ban back when activity cleanup fails" do
+      owner_scope = user_scope_fixture(user_fixture(%{username: "access_rollback_owner"}))
+      leaving_scope = user_scope_fixture(user_fixture(%{username: "access_rollback_leave"}))
+      kicked_scope = user_scope_fixture(user_fixture(%{username: "access_rollback_kick"}))
+      banned_scope = user_scope_fixture(user_fixture(%{username: "access_rollback_ban"}))
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Rollback Space"})
+      add_workspace_member!(workspace, leaving_scope, "member")
+      add_workspace_member!(workspace, kicked_scope, "member")
+      add_workspace_member!(workspace, banned_scope, "member")
+
+      {:ok, source_message} =
+        Chat.send_message(owner_scope, workspace.default_channel_id, %{
+          content: "hello @access_rollback_leave @access_rollback_kick @access_rollback_ban"
+        })
+
+      install_reject_activity_cleanup_trigger!()
+
+      assert_raise Postgrex.Error, fn ->
+        Workspaces.leave_workspace(leaving_scope, workspace.id)
+      end
+
+      assert_raise Postgrex.Error, fn ->
+        Workspaces.kick_member(owner_scope, workspace.id, kicked_scope.user.id, %{
+          "reason" => "Rollback check"
+        })
+      end
+
+      assert_raise Postgrex.Error, fn ->
+        Workspaces.ban_member(owner_scope, workspace.id, banned_scope.user.id, %{
+          "reason" => "Rollback check"
+        })
+      end
+
+      for scope <- [leaving_scope, kicked_scope, banned_scope] do
+        assert Repo.get_by(WorkspaceMembership,
+                 workspace_id: workspace.id,
+                 user_id: scope.user.id
+               )
+
+        assert Repo.get_by(ActivityItem,
+                 recipient_user_id: scope.user.id,
+                 source_message_id: source_message.id
+               )
+      end
+
+      refute Repo.get_by(WorkspaceBan,
+               workspace_id: workspace.id,
+               target_user_id: banned_scope.user.id
+             )
+    end
+  end
+
   describe "leave_workspace/2" do
+    test "permanently removes only the leaving member's workspace activity" do
+      owner_scope = user_scope_fixture(user_fixture(%{username: "leave_owner"}))
+      leaving_scope = user_scope_fixture(user_fixture(%{username: "leave_target"}))
+      retained_scope = user_scope_fixture(user_fixture(%{username: "leave_retained"}))
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Team Space"})
+      add_workspace_member!(workspace, leaving_scope, "member")
+      add_workspace_member!(workspace, retained_scope, "member")
+      {:ok, invite} = Workspaces.create_workspace_invite(owner_scope, workspace.id)
+
+      {:ok, source_message} =
+        Chat.send_message(owner_scope, workspace.default_channel_id, %{
+          content: "hello @leave_target and @leave_retained"
+        })
+
+      assert {:ok, %WorkspaceMembership{}} =
+               Workspaces.leave_workspace(leaving_scope, workspace.id)
+
+      refute Repo.get_by(ActivityItem,
+               recipient_user_id: leaving_scope.user.id,
+               source_message_id: source_message.id
+             )
+
+      assert Repo.get_by(ActivityItem,
+               recipient_user_id: retained_scope.user.id,
+               source_message_id: source_message.id
+             )
+
+      assert {:ok, %{already_member?: false}} =
+               Workspaces.accept_workspace_invite(leaving_scope, invite.code)
+
+      refute Repo.get_by(ActivityItem,
+               recipient_user_id: leaving_scope.user.id,
+               workspace_id: workspace.id
+             )
+    end
+
     test "allows a non-owner workspace member to leave a workspace" do
       owner_scope = user_scope_fixture()
       member_scope = user_scope_fixture()

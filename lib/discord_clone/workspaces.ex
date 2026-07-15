@@ -16,6 +16,7 @@ defmodule DiscordClone.Workspaces do
 
   alias Ecto.Multi
   alias DiscordClone.Accounts.{Scope, User}
+  alias DiscordClone.Activities.ActivityItem
   alias DiscordClone.Chat
   alias DiscordClone.{Repo, UUIDIdentifier}
 
@@ -862,6 +863,7 @@ defmodule DiscordClone.Workspaces do
         :ok = Chat.delete_workspace_reads_for_user(user_id, workspace_id)
         {:ok, :deleted}
       end)
+      |> delete_workspace_activity(user_id, workspace_id)
       |> Multi.delete(:membership, membership)
       |> Repo.transaction()
       |> case do
@@ -1488,6 +1490,7 @@ defmodule DiscordClone.Workspaces do
       :ok = Chat.delete_workspace_reads_for_user(target_user_id, workspace.id)
       {:ok, :deleted}
     end)
+    |> delete_workspace_activity(target_user_id, workspace.id)
     |> Multi.delete(:membership, target_membership)
     |> Multi.insert(
       :audit_event,
@@ -1551,6 +1554,7 @@ defmodule DiscordClone.Workspaces do
     |> Multi.run(:message_cleanup, fn _repo, _changes ->
       clean_up_banned_member_messages(workspace, target_user_id, actor_user_id, cleanup_window)
     end)
+    |> delete_workspace_activity(target_user_id, workspace.id)
     |> Multi.delete(:membership, target_membership)
     |> Multi.insert(:audit_event, fn %{message_cleanup: cleaned_messages} ->
       WorkspaceAuditEvent.changeset(%WorkspaceAuditEvent{}, %{
@@ -1580,6 +1584,18 @@ defmodule DiscordClone.Workspaces do
       {:error, _failed_operation, _failed_value, _changes_so_far} ->
         {:error, :ban_failed}
     end
+  end
+
+  defp delete_workspace_activity(%Multi{} = multi, user_id, workspace_id) do
+    Multi.delete_all(
+      multi,
+      :activity_items,
+      from(activity_item in ActivityItem,
+        where:
+          activity_item.recipient_user_id == ^user_id and
+            activity_item.workspace_id == ^workspace_id
+      )
+    )
   end
 
   defp get_workspace_ban(workspace_id, target_user_id) do

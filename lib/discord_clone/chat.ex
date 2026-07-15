@@ -251,24 +251,38 @@ defmodule DiscordClone.Chat do
     if message_ids == [] do
       {:ok, []}
     else
-      Repo.delete_all(
-        from reaction in MessageReaction, where: reaction.message_id in ^message_ids
+      Multi.new()
+      |> Multi.delete_all(
+        :activity_items,
+        from(activity_item in ActivityItem,
+          where: activity_item.source_message_id in ^message_ids
+        )
       )
-
-      Repo.update_all(
+      |> Multi.delete_all(
+        :reactions,
+        from(reaction in MessageReaction, where: reaction.message_id in ^message_ids)
+      )
+      |> Multi.update_all(
+        :messages,
         from(message in Message, where: message.id in ^message_ids),
         set: [deleted_at: deleted_at, deleted_by_user_id: actor_user_id, updated_at: deleted_at]
       )
+      |> Multi.run(:deleted_messages, fn repo, _changes ->
+        messages =
+          repo.all(
+            from message in Message,
+              where: message.id in ^message_ids,
+              order_by: [asc: message.channel_id, asc: message.seq],
+              preload: [:user]
+          )
 
-      messages =
-        Repo.all(
-          from message in Message,
-            where: message.id in ^message_ids,
-            order_by: [asc: message.channel_id, asc: message.seq],
-            preload: [:user]
-        )
-
-      {:ok, messages}
+        {:ok, messages}
+      end)
+      |> Repo.transaction()
+      |> case do
+        {:ok, %{deleted_messages: messages}} -> {:ok, messages}
+        {:error, _operation, reason, _changes} -> {:error, reason}
+      end
     end
   end
 
@@ -1096,6 +1110,12 @@ defmodule DiscordClone.Chat do
 
     multi =
       Multi.new()
+      |> Multi.delete_all(
+        :activity_items,
+        from(activity_item in ActivityItem,
+          where: activity_item.source_message_id == ^message.id
+        )
+      )
       |> Multi.delete_all(
         :reactions,
         from(reaction in MessageReaction, where: reaction.message_id == ^message.id)

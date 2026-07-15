@@ -6,6 +6,7 @@ defmodule DiscordClone.Chat.ActivityTest do
   alias DiscordClone.Activities.ActivityItem
   alias DiscordClone.Chat
   alias DiscordClone.Chat.ChannelUnreadSpan
+  alias DiscordClone.Chat.Message
   alias DiscordClone.Repo
   alias DiscordClone.Workspaces
   alias DiscordClone.Workspaces.Roles
@@ -665,14 +666,13 @@ defmodule DiscordClone.Chat.ActivityTest do
 
       [deleted_item] = activity_items_for_message(deleted_message.id)
       assert {:ok, _deleted_message} = Chat.delete_message(author_scope, deleted_message.id)
+      refute Repo.get(ActivityItem, deleted_item.id)
 
       assert Chat.open_activity_item(recipient_scope, deleted_item.id) == {:error, :not_found}
       assert Chat.open_activity_item(other_scope, deleted_item.id) == {:error, :not_found}
 
       assert Chat.open_activity_item(recipient_scope, Ecto.UUID.generate()) ==
                {:error, :not_found}
-
-      assert is_nil(Repo.get!(ActivityItem, deleted_item.id).read_at)
 
       assert {:ok, wrong_channel_message} =
                Chat.send_message(author_scope, workspace.default_channel_id, %{
@@ -715,6 +715,33 @@ defmodule DiscordClone.Chat.ActivityTest do
     test "requires an authenticated scope" do
       assert Chat.open_activity_item(nil, Ecto.UUID.generate()) == {:error, :unauthenticated}
       assert Chat.open_activity_item(%Scope{}, Ecto.UUID.generate()) == {:error, :unauthenticated}
+    end
+  end
+
+  describe "delete_message/2 activity cleanup" do
+    test "rolls message deletion back when activity cleanup fails" do
+      author_scope = user_scope_fixture(user_fixture(%{username: "delete_rollback_author"}))
+
+      recipient_scope =
+        user_scope_fixture(user_fixture(%{username: "delete_rollback_recipient"}))
+
+      {:ok, workspace} = Workspaces.create_workspace(author_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, recipient_scope)
+
+      {:ok, message} =
+        Chat.send_message(author_scope, workspace.default_channel_id, %{
+          content: "hello @delete_rollback_recipient"
+        })
+
+      [activity_item] = activity_items_for_message(message.id)
+      install_reject_activity_cleanup_trigger!()
+
+      assert_raise Postgrex.Error, fn ->
+        Chat.delete_message(author_scope, message.id)
+      end
+
+      assert is_nil(Repo.get!(Message, message.id).deleted_at)
+      assert Repo.get(ActivityItem, activity_item.id)
     end
   end
 

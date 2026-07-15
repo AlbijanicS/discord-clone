@@ -3,6 +3,7 @@ defmodule DiscordClone.ChatTest do
 
   alias DiscordClone.Chat
   alias DiscordClone.Accounts.User
+  alias DiscordClone.Activities.ActivityItem
 
   alias DiscordClone.Chat.{
     ChannelRead,
@@ -2924,6 +2925,69 @@ defmodule DiscordClone.ChatTest do
   end
 
   describe "soft_delete_user_workspace_messages/4" do
+    test "rolls bulk moderation back when activity cleanup fails" do
+      owner_scope = user_scope_fixture(user_fixture(%{username: "bulk_rollback_owner"}))
+      target_scope = user_scope_fixture(user_fixture(%{username: "bulk_rollback_target"}))
+      recipient_scope = user_scope_fixture(user_fixture(%{username: "bulk_rollback_recipient"}))
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Cleanup"})
+      add_workspace_member!(workspace, target_scope, "member")
+      add_workspace_member!(workspace, recipient_scope, "member")
+
+      {:ok, message} =
+        Chat.send_message(target_scope, workspace.default_channel_id, %{
+          content: "hello @bulk_rollback_recipient"
+        })
+
+      activity_item = Repo.get_by!(ActivityItem, source_message_id: message.id)
+      install_reject_activity_cleanup_trigger!()
+
+      assert_raise Postgrex.Error, fn ->
+        Chat.soft_delete_user_workspace_messages(
+          workspace.id,
+          target_scope.user.id,
+          owner_scope.user.id,
+          :all
+        )
+      end
+
+      assert is_nil(Repo.get!(Message, message.id).deleted_at)
+      assert Repo.get(ActivityItem, activity_item.id)
+    end
+
+    test "removes activity for every moderated message while preserving unaffected activity" do
+      owner_scope = user_scope_fixture(user_fixture(%{username: "cleanup_owner"}))
+      target_scope = user_scope_fixture(user_fixture(%{username: "cleanup_target"}))
+      recipient_scope = user_scope_fixture(user_fixture(%{username: "cleanup_recipient"}))
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Cleanup"})
+      channel_id = workspace.default_channel_id
+      add_workspace_member!(workspace, target_scope, "member")
+      add_workspace_member!(workspace, recipient_scope, "member")
+
+      {:ok, first} =
+        Chat.send_message(target_scope, channel_id, %{content: "first @cleanup_recipient"})
+
+      {:ok, second} =
+        Chat.send_message(target_scope, channel_id, %{content: "second @cleanup_recipient"})
+
+      {:ok, unaffected} =
+        Chat.send_message(owner_scope, channel_id, %{content: "keep @cleanup_recipient"})
+
+      assert {:ok, deleted_messages} =
+               Chat.soft_delete_user_workspace_messages(
+                 workspace.id,
+                 target_scope.user.id,
+                 owner_scope.user.id,
+                 :all
+               )
+
+      assert Enum.map(deleted_messages, & &1.id) |> Enum.sort() ==
+               Enum.sort([first.id, second.id])
+
+      refute Repo.get_by(ActivityItem, source_message_id: first.id)
+      refute Repo.get_by(ActivityItem, source_message_id: second.id)
+      assert Repo.get_by(ActivityItem, source_message_id: unaffected.id)
+    end
+
     test "soft-deletes only the target's messages inside the time window and removes their reactions" do
       owner_scope = user_scope_fixture()
       target_scope = user_scope_fixture()

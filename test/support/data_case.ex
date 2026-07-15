@@ -55,4 +55,26 @@ defmodule DiscordClone.DataCase do
       end)
     end)
   end
+
+  def install_reject_activity_cleanup_trigger! do
+    Ecto.Adapters.SQL.query!(
+      DiscordClone.Repo,
+      """
+      CREATE FUNCTION reject_activity_cleanup() RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'activity cleanup rejected';
+      END;
+      $$ LANGUAGE plpgsql
+      """
+    )
+
+    Ecto.Adapters.SQL.query!(
+      DiscordClone.Repo,
+      """
+      CREATE TRIGGER reject_activity_cleanup
+      BEFORE DELETE ON activity_items
+      FOR EACH ROW EXECUTE FUNCTION reject_activity_cleanup()
+      """
+    )
+  end
 end
