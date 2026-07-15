@@ -8,6 +8,7 @@ defmodule DiscordClone.Activities.ActivityItem do
   @type t :: %__MODULE__{}
 
   @user_mention_kind "user_mention"
+  @everyone_mention_kind "everyone_mention"
 
   schema "activity_items" do
     field :kind, :string
@@ -40,4 +41,5 @@ defmodule DiscordClone.Activities.ActivityItem do
   end
 
   def user_mention_kind, do: @user_mention_kind
+  def everyone_mention_kind, do: @everyone_mention_kind
 end

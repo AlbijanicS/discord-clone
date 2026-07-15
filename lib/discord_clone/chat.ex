@@ -27,6 +27,7 @@ defmodule DiscordClone.Chat do
 
   alias DiscordClone.Workspaces.{
     Channel,
+    Roles,
     WorkspaceAuditEvent,
     WorkspaceMembership,
     WorkspaceModeration
@@ -714,7 +715,7 @@ defmodule DiscordClone.Chat do
              locked_channel
              |> Ecto.Changeset.change(last_message_seq: next_seq)
              |> Repo.update() do
-        insert_direct_mention_activity!(message, channel, user_id)
+        insert_mention_activity!(message, channel, user_id)
         read_state_changes = Unread.fanout_on_send!(channel, user_id, next_seq)
         {message, read_state_changes}
       else
@@ -724,36 +725,40 @@ defmodule DiscordClone.Chat do
     end)
   end
 
-  defp insert_direct_mention_activity!(%Message{} = message, %Channel{} = channel, actor_id) do
-    message.content
-    |> MentionParser.usernames()
-    |> direct_mention_recipient_ids(channel.workspace_id, actor_id)
-    |> Enum.each(fn recipient_user_id ->
-      %ActivityItem{
-        recipient_user_id: recipient_user_id,
-        actor_user_id: actor_id,
-        source_message_id: message.id,
-        source_channel_id: channel.id,
-        workspace_id: channel.workspace_id
-      }
-      |> ActivityItem.create_changeset(ActivityItem.user_mention_kind())
-      |> Repo.insert!()
-    end)
-  end
+  defp insert_mention_activity!(%Message{} = message, %Channel{} = channel, actor_id) do
+    usernames = MentionParser.usernames(message.content)
+    everyone? = "everyone" in usernames
 
-  defp direct_mention_recipient_ids([], _workspace_id, _actor_id), do: []
-
-  defp direct_mention_recipient_ids(usernames, workspace_id, actor_id) do
-    Repo.all(
+    activity_rows_query =
       from membership in WorkspaceMembership,
         join: user in assoc(membership, :user),
+        join: actor_membership in WorkspaceMembership,
+        on:
+          actor_membership.workspace_id == membership.workspace_id and
+            actor_membership.user_id == ^actor_id,
         where:
-          membership.workspace_id == ^workspace_id and user.id != ^actor_id and
-            user.username in ^usernames,
-        order_by: [asc: user.id],
+          membership.workspace_id == ^channel.workspace_id and user.id != ^actor_id and
+            (user.username in ^usernames or
+               (^everyone? and actor_membership.role in ^[Roles.owner(), Roles.admin()])),
         lock: "FOR SHARE",
-        select: user.id
-    )
+        select: %{
+          recipient_user_id: user.id,
+          actor_user_id: type(^actor_id, :binary_id),
+          source_message_id: type(^message.id, :binary_id),
+          source_channel_id: type(^channel.id, :binary_id),
+          workspace_id: type(^channel.workspace_id, :binary_id),
+          kind:
+            fragment(
+              "CASE WHEN ? THEN ? ELSE ? END",
+              user.username in ^usernames,
+              ^ActivityItem.user_mention_kind(),
+              ^ActivityItem.everyone_mention_kind()
+            ),
+          inserted_at: ^message.inserted_at,
+          updated_at: ^message.inserted_at
+        }
+
+    Repo.insert_all(ActivityItem, activity_rows_query)
   end
 
   defp validate_reply_target(_changeset, _channel_id, _next_seq, nil), do: {:ok, nil}

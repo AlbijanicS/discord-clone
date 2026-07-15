@@ -7,6 +7,7 @@ defmodule DiscordClone.Chat.ActivityTest do
   alias DiscordClone.Chat
   alias DiscordClone.Repo
   alias DiscordClone.Workspaces
+  alias DiscordClone.Workspaces.Roles
   alias DiscordClone.Workspaces.WorkspaceMembership
 
   import DiscordClone.AccountsFixtures
@@ -128,7 +129,7 @@ defmodule DiscordClone.Chat.ActivityTest do
         []
       )
 
-      assert_raise Ecto.ConstraintError, ~r/activity_items_test_reject_mentions/, fn ->
+      assert_raise Postgrex.Error, ~r/activity_items_test_reject_mentions/, fn ->
         Chat.send_message(author_scope, workspace.default_channel_id, %{
           content: "hello @failure_target"
         })
@@ -210,6 +211,136 @@ defmodule DiscordClone.Chat.ActivityTest do
     test "requires an authenticated scope to read private activity" do
       assert Chat.unread_activity_count(nil) == {:error, :unauthenticated}
       assert Chat.unread_activity_count(%Scope{}) == {:error, :unauthenticated}
+    end
+  end
+
+  describe "everyone mention activity through the Chat context" do
+    test "owners create one unread item for every current member except themselves" do
+      owner_scope = user_scope_fixture(user_fixture(%{username: "everyone_owner"}))
+      first_scope = user_scope_fixture(user_fixture(%{username: "everyone_first"}))
+      second_scope = user_scope_fixture(user_fixture(%{username: "everyone_second"}))
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, first_scope)
+      add_workspace_member!(workspace, second_scope)
+
+      assert {:ok, message} =
+               Chat.send_message(owner_scope, workspace.default_channel_id, %{
+                 content: "Heads up @everyone — again, @EVERYONE."
+               })
+
+      assert [first_item] = activity_items_for(first_scope.user.id)
+      assert first_item.kind == ActivityItem.everyone_mention_kind()
+      assert first_item.source_message_id == message.id
+      assert first_item.actor_user_id == owner_scope.user.id
+      assert [_second_item] = activity_items_for(second_scope.user.id)
+      assert [] = activity_items_for(owner_scope.user.id)
+      assert {:ok, 1} = Chat.unread_activity_count(first_scope)
+      assert {:ok, 1} = Chat.unread_activity_count(second_scope)
+      assert {:ok, 0} = Chat.unread_activity_count(owner_scope)
+    end
+
+    test "admins can address everyone while regular members keep the token as ordinary content" do
+      owner_scope = user_scope_fixture(user_fixture(%{username: "role_owner"}))
+      admin_scope = user_scope_fixture(user_fixture(%{username: "role_admin"}))
+      member_scope = user_scope_fixture(user_fixture(%{username: "role_member"}))
+      recipient_scope = user_scope_fixture(user_fixture(%{username: "role_recipient"}))
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, admin_scope, Roles.admin())
+      add_workspace_member!(workspace, member_scope)
+      add_workspace_member!(workspace, recipient_scope)
+
+      assert {:ok, admin_message} =
+               Chat.send_message(admin_scope, workspace.default_channel_id, %{
+                 content: "Admin update @everyone"
+               })
+
+      assert [owner_item] = activity_items_for(owner_scope.user.id)
+      assert owner_item.kind == ActivityItem.everyone_mention_kind()
+      assert [_member_item] = activity_items_for(member_scope.user.id)
+      assert [_recipient_item] = activity_items_for(recipient_scope.user.id)
+      assert [] = activity_items_for(admin_scope.user.id)
+
+      content = "Member update @everyone"
+
+      assert {:ok, member_message} =
+               Chat.send_message(member_scope, workspace.default_channel_id, %{content: content})
+
+      assert member_message.content == content
+      assert member_message.seq == admin_message.seq + 1
+      assert [^owner_item] = activity_items_for(owner_scope.user.id)
+      assert [_recipient_item] = activity_items_for(recipient_scope.user.id)
+    end
+
+    test "captures the audience at send time without adding later members" do
+      owner_scope = user_scope_fixture(user_fixture(%{username: "fixed_owner"}))
+      current_scope = user_scope_fixture(user_fixture(%{username: "fixed_current"}))
+      later_scope = user_scope_fixture(user_fixture(%{username: "fixed_later"}))
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, current_scope)
+
+      assert {:ok, message} =
+               Chat.send_message(owner_scope, workspace.default_channel_id, %{
+                 content: "Current audience @everyone"
+               })
+
+      add_workspace_member!(workspace, later_scope)
+
+      assert [current_item] = activity_items_for(current_scope.user.id)
+      assert current_item.source_message_id == message.id
+      assert [] = activity_items_for(later_scope.user.id)
+      assert {:ok, 0} = Chat.unread_activity_count(later_scope)
+    end
+
+    test "gives a direct user mention precedence over everyone for the same recipient" do
+      owner_scope = user_scope_fixture(user_fixture(%{username: "overlap_owner"}))
+      target_scope = user_scope_fixture(user_fixture(%{username: "overlap_target"}))
+      other_scope = user_scope_fixture(user_fixture(%{username: "overlap_other"}))
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope)
+      add_workspace_member!(workspace, other_scope)
+
+      assert {:ok, message} =
+               Chat.send_message(owner_scope, workspace.default_channel_id, %{
+                 content: "@everyone @overlap_target @OVERLAP_TARGET"
+               })
+
+      assert [target_item] = activity_items_for(target_scope.user.id)
+      assert target_item.kind == ActivityItem.user_mention_kind()
+      assert target_item.source_message_id == message.id
+      assert [other_item] = activity_items_for(other_scope.user.id)
+      assert other_item.kind == ActivityItem.everyone_mention_kind()
+    end
+
+    test "rolls message, activity, sequencing, and unread effects back together" do
+      owner_scope = user_scope_fixture(user_fixture(%{username: "everyone_rollback_owner"}))
+      target_scope = user_scope_fixture(user_fixture(%{username: "everyone_rollback_target"}))
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope)
+
+      Ecto.Adapters.SQL.query!(
+        Repo,
+        """
+        ALTER TABLE activity_items
+        ADD CONSTRAINT activity_items_test_reject_everyone
+        CHECK (kind <> 'everyone_mention')
+        """,
+        []
+      )
+
+      assert_raise Postgrex.Error, ~r/activity_items_test_reject_everyone/, fn ->
+        Chat.send_message(owner_scope, workspace.default_channel_id, %{
+          content: "Rollback @everyone"
+        })
+      end
+
+      assert [] = activity_items_for(target_scope.user.id)
+      assert {:ok, 0} = Chat.unread_activity_count(target_scope)
+      assert {:ok, %{}} = Chat.list_unread_counts(target_scope, workspace.id)
+
+      assert {:ok, message} =
+               Chat.send_message(owner_scope, workspace.default_channel_id, %{content: "first"})
+
+      assert message.seq == 1
     end
   end
 
@@ -404,12 +535,12 @@ defmodule DiscordClone.Chat.ActivityTest do
     end
   end
 
-  defp add_workspace_member!(workspace, scope) do
+  defp add_workspace_member!(workspace, scope, role \\ Roles.member()) do
     %WorkspaceMembership{}
     |> WorkspaceMembership.changeset(%{
       workspace_id: workspace.id,
       user_id: scope.user.id,
-      role: "member"
+      role: role
     })
     |> Repo.insert!()
   end
