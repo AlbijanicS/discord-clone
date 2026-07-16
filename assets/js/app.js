@@ -26,79 +26,14 @@ import {hooks as colocatedHooks} from "phoenix-colocated/discord_clone"
 import topbar from "../vendor/topbar"
 import ChannelMessages from "./hooks/channel_messages"
 import ClipboardCopy from "./hooks/clipboard_copy"
+import MessageActionsMenu from "./hooks/message_actions_menu"
 import MessageComposer from "./hooks/message_composer"
 
 const Hooks = {
   ChannelMessages,
   ClipboardCopy,
+  MessageActionsMenu,
   MessageComposer,
-
-  MessageActionsMenu: {
-    mounted() {
-      this.summary = this.el.querySelector("[data-message-menu-summary]")
-      this.panel = this.el.querySelector("[data-message-menu-panel]")
-      this.closeTimer = null
-
-      this.position = () => positionMessageMenu(this.summary, this.panel)
-
-      this.cancelClose = () => {
-        if (this.closeTimer) {
-          window.clearTimeout(this.closeTimer)
-          this.closeTimer = null
-        }
-      }
-
-      // Close once the pointer has left both the button and the panel for a
-      // moment. The panel is a DOM descendant of the <details>, so hovering it
-      // still counts as "inside" — the grace window only bridges the visual gap
-      // between the button and the fixed panel.
-      this.scheduleClose = () => {
-        this.cancelClose()
-        this.closeTimer = window.setTimeout(() => {
-          this.el.open = false
-        }, 250)
-      }
-
-      this.handleToggle = () => {
-        if (this.el.open) {
-          // Keep the button visible while open, independent of row hover, so
-          // the menu never fades or flickers mid-interaction.
-          this.summary.style.opacity = "1"
-          this.position()
-        } else {
-          this.summary.style.removeProperty("opacity")
-          this.cancelClose()
-        }
-      }
-
-      this.handleEnter = () => this.cancelClose()
-      this.handleLeave = () => {
-        if (this.el.open) {
-          this.scheduleClose()
-        }
-      }
-      this.reposition = () => {
-        if (this.el.open) {
-          this.position()
-        }
-      }
-
-      this.el.addEventListener("toggle", this.handleToggle)
-      this.el.addEventListener("mouseenter", this.handleEnter)
-      this.el.addEventListener("mouseleave", this.handleLeave)
-      window.addEventListener("resize", this.reposition)
-      window.addEventListener("scroll", this.reposition, true)
-    },
-
-    destroyed() {
-      this.cancelClose()
-      this.el.removeEventListener("toggle", this.handleToggle)
-      this.el.removeEventListener("mouseenter", this.handleEnter)
-      this.el.removeEventListener("mouseleave", this.handleLeave)
-      window.removeEventListener("resize", this.reposition)
-      window.removeEventListener("scroll", this.reposition, true)
-    },
-  },
 
   ContextMenu: {
     mounted() {
@@ -120,32 +55,6 @@ const Hooks = {
       this.el.removeEventListener("contextmenu", this.handleContextMenu)
     },
   },
-}
-
-function positionMessageMenu(summary, panel) {
-  if (!summary || !panel) {
-    return
-  }
-
-  const margin = 12
-  const rect = summary.getBoundingClientRect()
-  const panelRect = panel.getBoundingClientRect()
-  const composer = document.getElementById("message-composer-panel")
-  const composerTop = composer?.getBoundingClientRect().top ?? window.innerHeight
-  const availableBottom = Math.min(window.innerHeight - margin, composerTop - margin)
-
-  let left = rect.right - panelRect.width
-  let top = rect.bottom + 8
-
-  if (top + panelRect.height > availableBottom) {
-    top = rect.top - panelRect.height - 8
-  }
-
-  left = Math.max(margin, Math.min(left, window.innerWidth - panelRect.width - margin))
-  top = Math.max(margin, Math.min(top, window.innerHeight - panelRect.height - margin))
-
-  panel.style.left = `${left}px`
-  panel.style.top = `${top}px`
 }
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")

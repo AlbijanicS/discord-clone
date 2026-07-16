@@ -108,6 +108,7 @@ defmodule DiscordClone.MixProject do
         "deps.unlock --unused",
         "format",
         "credo --strict",
+        "cmd node --test assets/js/hooks/message_actions_menu_test.mjs",
         "test"
       ]
     ]
