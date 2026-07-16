@@ -51,8 +51,8 @@ defmodule DiscordCloneWeb.ActivitySyncLiveTest do
 
     assert {:ok, _destination} = Chat.open_activity_item(recipient_scope, item.id)
 
-    assert has_element?(workspace_view, "#global-activity-unread-count", "0")
-    assert has_element?(channel_view, "#global-activity-unread-count", "0")
+    refute has_element?(workspace_view, "#global-activity-unread-count")
+    refute has_element?(channel_view, "#global-activity-unread-count")
 
     assert has_element?(
              workspace_view,
@@ -93,8 +93,8 @@ defmodule DiscordCloneWeb.ActivitySyncLiveTest do
     |> element("#activity-mark-all-read")
     |> render_click()
 
-    assert has_element?(workspace_view, "#global-activity-unread-count", "0")
-    assert has_element?(second_feed_view, "#global-activity-unread-count", "0")
+    refute has_element?(workspace_view, "#global-activity-unread-count")
+    refute has_element?(second_feed_view, "#global-activity-unread-count")
     refute has_element?(second_feed_view, "#activity-feed > article[data-read-state='unread']")
     assert activity_row_ids(second_feed_view) == first_order
 
@@ -110,9 +110,9 @@ defmodule DiscordCloneWeb.ActivitySyncLiveTest do
     assert has_element?(second_feed_view, "#activity-item-#{deletion_item.id}")
 
     assert {:ok, _deleted_message} = Chat.delete_message(author_scope, deletion_message.id)
-    assert has_element?(workspace_view, "#global-activity-unread-count", "0")
+    refute has_element?(workspace_view, "#global-activity-unread-count")
     refute has_element?(workspace_view, "#activity-preview-item-#{deletion_item.id}")
-    assert has_element?(second_feed_view, "#global-activity-unread-count", "0")
+    refute has_element?(second_feed_view, "#global-activity-unread-count")
     refute has_element?(first_feed_view, "#activity-item-#{deletion_item.id}")
     refute has_element?(second_feed_view, "#activity-item-#{deletion_item.id}")
 
@@ -145,8 +145,8 @@ defmodule DiscordCloneWeb.ActivitySyncLiveTest do
                "reason" => "Access removed"
              })
 
-    assert has_element?(workspace_view, "#global-activity-unread-count", "0")
-    assert has_element?(activity_view, "#global-activity-unread-count", "0")
+    refute has_element?(workspace_view, "#global-activity-unread-count")
+    refute has_element?(activity_view, "#global-activity-unread-count")
     refute has_element?(activity_view, "#activity-item-#{item.id}")
   end
 

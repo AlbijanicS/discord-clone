@@ -238,6 +238,17 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               </div>
             </div>
             <div
+              id="older-messages-loading"
+              data-loading={to_string(@loading_older_messages?)}
+              aria-live="polite"
+              class={[
+                "pointer-events-none absolute inset-x-0 top-0 z-10 py-2 text-center text-xs font-semibold uppercase tracking-wide text-base-content/45",
+                !@loading_older_messages? && "sr-only"
+              ]}
+            >
+              Loading older messages
+            </div>
+            <div
               id="channel-messages"
               phx-update="stream"
               phx-hook="ChannelMessages"
@@ -250,17 +261,6 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               data-scroll-target-token={ScrollAnchoring.scroll_target_token(@message_scroll_target)}
               class="absolute inset-0 scroll-pb-6 overflow-y-auto px-5 py-6 [overflow-anchor:none]"
             >
-              <div
-                id="older-messages-loading"
-                data-loading={to_string(@loading_older_messages?)}
-                aria-live="polite"
-                class={[
-                  "py-2 text-center text-xs font-semibold uppercase tracking-wide text-base-content/45",
-                  !@loading_older_messages? && "sr-only"
-                ]}
-              >
-                Loading older messages
-              </div>
               <article
                 :for={{dom_id, row} <- @streams.messages}
                 id={dom_id}
@@ -476,17 +476,17 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                   <% end %>
                 </div>
               </article>
-              <div
-                id="newer-messages-loading"
-                data-loading={to_string(@loading_newer_messages?)}
-                aria-live="polite"
-                class={[
-                  "py-2 text-center text-xs font-semibold uppercase tracking-wide text-base-content/45",
-                  !@loading_newer_messages? && "sr-only"
-                ]}
-              >
-                Loading newer messages
-              </div>
+            </div>
+            <div
+              id="newer-messages-loading"
+              data-loading={to_string(@loading_newer_messages?)}
+              aria-live="polite"
+              class={[
+                "pointer-events-none absolute inset-x-0 bottom-0 z-10 py-2 text-center text-xs font-semibold uppercase tracking-wide text-base-content/45",
+                !@loading_newer_messages? && "sr-only"
+              ]}
+            >
+              Loading newer messages
             </div>
           </div>
           <% typing_members =

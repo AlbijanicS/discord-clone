@@ -239,7 +239,7 @@ defmodule DiscordCloneWeb.ActivityLiveTest do
       |> element("#activity-mark-all-read")
       |> render_click()
 
-      assert has_element?(view, "#global-activity-unread-count", "0")
+      refute has_element?(view, "#global-activity-unread-count")
       assert has_element?(view, "#activity-mark-all-read[disabled]", "Mark all as read")
       assert has_element?(view, "#activity-item-#{first_item.id}[data-read-state='read']")
       assert has_element?(view, "#activity-item-#{second_item.id}[data-read-state='read']")

@@ -86,7 +86,7 @@ defmodule DiscordCloneWeb.AuthenticatedActivityShellTest do
         |> render_click()
         |> follow_redirect(recipient_conn, destination)
 
-      assert has_element?(channel_view, "#global-activity-unread-count", "0")
+      refute has_element?(channel_view, "#global-activity-unread-count")
       assert %DateTime{} = Repo.reload!(activity_item).read_at
     end
 
@@ -104,7 +104,7 @@ defmodule DiscordCloneWeb.AuthenticatedActivityShellTest do
       {:ok, view, _html} = live(conn, ~p"/workspaces")
 
       assert has_element?(view, "#global-activity-bell[aria-label='0 unread activities']")
-      assert has_element?(view, "#global-activity-unread-count", "0")
+      refute has_element?(view, "#global-activity-unread-count")
     end
   end
 end

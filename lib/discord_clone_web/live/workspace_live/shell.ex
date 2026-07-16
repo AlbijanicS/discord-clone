@@ -418,6 +418,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
               >
                 <.icon name="hero-bell" class="size-4" />
                 <span
+                  :if={@unread_activity_count > 0}
                   id="global-activity-unread-count"
                   class={[
                     "absolute -right-1.5 -top-1.5 flex min-w-4 items-center justify-center rounded-full",

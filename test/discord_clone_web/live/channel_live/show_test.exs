@@ -80,6 +80,51 @@ defmodule DiscordCloneWeb.ChannelLive.ShowTest do
       refute has_element?(view, "#channel-empty-state")
     end
 
+    test "appends a newly sent message after messages from earlier dates", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      other_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      DiscordCloneWeb.WorkspaceLiveTestHelpers.add_workspace_member!(workspace, other_scope)
+
+      first =
+        DiscordCloneWeb.WorkspaceLiveTestHelpers.insert_message!(
+          workspace.default_channel_id,
+          scope.user.id,
+          "older message",
+          ~U[2026-07-14 21:58:00Z]
+        )
+
+      second =
+        DiscordCloneWeb.WorkspaceLiveTestHelpers.insert_message!(
+          workspace.default_channel_id,
+          other_scope.user.id,
+          "newer old message",
+          ~U[2026-07-15 07:04:00Z]
+        )
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      refute has_element?(view, "#channel-messages > :not(article)")
+
+      view
+      |> form("#message-composer-form", message: %{content: "newest message"})
+      |> render_submit()
+
+      newest = Repo.get_by!(Message, content: "newest message")
+
+      message_ids = DiscordCloneWeb.WorkspaceLiveTestHelpers.rendered_message_ids(view)
+
+      assert message_ids == [
+               "message-#{first.id}",
+               "message-#{second.id}",
+               "message-#{newest.id}"
+             ]
+    end
+
     test "ignores a blank message submission", %{conn: conn, scope: scope} do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
 
