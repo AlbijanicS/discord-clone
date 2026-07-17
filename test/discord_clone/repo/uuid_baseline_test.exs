@@ -17,6 +17,7 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
     messages
     message_reactions
     activity_items
+    friend_relationships
     conversations
     conversation_read_states
     conversation_unread_spans
@@ -120,6 +121,10 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
           conversation_read_states_last_viewed_anchor_seq_positive
           conversation_unread_spans_positive_bounds
           conversation_unread_spans_ordered_bounds
+          friend_relationships_canonical_pair
+          friend_relationships_requester_in_pair
+          friend_relationships_valid_status
+          friend_relationships_acceptance_consistent
         ) do
       assert constraints[name] == "c"
     end
@@ -153,6 +158,7 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
           messages_conversation_id_seq_index
           message_reactions_message_id_user_id_emoji_index
           activity_items_recipient_user_id_source_message_id_index
+          friend_relationships_user_low_id_user_high_id_index
           conversation_read_states_conversation_id_user_id_index
         ) do
       assert MapSet.member?(unique_indexes, name)
@@ -234,6 +240,9 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
       "channels_workspace_id_fkey" => "no_action",
       "conversation_read_states_conversation_id_fkey" => "delete_all",
       "conversation_unread_spans_conversation_id_fkey" => "delete_all",
+      "friend_relationships_requested_by_user_id_fkey" => "restrict",
+      "friend_relationships_user_high_id_fkey" => "restrict",
+      "friend_relationships_user_low_id_fkey" => "restrict",
       "message_reactions_message_id_fkey" => "delete_all",
       "message_reactions_user_id_fkey" => "delete_all",
       "messages_conversation_id_fkey" => "delete_all",
