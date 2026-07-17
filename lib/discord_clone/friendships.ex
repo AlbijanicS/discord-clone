@@ -163,6 +163,43 @@ defmodule DiscordClone.Friendships do
 
   def list_friends(_scope), do: {:error, :unauthenticated}
 
+  @doc """
+  Locks the scoped User's accepted Friendship with another User.
+
+  Callers must already be inside the transaction whose Friendship-dependent work
+  needs serialization. The shared lock serializes against Friendship removal
+  without exposing the relationship schema or its lifecycle policy.
+  """
+  @spec lock_accepted_friendship(term(), term()) ::
+          :ok | {:error, :unauthenticated | :not_found | :not_friends}
+  def lock_accepted_friendship(
+        %Scope{user: %User{id: user_id}},
+        other_user_id
+      ) do
+    with {:ok, other_user_id} <- Ecto.UUID.cast(other_user_id),
+         true <- other_user_id != user_id do
+      {user_low_id, user_high_id} = canonical_pair(user_id, other_user_id)
+
+      if Repo.exists?(
+           from relationship in Relationship,
+             where:
+               relationship.user_low_id == ^user_low_id and
+                 relationship.user_high_id == ^user_high_id and
+                 relationship.status == :accepted,
+             lock: "FOR SHARE"
+         ) do
+        :ok
+      else
+        {:error, :not_friends}
+      end
+    else
+      _invalid_or_self -> {:error, :not_found}
+    end
+  end
+
+  def lock_accepted_friendship(_scope, _other_user_id),
+    do: {:error, :unauthenticated}
+
   defp normalized_username(attrs) do
     case Map.get(attrs, :username) || Map.get(attrs, "username") do
       username when is_binary(username) ->

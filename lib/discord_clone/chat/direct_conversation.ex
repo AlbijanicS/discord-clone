@@ -35,4 +35,20 @@ defmodule DiscordClone.Chat.DirectConversation do
     |> check_constraint(:user_low_id, name: :direct_conversations_canonical_pair)
     |> unique_constraint([:user_low_id, :user_high_id])
   end
+
+  def other_user_id(%__MODULE__{user_low_id: user_id, user_high_id: other_user_id}, user_id),
+    do: other_user_id
+
+  def other_user_id(%__MODULE__{user_high_id: user_id, user_low_id: other_user_id}, user_id),
+    do: other_user_id
+
+  def other_user_id(%__MODULE__{}, _user_id), do: nil
+
+  def other_user(%__MODULE__{user_low_id: user_id, user_high: other_user}, user_id),
+    do: other_user
+
+  def other_user(%__MODULE__{user_high_id: user_id, user_low: other_user}, user_id),
+    do: other_user
+
+  def other_user(%__MODULE__{}, _user_id), do: nil
 end

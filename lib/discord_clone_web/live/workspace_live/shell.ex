@@ -996,6 +996,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   defp activity_kind_label("everyone_mention"), do: "Mentioned everyone"
   defp activity_kind_label("friend_request_received"), do: "Sent you a Friend Request"
   defp activity_kind_label("friend_request_accepted"), do: "Accepted your Friend Request"
+  defp activity_kind_label("direct_message"), do: "Sent you a Direct Message"
   defp activity_kind_label(_kind), do: "New activity"
 
   defp activity_context(
@@ -1012,6 +1013,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   defp activity_preview(_activity_item), do: "Open this activity for details."
 
   defp activity_open_label(%{source_channel: %{name: name}}), do: "Open activity in ##{name}"
+  defp activity_open_label(%{kind: "direct_message"}), do: "Open Direct Message activity"
   defp activity_open_label(_activity_item), do: "Open Friend relationship activity"
 
   defp activity_preview_time(%DateTime{} = datetime),

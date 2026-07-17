@@ -74,4 +74,65 @@ defmodule DiscordCloneWeb.DirectConversationLiveTest do
     assert {:error, {:redirect, %{to: "/users/log-in"}}} =
              live(conn, ~p"/direct-messages/#{Ecto.UUID.generate()}")
   end
+
+  test "current Friends exchange durable Direct Messages live in both sessions", %{
+    conn: conn,
+    user: user,
+    scope: scope
+  } do
+    friend = user_fixture(username: "live_message_friend")
+    friend_scope = user_scope_fixture(friend)
+
+    assert {:ok, %{relationship: request}} =
+             Friendships.send_friend_request(scope, %{username: friend.username})
+
+    assert {:ok, _friendship} = Friendships.accept_friend_request(friend_scope, request.id)
+    assert {:ok, direct_conversation} = Chat.open_direct_conversation(scope, friend.id)
+
+    direct_path = ~p"/direct-messages/#{direct_conversation.id}"
+    friend_conn = build_conn() |> log_in_user(friend)
+
+    {:ok, sender_view, _html} = live(conn, direct_path)
+    {:ok, recipient_view, _html} = live(friend_conn, direct_path)
+
+    assert has_element?(sender_view, "#direct-message-form")
+    assert has_element?(recipient_view, "#direct-message-form")
+
+    sender_view
+    |> form("#direct-message-form", message: %{content: "A durable hello"})
+    |> render_submit()
+
+    assert_eventually_has_message(sender_view, "A durable hello")
+    assert_eventually_has_message(recipient_view, "A durable hello")
+
+    assert {:ok, [message]} = Chat.list_direct_messages(scope, direct_conversation.id)
+    assert has_element?(sender_view, "#direct-message-#{message.id}")
+    assert has_element?(recipient_view, "#direct-message-#{message.id}")
+
+    Process.unlink(sender_view.pid)
+    ref = Process.monitor(sender_view.pid)
+    GenServer.stop(sender_view.pid)
+    assert_receive {:DOWN, ^ref, :process, _pid, :normal}
+
+    {:ok, reconnected_view, _html} = live(conn, direct_path)
+    assert has_element?(reconnected_view, "#direct-message-#{message.id}")
+    assert has_element?(reconnected_view, "#direct-message-#{message.id}", "A durable hello")
+
+    assert user.id == message.user_id
+  end
+
+  defp assert_eventually_has_message(view, content, attempts \\ 10)
+
+  defp assert_eventually_has_message(view, content, attempts) when attempts > 0 do
+    if has_element?(view, "[data-direct-message-content]", content) do
+      :ok
+    else
+      _ = render(view)
+      assert_eventually_has_message(view, content, attempts - 1)
+    end
+  end
+
+  defp assert_eventually_has_message(_view, content, 0) do
+    flunk("expected Direct Message content #{inspect(content)}")
+  end
 end

@@ -17,7 +17,7 @@ defmodule DiscordClone.Workspaces.Channel do
     has_many :messages, DiscordClone.Chat.Message, foreign_key: :channel_id
 
     has_many :activity_items, DiscordClone.Activities.ActivityItem,
-      foreign_key: :source_channel_id
+      foreign_key: :source_conversation_id
 
     has_many :channel_read_states, DiscordClone.Chat.ChannelReadState
     has_many :channel_unread_spans, DiscordClone.Chat.ChannelUnreadSpan

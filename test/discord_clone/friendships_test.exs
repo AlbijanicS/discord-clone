@@ -298,7 +298,7 @@ defmodule DiscordClone.FriendshipsTest do
 
       assert received_item.source_friend_relationship_id == request.id
       assert is_nil(received_item.source_message_id)
-      assert is_nil(received_item.source_channel_id)
+      assert is_nil(received_item.source_conversation_id)
       assert is_nil(received_item.workspace_id)
 
       assert {:ok, %{items: [listed_received], next_cursor: nil}} =

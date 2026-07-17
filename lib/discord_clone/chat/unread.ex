@@ -15,6 +15,7 @@ defmodule DiscordClone.Chat.Unread do
     ChannelReadState,
     ChannelUnreadSpan,
     ConversationTopics,
+    DirectConversation,
     MessageWindow,
     Unread.Spans
   }
@@ -217,18 +218,47 @@ defmodule DiscordClone.Chat.Unread do
       else
         replace_channel_unread_spans!(recipient_user_id, channel.id, next_spans)
         read_state = update_read_state_summary!(read_state, next_spans)
-        [{channel.workspace_id, recipient_user_id, read_state} | read_state_changes]
+
+        [
+          {:workspace_channel, channel.workspace_id, recipient_user_id, read_state}
+          | read_state_changes
+        ]
       end
     end)
     |> Enum.reverse()
   end
 
+  def fanout_on_direct_send!(
+        %DirectConversation{} = direct_conversation,
+        sender_user_id,
+        message_seq
+      ) do
+    recipient_user_id = DirectConversation.other_user_id(direct_conversation, sender_user_id)
+
+    read_state = add_unread_message!(recipient_user_id, direct_conversation.id, message_seq)
+    [{:direct_conversation, recipient_user_id, read_state}]
+  end
+
   def broadcast_changes(read_state_changes) do
-    Enum.each(read_state_changes, fn {workspace_id, user_id, read_state} ->
-      :ok = broadcast_channel_read_state_changed(workspace_id, user_id, read_state)
+    Enum.each(read_state_changes, fn
+      {:workspace_channel, workspace_id, user_id, read_state} ->
+        :ok = broadcast_channel_read_state_changed(workspace_id, user_id, read_state)
+
+      {:direct_conversation, user_id, read_state} ->
+        :ok = broadcast_direct_read_state_changed(user_id, read_state)
     end)
 
     :ok
+  end
+
+  defp add_unread_message!(recipient_user_id, conversation_id, message_seq) do
+    ensure_channel_read_state!(recipient_user_id, conversation_id)
+    read_state = lock_channel_read_state!(recipient_user_id, conversation_id)
+    current_spans = list_channel_unread_span_bounds(recipient_user_id, conversation_id)
+    next_spans = Spans.merge([{message_seq, message_seq} | current_spans])
+
+    replace_channel_unread_spans!(recipient_user_id, conversation_id, next_spans)
+    update_read_state_summary!(read_state, next_spans)
   end
 
   def ensure_channel_read_state!(user_id, channel_id) do
@@ -454,6 +484,20 @@ defmodule DiscordClone.Chat.Unread do
        %{
          workspace_id: workspace_id,
          channel_id: read_state.channel_id,
+         unread_count: read_state.unread_count,
+         first_unread_seq: read_state.first_unread_seq,
+         last_unread_seq: read_state.last_unread_seq
+       }}
+    )
+  end
+
+  defp broadcast_direct_read_state_changed(user_id, %ChannelReadState{} = read_state) do
+    Phoenix.PubSub.broadcast(
+      DiscordClone.PubSub,
+      ConversationTopics.read_state(user_id, read_state.channel_id),
+      {:conversation_read_state_changed,
+       %{
+         conversation_id: read_state.channel_id,
          unread_count: read_state.unread_count,
          first_unread_seq: read_state.first_unread_seq,
          last_unread_seq: read_state.last_unread_seq

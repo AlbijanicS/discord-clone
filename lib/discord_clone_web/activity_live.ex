@@ -272,7 +272,7 @@ defmodule DiscordCloneWeb.ActivityLive do
                     </time>
                   </div>
 
-                  <%= if activity_item.source_message do %>
+                  <%= if activity_item.source_message && activity_item.workspace do %>
                     <div class={[
                       "mt-1 flex flex-wrap items-center gap-1.5 text-xs font-medium",
                       "text-base-content/55"
@@ -282,9 +282,21 @@ defmodule DiscordCloneWeb.ActivityLive do
                       <span data-role="channel">#{activity_item.source_channel.name}</span>
                     </div>
                   <% else %>
-                    <p data-role="relationship" class="mt-1 text-xs font-medium text-base-content/55">
-                      Friend relationship
-                    </p>
+                    <%= if activity_item.kind == "direct_message" do %>
+                      <p
+                        data-role="direct-conversation"
+                        class="mt-1 text-xs font-medium text-base-content/55"
+                      >
+                        Direct Conversation with {actor_name(activity_item)}
+                      </p>
+                    <% else %>
+                      <p
+                        data-role="relationship"
+                        class="mt-1 text-xs font-medium text-base-content/55"
+                      >
+                        Friend relationship
+                      </p>
+                    <% end %>
                   <% end %>
 
                   <p
@@ -330,14 +342,18 @@ defmodule DiscordCloneWeb.ActivityLive do
   defp activity_kind_label("everyone_mention"), do: "Everyone mention"
   defp activity_kind_label("friend_request_received"), do: "Sent you a Friend Request"
   defp activity_kind_label("friend_request_accepted"), do: "Accepted your Friend Request"
+  defp activity_kind_label("direct_message"), do: "Sent you a Direct Message"
   defp activity_kind_label(_kind), do: "Activity"
 
+  defp activity_source_kind(%{kind: "direct_message"}), do: "direct-message"
   defp activity_source_kind(%{source_friend_relationship_id: nil}), do: "message"
   defp activity_source_kind(_activity_item), do: "friend-relationship"
 
   defp activity_open_label(%{source_channel: %{name: name}}), do: "Open activity in ##{name}"
+  defp activity_open_label(%{kind: "direct_message"}), do: "Open Direct Message activity"
   defp activity_open_label(_activity_item), do: "Open Friend relationship activity"
 
+  defp activity_icon(%{kind: "direct_message"}), do: "hero-chat-bubble-left-right"
   defp activity_icon(%{source_friend_relationship_id: nil}), do: "hero-at-symbol"
   defp activity_icon(_activity_item), do: "hero-user-plus"
 
@@ -410,6 +426,13 @@ defmodule DiscordCloneWeb.ActivityLive do
          message_id: message_id
        }) do
     ~p"/workspaces/#{workspace_id}/channels/#{channel_id}?message_id=#{message_id}"
+  end
+
+  defp activity_destination_path(%{
+         direct_conversation_id: direct_conversation_id,
+         message_id: message_id
+       }) do
+    ~p"/direct-messages/#{direct_conversation_id}?message_id=#{message_id}"
   end
 
   defp activity_destination_path(%{friends_section: :incoming_requests}),

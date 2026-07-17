@@ -32,6 +32,17 @@ defmodule DiscordClone.Chat.Message do
   def changeset(message, attrs) do
     message
     |> cast(attrs, [:channel_id, :user_id, :content])
+    |> validate_message()
+  end
+
+  def direct_message_changeset(message, attrs) do
+    message
+    |> cast(attrs, [:content])
+    |> validate_message()
+  end
+
+  defp validate_message(changeset) do
+    changeset
     |> update_change(:content, &normalize_content/1)
     |> validate_required([:channel_id, :user_id, :content])
     |> validate_length(:content, min: 1, max: 4_000)

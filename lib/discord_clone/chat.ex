@@ -27,8 +27,7 @@ defmodule DiscordClone.Chat do
     Unread
   }
 
-  alias DiscordClone.{Repo, UUIDIdentifier, Workspaces}
-  alias DiscordClone.Friendships.Relationship
+  alias DiscordClone.{Friendships, Repo, UUIDIdentifier, Workspaces}
 
   alias DiscordClone.Workspaces.{
     Channel,
@@ -65,7 +64,7 @@ defmodule DiscordClone.Chat do
   @spec open_direct_conversation(term(), term()) ::
           {:ok, DirectConversation.t()}
           | {:error, :unauthenticated | :invalid_participant | :not_found | :not_friends}
-  def open_direct_conversation(%Scope{user: %User{id: user_id}}, friend_user_id) do
+  def open_direct_conversation(%Scope{user: %User{id: user_id}} = scope, friend_user_id) do
     with {:ok, friend_user_id} <- Ecto.UUID.cast(friend_user_id),
          :ok <- reject_same_direct_participant(user_id, friend_user_id),
          %User{} <- Repo.get(User, friend_user_id) do
@@ -76,7 +75,7 @@ defmodule DiscordClone.Chat do
           {:ok, preload_direct_conversation(direct_conversation)}
 
         nil ->
-          create_direct_conversation_for_friends(pair)
+          create_direct_conversation_for_friends(scope, pair)
       end
     else
       :error -> {:error, :not_found}
@@ -125,7 +124,7 @@ defmodule DiscordClone.Chat do
       {:ok,
        %{
          direct_conversation: direct_conversation,
-         other_participant: other_direct_participant(direct_conversation, user_id)
+         other_participant: DirectConversation.other_user(direct_conversation, user_id)
        }}
     else
       _other -> {:error, :not_found}
@@ -153,19 +152,17 @@ defmodule DiscordClone.Chat do
     )
   end
 
-  defp create_direct_conversation_for_friends({user_low_id, user_high_id} = pair) do
+  defp create_direct_conversation_for_friends(
+         scope,
+         {user_low_id, user_high_id} = pair
+       ) do
     case Repo.transaction(fn ->
-           accepted_friendship =
-             Repo.one(
-               from relationship in Relationship,
-                 where:
-                   relationship.user_low_id == ^user_low_id and
-                     relationship.user_high_id == ^user_high_id and
-                     relationship.status == :accepted,
-                 lock: "FOR SHARE"
-             )
+           other_user_id = if scope.user.id == user_low_id, do: user_high_id, else: user_low_id
 
-           if is_nil(accepted_friendship), do: Repo.rollback(:not_friends)
+           case Friendships.lock_accepted_friendship(scope, other_user_id) do
+             :ok -> :ok
+             {:error, reason} -> Repo.rollback(reason)
+           end
 
            conversation =
              %Conversation{}
@@ -202,11 +199,209 @@ defmodule DiscordClone.Chat do
     Repo.preload(direct_conversation, [:conversation, :user_low, :user_high])
   end
 
-  defp other_direct_participant(%DirectConversation{user_low_id: user_id} = direct, user_id),
-    do: direct.user_high
+  @doc "Lists the committed Direct Message timeline for one participant."
+  @spec list_direct_messages(term(), term()) ::
+          {:ok, [Message.t()]} | {:error, :unauthenticated | :not_found}
+  def list_direct_messages(%Scope{user: %User{id: user_id}}, direct_conversation_id) do
+    with %DirectConversation{id: conversation_id} <-
+           get_participant_direct_conversation(user_id, direct_conversation_id) do
+      messages =
+        Message
+        |> where([message], message.channel_id == ^conversation_id)
+        |> order_by([message], asc: message.seq)
+        |> preload(^Message.display_preloads())
+        |> Repo.all()
 
-  defp other_direct_participant(%DirectConversation{} = direct, _user_id),
-    do: direct.user_low
+      {:ok, messages}
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def list_direct_messages(_scope, _direct_conversation_id),
+    do: {:error, :unauthenticated}
+
+  @doc "Reloads one committed Direct Message through its participant boundary."
+  @spec fetch_direct_message(term(), term(), term()) ::
+          {:ok, Message.t()} | {:error, :unauthenticated | :not_found}
+  def fetch_direct_message(
+        %Scope{user: %User{id: user_id}},
+        direct_conversation_id,
+        message_id
+      ) do
+    with %DirectConversation{id: conversation_id} <-
+           get_participant_direct_conversation(user_id, direct_conversation_id),
+         {:ok, message_id} <- Ecto.UUID.cast(message_id),
+         %Message{} = message <-
+           Repo.one(
+             from message in Message,
+               where: message.id == ^message_id and message.channel_id == ^conversation_id,
+               preload: ^Message.display_preloads()
+           ) do
+      {:ok, message}
+    else
+      _not_found -> {:error, :not_found}
+    end
+  end
+
+  def fetch_direct_message(_scope, _direct_conversation_id, _message_id),
+    do: {:error, :unauthenticated}
+
+  @doc "Subscribes one participant to compact Direct Message change facts."
+  @spec subscribe_to_direct_messages(term(), term()) ::
+          :ok | {:error, :unauthenticated | :not_found}
+  def subscribe_to_direct_messages(%Scope{user: %User{id: user_id}}, direct_conversation_id) do
+    with %DirectConversation{id: conversation_id} <-
+           get_participant_direct_conversation(user_id, direct_conversation_id) do
+      Phoenix.PubSub.subscribe(DiscordClone.PubSub, ConversationTopics.messages(conversation_id))
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def subscribe_to_direct_messages(_scope, _direct_conversation_id),
+    do: {:error, :unauthenticated}
+
+  @doc "Subscribes one participant to only their private Direct Conversation Read State."
+  @spec subscribe_to_direct_read_state(term(), term()) ::
+          :ok | {:error, :unauthenticated | :not_found}
+  def subscribe_to_direct_read_state(
+        %Scope{user: %User{id: user_id}},
+        direct_conversation_id
+      ) do
+    with %DirectConversation{id: conversation_id} <-
+           get_participant_direct_conversation(user_id, direct_conversation_id) do
+      Phoenix.PubSub.subscribe(
+        DiscordClone.PubSub,
+        ConversationTopics.read_state(user_id, conversation_id)
+      )
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def subscribe_to_direct_read_state(_scope, _direct_conversation_id),
+    do: {:error, :unauthenticated}
+
+  defp get_participant_direct_conversation(user_id, direct_conversation_id) do
+    UUIDIdentifier.cast_or(direct_conversation_id, nil, fn direct_conversation_id ->
+      Repo.one(
+        from direct_conversation in DirectConversation,
+          where:
+            direct_conversation.id == ^direct_conversation_id and
+              (direct_conversation.user_low_id == ^user_id or
+                 direct_conversation.user_high_id == ^user_id)
+      )
+    end)
+  end
+
+  @doc "Sends one durable Message in a Direct Conversation between current Friends."
+  @spec send_direct_message(term(), term(), map()) ::
+          {:ok, Message.t()}
+          | {:error, :unauthenticated | :not_found | :not_friends}
+          | {:error, :invalid_message, Ecto.Changeset.t()}
+  def send_direct_message(%Scope{user: %User{}} = scope, direct_conversation_id, attrs) do
+    with {:ok, direct_conversation_id} <- Ecto.UUID.cast(direct_conversation_id) do
+      case persist_direct_message(scope, direct_conversation_id, attrs) do
+        {:ok, {message, read_state_changes, recipient_user_id}} ->
+          message = preload_message_for_display(message)
+          :ok = Runtime.put_recent_message(message)
+          :ok = Unread.broadcast_changes(read_state_changes)
+          :ok = broadcast_direct_message_created(message)
+
+          :ok =
+            broadcast_activity_change(recipient_user_id, %{
+              action: :created,
+              source_message_id: message.id
+            })
+
+          {:ok, message}
+
+        {:error, {:invalid_message, changeset}} ->
+          {:error, :invalid_message, changeset}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      :error -> {:error, :not_found}
+    end
+  end
+
+  def send_direct_message(_scope, _direct_conversation_id, _attrs),
+    do: {:error, :unauthenticated}
+
+  defp persist_direct_message(
+         %Scope{user: %User{id: user_id}} = scope,
+         direct_conversation_id,
+         attrs
+       ) do
+    Repo.transaction(fn ->
+      direct_conversation = get_writable_direct_conversation!(scope, direct_conversation_id)
+      locked_conversation = lock_conversation_for_update!(direct_conversation_id)
+      next_seq = locked_conversation.last_message_seq + 1
+
+      changeset =
+        %Message{channel_id: direct_conversation_id, user_id: user_id}
+        |> Message.direct_message_changeset(%{content: direct_message_content(attrs)})
+
+      case changeset |> Ecto.Changeset.put_change(:seq, next_seq) |> Repo.insert() do
+        {:ok, message} ->
+          locked_conversation
+          |> Ecto.Changeset.change(last_message_seq: next_seq)
+          |> Repo.update!()
+
+          read_state_changes =
+            Unread.fanout_on_direct_send!(direct_conversation, user_id, next_seq)
+
+          recipient_user_id = DirectConversation.other_user_id(direct_conversation, user_id)
+
+          %ActivityItem{}
+          |> ActivityItem.create_direct_message_changeset(%{
+            recipient_user_id: recipient_user_id,
+            actor_user_id: user_id,
+            source_message_id: message.id,
+            source_conversation_id: direct_conversation.id
+          })
+          |> Repo.insert!()
+
+          {message, read_state_changes, recipient_user_id}
+
+        {:error, changeset} ->
+          Repo.rollback({:invalid_message, changeset})
+      end
+    end)
+  end
+
+  defp direct_message_content(attrs) when is_map(attrs),
+    do: Map.get(attrs, :content) || Map.get(attrs, "content")
+
+  defp direct_message_content(_attrs), do: nil
+
+  defp get_writable_direct_conversation!(
+         %Scope{user: %User{id: user_id}} = scope,
+         direct_conversation_id
+       ) do
+    direct_conversation =
+      Repo.one(
+        from direct_conversation in DirectConversation,
+          where:
+            direct_conversation.id == ^direct_conversation_id and
+              (direct_conversation.user_low_id == ^user_id or
+                 direct_conversation.user_high_id == ^user_id)
+      )
+
+    if is_nil(direct_conversation), do: Repo.rollback(:not_found)
+
+    other_user_id = DirectConversation.other_user_id(direct_conversation, user_id)
+
+    case Friendships.lock_accepted_friendship(scope, other_user_id) do
+      :ok -> :ok
+      {:error, reason} -> Repo.rollback(reason)
+    end
+
+    direct_conversation
+  end
 
   @doc "Returns the scoped user's global unread activity count."
   @spec unread_activity_count(term()) :: {:ok, non_neg_integer()} | {:error, :unauthenticated}
@@ -238,10 +433,15 @@ defmodule DiscordClone.Chat do
           on:
             membership.workspace_id == activity_item.workspace_id and
               membership.user_id == ^user_id,
+          left_join: direct_conversation in DirectConversation,
+          on: direct_conversation.id == activity_item.source_conversation_id,
           where:
             activity_item.recipient_user_id == ^user_id and
               (not is_nil(membership.user_id) or
-                 not is_nil(activity_item.source_friend_relationship_id)),
+                 not is_nil(activity_item.source_friend_relationship_id) or
+                 (activity_item.kind == ^ActivityItem.direct_message_kind() and
+                    (direct_conversation.user_low_id == ^user_id or
+                       direct_conversation.user_high_id == ^user_id))),
           order_by: [desc: activity_item.inserted_at, desc: activity_item.id],
           limit: ^(@activity_feed_page_size + 1),
           preload: [
@@ -249,7 +449,8 @@ defmodule DiscordClone.Chat do
             :source_channel,
             :source_message,
             :source_friend_relationship,
-            :actor_user
+            :actor_user,
+            source_direct_conversation: [:user_low, :user_high]
           ]
 
       activity_items =
@@ -339,6 +540,7 @@ defmodule DiscordClone.Chat do
                friend_relationship_id: Ecto.UUID.t(),
                friends_section: :incoming_requests | :friends
              }}
+          | {:ok, %{direct_conversation_id: Ecto.UUID.t(), message_id: Ecto.UUID.t()}}
           | {:error, :unauthenticated | :not_found}
   def open_activity_item(%Scope{user: %User{id: user_id}} = scope, activity_item_id) do
     with {:ok, activity_item_id} <- Ecto.UUID.cast(activity_item_id) do
@@ -355,16 +557,7 @@ defmodule DiscordClone.Chat do
         destination = activity_destination(activity_item, scope)
 
         if destination do
-          {updated_count, _} =
-            Repo.update_all(
-              from(activity_item in ActivityItem,
-                where:
-                  activity_item.id == ^activity_item_id and
-                    activity_item.recipient_user_id == ^user_id and
-                    is_nil(activity_item.read_at)
-              ),
-              set: [read_at: DateTime.utc_now(:microsecond)]
-            )
+          updated_count = mark_opened_activity_read(activity_item, activity_item_id, user_id)
 
           {destination, updated_count}
         else
@@ -396,6 +589,36 @@ defmodule DiscordClone.Chat do
     do: {:error, :not_found}
 
   def open_activity_item(_scope, _activity_item_id), do: {:error, :unauthenticated}
+
+  defp activity_destination(
+         %ActivityItem{
+           kind: "direct_message",
+           id: activity_item_id
+         },
+         %Scope{user: %User{id: user_id}}
+       ) do
+    Repo.one(
+      from activity_item in ActivityItem,
+        join: direct_conversation in DirectConversation,
+        on:
+          direct_conversation.id == activity_item.source_conversation_id and
+            (direct_conversation.user_low_id == ^user_id or
+               direct_conversation.user_high_id == ^user_id),
+        join: message in Message,
+        on:
+          message.id == activity_item.source_message_id and
+            message.channel_id == direct_conversation.id and
+            is_nil(message.deleted_at),
+        where:
+          activity_item.id == ^activity_item_id and
+            activity_item.recipient_user_id == ^user_id and
+            activity_item.kind == ^ActivityItem.direct_message_kind(),
+        select: %{
+          direct_conversation_id: direct_conversation.id,
+          message_id: message.id
+        }
+    )
+  end
 
   defp activity_destination(
          %ActivityItem{
@@ -434,25 +657,49 @@ defmodule DiscordClone.Chat do
             membership.user_id == ^user_id,
         join: channel in Channel,
         on:
-          channel.id == activity_item.source_channel_id and
+          channel.id == activity_item.source_conversation_id and
             channel.workspace_id == activity_item.workspace_id,
         join: message in Message,
         on:
           message.id == activity_item.source_message_id and
-            message.channel_id == activity_item.source_channel_id and
+            message.channel_id == activity_item.source_conversation_id and
             is_nil(message.deleted_at),
         where:
           activity_item.id == ^activity_item_id and
             activity_item.recipient_user_id == ^user_id,
         select: %{
           workspace_id: activity_item.workspace_id,
-          channel_id: activity_item.source_channel_id,
+          channel_id: activity_item.source_conversation_id,
           message_id: activity_item.source_message_id
         }
     )
   end
 
   defp activity_destination(nil, _scope), do: nil
+
+  # Direct Message attention is cleared only by the genuine-visibility workflow.
+  # Navigating from Activity must not pre-emptively mark it read.
+  defp mark_opened_activity_read(
+         %ActivityItem{kind: "direct_message"},
+         _activity_item_id,
+         _user_id
+       ),
+       do: 0
+
+  defp mark_opened_activity_read(_activity_item, activity_item_id, user_id) do
+    {updated_count, _} =
+      Repo.update_all(
+        from(activity_item in ActivityItem,
+          where:
+            activity_item.id == ^activity_item_id and
+              activity_item.recipient_user_id == ^user_id and
+              is_nil(activity_item.read_at)
+        ),
+        set: [read_at: DateTime.utc_now(:microsecond)]
+      )
+
+    updated_count
+  end
 
   @doc "Initializes zero-unread read states for a user across a workspace's channels."
   @spec initialize_workspace_reads_for_user(Ecto.UUID.t(), Ecto.UUID.t()) ::
@@ -1176,7 +1423,7 @@ defmodule DiscordClone.Chat do
           recipient_user_id: user.id,
           actor_user_id: type(^actor_id, :binary_id),
           source_message_id: type(^message.id, :binary_id),
-          source_channel_id: type(^channel.id, :binary_id),
+          source_conversation_id: type(^channel.id, :binary_id),
           workspace_id: type(^channel.workspace_id, :binary_id),
           kind:
             fragment(
@@ -1546,6 +1793,15 @@ defmodule DiscordClone.Chat do
       self(),
       ConversationTopics.messages(message.channel_id),
       {:message_created, message}
+    )
+  end
+
+  defp broadcast_direct_message_created(%Message{} = message) do
+    Phoenix.PubSub.broadcast(
+      DiscordClone.PubSub,
+      ConversationTopics.messages(message.channel_id),
+      {:direct_message_created,
+       %{conversation_id: message.channel_id, message_id: message.id, seq: message.seq}}
     )
   end
 

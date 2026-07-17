@@ -37,7 +37,7 @@ defmodule DiscordClone.Chat.ActivityTest do
       assert target_item.recipient_user_id == target_scope.user.id
       assert target_item.actor_user_id == author_scope.user.id
       assert target_item.source_message_id == message.id
-      assert target_item.source_channel_id == workspace.default_channel_id
+      assert target_item.source_conversation_id == workspace.default_channel_id
       assert target_item.workspace_id == workspace.id
       assert target_item.kind == "user_mention"
       assert is_nil(target_item.read_at)
@@ -201,7 +201,7 @@ defmodule DiscordClone.Chat.ActivityTest do
                  recipient_user_id: target_scope.user.id,
                  actor_user_id: author_scope.user.id,
                  source_message_id: message.id,
-                 source_channel_id: workspace.default_channel_id,
+                 source_conversation_id: workspace.default_channel_id,
                  workspace_id: workspace.id
                }
                |> ActivityItem.create_changeset("future_kind")
@@ -224,7 +224,7 @@ defmodule DiscordClone.Chat.ActivityTest do
                  recipient_user_id: target_scope.user.id,
                  actor_user_id: author_scope.user.id,
                  source_message_id: message.id,
-                 source_channel_id: workspace.default_channel_id,
+                 source_conversation_id: workspace.default_channel_id,
                  workspace_id: workspace.id
                }
                |> ActivityItem.create_changeset(ActivityItem.friend_request_received_kind())
@@ -706,7 +706,7 @@ defmodule DiscordClone.Chat.ActivityTest do
 
       Repo.update_all(
         from(activity_item in ActivityItem, where: activity_item.id == ^wrong_channel_item.id),
-        set: [source_channel_id: other_workspace.default_channel_id]
+        set: [source_conversation_id: other_workspace.default_channel_id]
       )
 
       assert Chat.open_activity_item(recipient_scope, wrong_channel_item.id) ==
