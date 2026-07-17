@@ -4,7 +4,7 @@ defmodule DiscordCloneWeb.FriendsLiveTest do
   import DiscordClone.AccountsFixtures
   import Phoenix.LiveViewTest
 
-  alias DiscordClone.Friendships
+  alias DiscordClone.{Friendships, Presence}
 
   setup :register_and_log_in_user
 
@@ -195,5 +195,62 @@ defmodule DiscordCloneWeb.FriendsLiveTest do
 
     assert has_element?(first_view, "#incoming-request-#{request.id}")
     assert has_element?(second_view, "#incoming-request-#{request.id}")
+  end
+
+  test "global Friend Presence stays online until the final authenticated LiveView disconnects",
+       %{
+         conn: conn,
+         user: user,
+         scope: scope
+       } do
+    friend = user_fixture(username: "global_presence_friend")
+    friend_scope = user_scope_fixture(friend)
+
+    assert {:ok, %{relationship: request}} =
+             Friendships.send_friend_request(scope, %{username: friend.username})
+
+    assert {:ok, friendship} = Friendships.accept_friend_request(friend_scope, request.id)
+
+    {:ok, observer_view, _html} = live(conn, ~p"/friends")
+
+    assert has_element?(
+             observer_view,
+             "#friendship-#{friendship.id}[data-presence-state='offline']"
+           )
+
+    friend_conn = build_conn() |> log_in_user(friend)
+    {:ok, first_friend_view, _html} = live(friend_conn, ~p"/friends")
+    {:ok, second_friend_view, _html} = live(friend_conn, ~p"/activity")
+
+    assert has_element?(
+             observer_view,
+             "#friendship-#{friendship.id}[data-presence-state='online']"
+           )
+
+    stop_live_view(first_friend_view)
+
+    assert has_element?(
+             observer_view,
+             "#friendship-#{friendship.id}[data-presence-state='online']"
+           )
+
+    presence_pid = Presence.user_presence_pid(friend.id)
+    presence_ref = Process.monitor(presence_pid)
+    stop_live_view(second_friend_view)
+    assert_receive {:DOWN, ^presence_ref, :process, ^presence_pid, :normal}
+
+    assert has_element?(
+             observer_view,
+             "#friendship-#{friendship.id}[data-presence-state='offline']"
+           )
+
+    assert user.id != friend.id
+  end
+
+  defp stop_live_view(view) do
+    Process.unlink(view.pid)
+    ref = Process.monitor(view.pid)
+    GenServer.stop(view.pid)
+    assert_receive {:DOWN, ^ref, :process, _pid, :normal}
   end
 end

@@ -3,7 +3,7 @@ defmodule DiscordCloneWeb.DirectConversationLive do
 
   use DiscordCloneWeb, :live_view
 
-  alias DiscordClone.{Chat, Workspaces}
+  alias DiscordClone.{Chat, Friendships, Presence, Workspaces}
   alias DiscordCloneWeb.ChannelLive.ScrollAnchoring
   alias DiscordCloneWeb.DirectMessagesLive.Shell, as: DirectMessagesShell
 
@@ -25,6 +25,11 @@ defmodule DiscordCloneWeb.DirectConversationLive do
          {:ok, destinations} <-
            Chat.list_direct_conversation_destinations(socket.assigns.current_scope),
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope) do
+      writable? = destination_writable?(destinations, direct_conversation_id)
+
+      presence_status =
+        friend_presence_status(socket, destination.other_participant.id, writable?)
+
       {:ok,
        socket
        |> assign(:direct_conversation, destination.direct_conversation)
@@ -32,7 +37,8 @@ defmodule DiscordCloneWeb.DirectConversationLive do
        |> assign(:message_form, message_form())
        |> assign(:reply_target, nil)
        |> assign(:reaction_summaries, reaction_summaries)
-       |> assign(:writable?, destination_writable?(destinations, direct_conversation_id))
+       |> assign(:writable?, writable?)
+       |> assign(:friend_presence_status, presence_status)
        |> assign(:direct_messages_empty?, messages == [])
        |> assign(:direct_messages_by_id, messages_by_id(messages))
        |> assign(:oldest_message, List.first(messages))
@@ -266,6 +272,17 @@ defmodule DiscordCloneWeb.DirectConversationLive do
   end
 
   def handle_info(
+        {:friend_presence_changed, %{user_id: user_id, state: state}},
+        %{assigns: %{other_participant: %{id: user_id}, writable?: true}} = socket
+      ) do
+    if Friendships.friends?(socket.assigns.current_scope, user_id) do
+      {:noreply, assign(socket, :friend_presence_status, state)}
+    else
+      {:noreply, assign(socket, :friend_presence_status, nil)}
+    end
+  end
+
+  def handle_info(
         {:typing_started, %{conversation_id: conversation_id, user_id: user_id}},
         %{assigns: %{direct_conversation: %{id: conversation_id}}} = socket
       ) do
@@ -352,7 +369,18 @@ defmodule DiscordCloneWeb.DirectConversationLive do
                 <p class={["truncate font-semibold text-base-content"]}>
                   {@other_participant.username}
                 </p>
-                <p class={["text-xs text-base-content/50"]}>Direct Conversation</p>
+                <p
+                  :if={@friend_presence_status}
+                  id={"direct-conversation-presence-#{@other_participant.id}"}
+                  role="status"
+                  data-presence-state={@friend_presence_status}
+                  class={["text-xs text-base-content/50"]}
+                >
+                  {presence_label(@friend_presence_status)}
+                </p>
+                <p :if={!@friend_presence_status} class={["text-xs text-base-content/50"]}>
+                  Direct Conversation
+                </p>
               </div>
             </header>
 
@@ -1002,6 +1030,10 @@ defmodule DiscordCloneWeb.DirectConversationLive do
     socket =
       socket
       |> assign(:writable?, writable?)
+      |> assign(
+        :friend_presence_status,
+        friend_presence_status(socket, socket.assigns.other_participant.id, writable?)
+      )
       |> then(fn socket ->
         if writable? do
           socket
@@ -1031,6 +1063,21 @@ defmodule DiscordCloneWeb.DirectConversationLive do
       destination.direct_conversation.id == direct_conversation_id && destination.writable?
     end)
   end
+
+  defp friend_presence_status(socket, friend_user_id, true) do
+    if connected?(socket),
+      do: :ok = Presence.subscribe_to_friend(socket.assigns.current_scope, friend_user_id)
+
+    case Presence.friend_status(socket.assigns.current_scope, friend_user_id) do
+      {:ok, state} -> state
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp friend_presence_status(_socket, _friend_user_id, false), do: nil
+
+  defp presence_label(:online), do: "Online"
+  defp presence_label(:offline), do: "Offline"
 
   defp clear_deleted_reply_target(%{assigns: %{reply_target: nil}} = socket, _messages),
     do: socket

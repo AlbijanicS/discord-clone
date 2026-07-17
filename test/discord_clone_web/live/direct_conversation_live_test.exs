@@ -46,6 +46,16 @@ defmodule DiscordCloneWeb.DirectConversationLiveTest do
     friend_conn = build_conn() |> log_in_user(friend)
     assert {:ok, friend_view, _html} = live(friend_conn, direct_path)
     assert has_element?(friend_view, "#direct-conversation-participant-#{user.id}")
+
+    assert has_element?(
+             direct_view,
+             "#direct-conversation-presence-#{friend.id}[data-presence-state='online']"
+           )
+
+    assert has_element?(
+             friend_view,
+             "#direct-conversation-presence-#{user.id}[data-presence-state='online']"
+           )
   end
 
   test "non-participants receive the same not-found navigation as a missing Conversation", %{
@@ -274,6 +284,7 @@ defmodule DiscordCloneWeb.DirectConversationLiveTest do
     _ = render(second_view)
 
     assert_eventually_has_element(first_view, "#direct-conversation-read-only")
+    refute has_element?(first_view, "#direct-conversation-presence-#{friend.id}")
     refute has_element?(first_view, "#direct-message-form")
     refute has_element?(first_view, "#direct-message-#{own_message.id}-reply")
     refute has_element?(first_view, "#direct-message-#{own_message.id}-reaction-option-0")

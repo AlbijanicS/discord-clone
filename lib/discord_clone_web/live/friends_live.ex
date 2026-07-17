@@ -3,7 +3,7 @@ defmodule DiscordCloneWeb.FriendsLive do
 
   use DiscordCloneWeb, :live_view
 
-  alias DiscordClone.{Chat, Friendships, Workspaces}
+  alias DiscordClone.{Chat, Friendships, Presence, Workspaces}
   alias DiscordCloneWeb.DirectMessagesLive.Shell, as: DirectMessagesShell
 
   @empty_form %{"username" => ""}
@@ -19,15 +19,18 @@ defmodule DiscordCloneWeb.FriendsLive do
       Friendships.list_outgoing_requests(socket.assigns.current_scope)
 
     {:ok, friends} = Friendships.list_friends(socket.assigns.current_scope)
+    {:ok, online_friend_ids} = Presence.list_online_friend_ids(socket.assigns.current_scope)
 
     if connected?(socket) do
       :ok = Friendships.subscribe(socket.assigns.current_scope)
+      subscribe_to_friend_presence(socket.assigns.current_scope, friends)
     end
 
     {:ok,
      socket
      |> assign(:form, to_form(@empty_form, as: :friend_request))
      |> assign(:request_outcome, nil)
+     |> assign(:online_friend_ids, MapSet.new(online_friend_ids))
      |> stream(:workspaces, workspaces)
      |> stream_configure(:incoming_requests,
        dom_id: &"incoming-request-#{&1.relationship.id}"
@@ -120,6 +123,20 @@ defmodule DiscordCloneWeb.FriendsLive do
   @impl true
   def handle_info({:friendships_changed, _payload}, socket) do
     {:noreply, refresh_relationship_streams(socket)}
+  end
+
+  def handle_info({:friend_presence_changed, %{user_id: user_id, state: state}}, socket) do
+    if Friendships.friends?(socket.assigns.current_scope, user_id) do
+      online_friend_ids =
+        update_online_friend_ids(socket.assigns.online_friend_ids, user_id, state)
+
+      {:noreply,
+       socket
+       |> assign(:online_friend_ids, online_friend_ids)
+       |> refresh_friends_stream()}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_info(_message, socket), do: {:noreply, socket}
@@ -241,6 +258,7 @@ defmodule DiscordCloneWeb.FriendsLive do
                 icon="hero-user-group"
                 stream={@streams.friends}
                 direction={:friends}
+                online_user_ids={@online_friend_ids}
               />
             </div>
           </div>
@@ -260,6 +278,7 @@ defmodule DiscordCloneWeb.FriendsLive do
   attr :icon, :string, required: true
   attr :stream, :any, required: true
   attr :direction, :atom, required: true
+  attr :online_user_ids, :any, default: MapSet.new()
 
   defp relationship_panel(assigns) do
     ~H"""
@@ -287,6 +306,7 @@ defmodule DiscordCloneWeb.FriendsLive do
         <article
           :for={{dom_id, relationship_entry} <- @stream}
           id={dom_id}
+          data-presence-state={presence_state(@direction, relationship_entry, @online_user_ids)}
           class={["group flex items-center gap-3 px-5 py-4 transition hover:bg-base-200/50"]}
         >
           <div class={[
@@ -299,12 +319,17 @@ defmodule DiscordCloneWeb.FriendsLive do
               @{relationship_entry.user.username}
             </p>
             <p class={["text-xs text-base-content/45"]}>
-              {relationship_label(@direction)}
+              {relationship_label(@direction, relationship_entry, @online_user_ids)}
             </p>
           </div>
           <span class={[
             "size-2 rounded-full ring-4",
-            @direction == :friends && "bg-success ring-success/10",
+            @direction == :friends &&
+              presence_state(@direction, relationship_entry, @online_user_ids) == "online" &&
+              "bg-success ring-success/10",
+            @direction == :friends &&
+              presence_state(@direction, relationship_entry, @online_user_ids) == "offline" &&
+              "bg-base-content/25 ring-base-content/5",
             @direction != :friends && "bg-warning ring-warning/10"
           ]} />
           <div :if={@direction == :incoming} class={["flex shrink-0 items-center gap-2"]}>
@@ -387,12 +412,31 @@ defmodule DiscordCloneWeb.FriendsLive do
     {:ok, incoming_requests} = Friendships.list_incoming_requests(socket.assigns.current_scope)
     {:ok, outgoing_requests} = Friendships.list_outgoing_requests(socket.assigns.current_scope)
     {:ok, friends} = Friendships.list_friends(socket.assigns.current_scope)
+    {:ok, online_friend_ids} = Presence.list_online_friend_ids(socket.assigns.current_scope)
+
+    if connected?(socket), do: subscribe_to_friend_presence(socket.assigns.current_scope, friends)
 
     socket
+    |> assign(:online_friend_ids, MapSet.new(online_friend_ids))
     |> stream(:incoming_requests, incoming_requests, reset: true)
     |> stream(:outgoing_requests, outgoing_requests, reset: true)
     |> stream(:friends, friends, reset: true)
   end
+
+  defp refresh_friends_stream(socket) do
+    {:ok, friends} = Friendships.list_friends(socket.assigns.current_scope)
+    stream(socket, :friends, friends, reset: true)
+  end
+
+  defp subscribe_to_friend_presence(scope, friends) do
+    Enum.each(friends, fn friend -> :ok = Presence.subscribe_to_friend(scope, friend.user.id) end)
+  end
+
+  defp update_online_friend_ids(online_friend_ids, user_id, :online),
+    do: MapSet.put(online_friend_ids, user_id)
+
+  defp update_online_friend_ids(online_friend_ids, user_id, :offline),
+    do: MapSet.delete(online_friend_ids, user_id)
 
   defp handle_mutation(result, socket, success_message) do
     case result do
@@ -423,7 +467,16 @@ defmodule DiscordCloneWeb.FriendsLive do
     end
   end
 
-  defp relationship_label(:incoming), do: "Wants to be friends"
-  defp relationship_label(:outgoing), do: "Request pending"
-  defp relationship_label(:friends), do: "Friendship active"
+  defp relationship_label(:incoming, _entry, _online_user_ids), do: "Wants to be friends"
+  defp relationship_label(:outgoing, _entry, _online_user_ids), do: "Request pending"
+
+  defp relationship_label(:friends, entry, online_user_ids) do
+    if MapSet.member?(online_user_ids, entry.user.id), do: "Online", else: "Offline"
+  end
+
+  defp presence_state(:friends, entry, online_user_ids) do
+    if MapSet.member?(online_user_ids, entry.user.id), do: "online", else: "offline"
+  end
+
+  defp presence_state(_direction, _entry, _online_user_ids), do: nil
 end

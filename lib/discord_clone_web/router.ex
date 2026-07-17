@@ -56,6 +56,7 @@ defmodule DiscordCloneWeb.Router do
     live_session :require_authenticated_user,
       on_mount: [
         {DiscordCloneWeb.UserAuth, :require_authenticated},
+        {DiscordCloneWeb.FriendPresenceLive, :register_connection},
         {DiscordCloneWeb.ActivityLive, :assign_unread_count},
         {DiscordCloneWeb.DirectMessagesNavigation, :assign_destination}
       ] do

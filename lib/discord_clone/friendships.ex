@@ -163,6 +163,48 @@ defmodule DiscordClone.Friendships do
 
   def list_friends(_scope), do: {:error, :unauthenticated}
 
+  @doc "Lists current Friend User IDs without loading relationship presentation data."
+  @spec list_friend_user_ids(term()) :: {:ok, [Ecto.UUID.t()]} | {:error, :unauthenticated}
+  def list_friend_user_ids(%Scope{user: %User{id: user_id}}) do
+    friend_ids =
+      Repo.all(
+        from relationship in Relationship,
+          where:
+            relationship.status == :accepted and
+              (relationship.user_low_id == ^user_id or relationship.user_high_id == ^user_id),
+          select: {relationship.user_low_id, relationship.user_high_id}
+      )
+      |> Enum.map(fn
+        {^user_id, friend_user_id} -> friend_user_id
+        {friend_user_id, _user_id} -> friend_user_id
+      end)
+
+    {:ok, friend_ids}
+  end
+
+  def list_friend_user_ids(_scope), do: {:error, :unauthenticated}
+
+  @doc "Returns whether the other User currently has an accepted Friendship with the scoped User."
+  @spec friends?(term(), term()) :: boolean()
+  def friends?(%Scope{user: %User{id: user_id}}, other_user_id) do
+    with {:ok, other_user_id} <- Ecto.UUID.cast(other_user_id),
+         false <- other_user_id == user_id do
+      {user_low_id, user_high_id} = canonical_pair(user_id, other_user_id)
+
+      Repo.exists?(
+        from relationship in Relationship,
+          where:
+            relationship.user_low_id == ^user_low_id and
+              relationship.user_high_id == ^user_high_id and
+              relationship.status == :accepted
+      )
+    else
+      _invalid_or_self -> false
+    end
+  end
+
+  def friends?(_scope, _other_user_id), do: false
+
   @doc """
   Locks the scoped User's accepted Friendship with another User.
 
@@ -515,15 +557,21 @@ defmodule DiscordClone.Friendships do
   end
 
   defp broadcast_change(%Relationship{} = relationship, action) do
-    event =
-      {:friendships_changed,
-       %{
-         action: action,
-         relationship_id: relationship.id
-       }}
-
     [relationship.user_low_id, relationship.user_high_id]
     |> Enum.each(fn user_id ->
+      friend_user_id =
+        if user_id == relationship.user_low_id,
+          do: relationship.user_high_id,
+          else: relationship.user_low_id
+
+      event =
+        {:friendships_changed,
+         %{
+           action: action,
+           relationship_id: relationship.id,
+           friend_user_id: friend_user_id
+         }}
+
       :ok = Phoenix.PubSub.broadcast(DiscordClone.PubSub, user_topic(user_id), event)
     end)
 

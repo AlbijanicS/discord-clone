@@ -16,6 +16,8 @@ defmodule DiscordClone.Application do
       {DynamicSupervisor, strategy: :one_for_one, name: DiscordClone.Chat.WorkspaceSupervisor},
       {Registry, keys: :unique, name: DiscordClone.Chat.ConversationRegistry},
       {DynamicSupervisor, strategy: :one_for_one, name: DiscordClone.Chat.ConversationSupervisor},
+      {Registry, keys: :unique, name: DiscordClone.Presence.Registry},
+      {DynamicSupervisor, strategy: :one_for_one, name: DiscordClone.Presence.Supervisor},
       # Start a worker by calling: DiscordClone.Worker.start_link(arg)
       # {DiscordClone.Worker, arg},
       # Start to serve requests, typically the last entry
