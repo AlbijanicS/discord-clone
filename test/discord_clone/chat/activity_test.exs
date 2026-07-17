@@ -210,6 +210,29 @@ defmodule DiscordClone.Chat.ActivityTest do
       assert %{recipient_user_id: ["has already been taken"]} = errors_on(changeset)
     end
 
+    test "rejects Friend relationship kinds on Message-backed sources" do
+      author_scope = user_scope_fixture(user_fixture(%{username: "source_kind_author"}))
+      target_scope = user_scope_fixture(user_fixture(%{username: "source_kind_target"}))
+      {:ok, workspace} = Workspaces.create_workspace(author_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, target_scope)
+
+      assert {:ok, message} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{content: "hello"})
+
+      assert {:error, changeset} =
+               %ActivityItem{
+                 recipient_user_id: target_scope.user.id,
+                 actor_user_id: author_scope.user.id,
+                 source_message_id: message.id,
+                 source_channel_id: workspace.default_channel_id,
+                 workspace_id: workspace.id
+               }
+               |> ActivityItem.create_changeset(ActivityItem.friend_request_received_kind())
+               |> Repo.insert()
+
+      assert %{kind: ["is invalid"]} = errors_on(changeset)
+    end
+
     test "requires an authenticated scope to read private activity" do
       assert Chat.unread_activity_count(nil) == {:error, :unauthenticated}
       assert Chat.unread_activity_count(%Scope{}) == {:error, :unauthenticated}

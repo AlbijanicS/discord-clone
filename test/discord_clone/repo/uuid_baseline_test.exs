@@ -125,6 +125,7 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
           friend_relationships_requester_in_pair
           friend_relationships_valid_status
           friend_relationships_acceptance_consistent
+          activity_items_source_integrity
         ) do
       assert constraints[name] == "c"
     end
@@ -158,6 +159,7 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
           messages_conversation_id_seq_index
           message_reactions_message_id_user_id_emoji_index
           activity_items_recipient_user_id_source_message_id_index
+          activity_items_recipient_friend_relationship_kind_index
           friend_relationships_user_low_id_user_high_id_index
           conversation_read_states_conversation_id_user_id_index
         ) do
@@ -232,6 +234,7 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
       "activity_items_actor_user_id_fkey" => "nilify_all",
       "activity_items_recipient_user_id_fkey" => "delete_all",
       "activity_items_source_conversation_id_fkey" => "delete_all",
+      "activity_items_source_friend_relationship_id_fkey" => "delete_all",
       "activity_items_source_message_id_fkey" => "delete_all",
       "activity_items_workspace_id_fkey" => "delete_all",
       "channel_read_states_user_id_fkey" => "delete_all",

@@ -447,7 +447,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                   <div class="min-w-0">
                     <h2 class="text-sm font-bold tracking-tight">Activity</h2>
                     <p class="mt-0.5 text-xs text-base-content/50">
-                      {@unread_activity_count} unread across your workspaces
+                      {@unread_activity_count} unread in your private feed
                     </p>
                   </div>
                   <.link
@@ -473,7 +473,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                     </div>
                     <p class="mt-3 text-sm font-semibold">You're all caught up</p>
                     <p class="mt-1 text-xs leading-5 text-base-content/50">
-                      New mentions will show up here.
+                      New mentions and Friend updates will show up here.
                     </p>
                   </div>
 
@@ -488,7 +488,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                       type="button"
                       phx-click="open_activity_preview_item"
                       phx-value-activity-item-id={activity_item.id}
-                      aria-label={"Open activity in ##{activity_item.source_channel.name}"}
+                      aria-label={activity_open_label(activity_item)}
                       class="flex w-full gap-3 rounded-xl px-3 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                     >
                       <div class="relative flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-sm font-bold text-primary ring-1 ring-primary/15">
@@ -510,10 +510,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                           </time>
                         </div>
                         <p class="mt-0.5 truncate text-xs font-medium text-base-content/55">
-                          {activity_kind_label(activity_item.kind)} in {activity_item.workspace.name} / #{activity_item.source_channel.name}
+                          {activity_context(activity_item)}
                         </p>
                         <p class="mt-1.5 line-clamp-2 break-words text-xs leading-5 text-base-content/75">
-                          {activity_item.source_message.content}
+                          {activity_preview(activity_item)}
                         </p>
                       </div>
                     </button>
@@ -994,7 +994,25 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
 
   defp activity_kind_label("user_mention"), do: "Mentioned you"
   defp activity_kind_label("everyone_mention"), do: "Mentioned everyone"
+  defp activity_kind_label("friend_request_received"), do: "Sent you a Friend Request"
+  defp activity_kind_label("friend_request_accepted"), do: "Accepted your Friend Request"
   defp activity_kind_label(_kind), do: "New activity"
+
+  defp activity_context(
+         %{workspace: %{name: workspace_name}, source_channel: %{name: name}} = item
+       ) do
+    "#{activity_kind_label(item.kind)} in #{workspace_name} / ##{name}"
+  end
+
+  defp activity_context(item), do: activity_kind_label(item.kind)
+
+  defp activity_preview(%{source_message: %{content: content}}), do: content
+  defp activity_preview(%{kind: "friend_request_received"}), do: "Review your incoming requests."
+  defp activity_preview(%{kind: "friend_request_accepted"}), do: "Your Friendship is now active."
+  defp activity_preview(_activity_item), do: "Open this activity for details."
+
+  defp activity_open_label(%{source_channel: %{name: name}}), do: "Open activity in ##{name}"
+  defp activity_open_label(_activity_item), do: "Open Friend relationship activity"
 
   defp activity_preview_time(%DateTime{} = datetime),
     do: Calendar.strftime(datetime, "%b %-d, %H:%M")

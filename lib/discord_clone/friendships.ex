@@ -8,6 +8,7 @@ defmodule DiscordClone.Friendships do
   import Ecto.Query
 
   alias DiscordClone.Accounts.{Scope, User}
+  alias DiscordClone.Activities.{ActivityItem, Topics}
   alias DiscordClone.Friendships.Relationship
   alias DiscordClone.Repo
   alias DiscordClone.Workspaces
@@ -229,11 +230,18 @@ defmodule DiscordClone.Friendships do
           true ->
             {relationship, nil}
         end
+        |> then(fn {relationship, action} ->
+          activity_recipient_ids =
+            insert_relationship_activity(relationship, action, requester.id, target.id)
+
+          {relationship, action, activity_recipient_ids}
+        end)
       end)
 
     case transaction_result do
-      {:ok, {relationship, action}} ->
+      {:ok, {relationship, action, activity_recipient_ids}} ->
         if action, do: :ok = broadcast_change(relationship, action)
+        broadcast_activity_changes(activity_recipient_ids, :created, relationship.id)
         {:ok, %{relationship: relationship, user: target}}
 
       {:error, changeset} ->
@@ -286,13 +294,27 @@ defmodule DiscordClone.Friendships do
            operation,
            fn relationship ->
              case relationship |> Relationship.accept_changeset() |> Repo.update() do
-               {:ok, accepted} -> accepted
-               {:error, changeset} -> Repo.rollback(changeset)
+               {:ok, accepted} ->
+                 insert_friend_relationship_activity!(
+                   accepted,
+                   accepted.requested_by_user_id,
+                   user_id,
+                   ActivityItem.friend_request_accepted_kind()
+                 )
+
+                 %{
+                   relationship: accepted,
+                   activity_recipient_ids: [accepted.requested_by_user_id]
+                 }
+
+               {:error, changeset} ->
+                 Repo.rollback(changeset)
              end
            end
          ) do
-      {:ok, relationship} ->
+      {:ok, %{relationship: relationship, activity_recipient_ids: activity_recipient_ids}} ->
         :ok = broadcast_change(relationship, operation_action(operation))
+        broadcast_activity_changes(activity_recipient_ids, :created, relationship.id)
         {:ok, relationship}
 
       {:error, reason} ->
@@ -306,11 +328,21 @@ defmodule DiscordClone.Friendships do
            relationship_id,
            operation,
            fn relationship ->
+             activity_recipient_ids =
+               Repo.all(
+                 from activity_item in ActivityItem,
+                   where: activity_item.source_friend_relationship_id == ^relationship.id,
+                   select: activity_item.recipient_user_id,
+                   distinct: true
+               )
+
              Repo.delete!(relationship)
+             %{relationship: relationship, activity_recipient_ids: activity_recipient_ids}
            end
          ) do
-      {:ok, relationship} ->
+      {:ok, %{relationship: relationship, activity_recipient_ids: activity_recipient_ids}} ->
         :ok = broadcast_change(relationship, operation_action(operation))
+        broadcast_activity_changes(activity_recipient_ids, :removed, relationship.id)
         :ok
 
       {:error, reason} ->
@@ -375,6 +407,53 @@ defmodule DiscordClone.Friendships do
     do: %{expected_status: :accepted, actor_role: :either_friend, action: :removed}
 
   defp operation_action(operation), do: operation_policy(operation).action
+
+  defp insert_relationship_activity(relationship, :requested, requester_id, target_id) do
+    insert_friend_relationship_activity!(
+      relationship,
+      target_id,
+      requester_id,
+      ActivityItem.friend_request_received_kind()
+    )
+
+    [target_id]
+  end
+
+  defp insert_relationship_activity(relationship, :accepted, requester_id, _target_id) do
+    insert_friend_relationship_activity!(
+      relationship,
+      relationship.requested_by_user_id,
+      requester_id,
+      ActivityItem.friend_request_accepted_kind()
+    )
+
+    [relationship.requested_by_user_id]
+  end
+
+  defp insert_relationship_activity(_relationship, nil, _requester_id, _target_id), do: []
+
+  defp insert_friend_relationship_activity!(relationship, recipient_id, actor_id, kind) do
+    %ActivityItem{}
+    |> ActivityItem.create_friend_relationship_changeset(
+      %{
+        recipient_user_id: recipient_id,
+        actor_user_id: actor_id,
+        source_friend_relationship_id: relationship.id
+      },
+      kind
+    )
+    |> Repo.insert!()
+  end
+
+  defp broadcast_activity_changes(recipient_ids, action, relationship_id) do
+    Enum.each(recipient_ids, fn recipient_id ->
+      :ok =
+        Topics.broadcast_change(recipient_id, %{
+          action: action,
+          source_friend_relationship_id: relationship_id
+        })
+    end)
+  end
 
   defp broadcast_change(%Relationship{} = relationship, action) do
     event =

@@ -3,12 +3,63 @@ defmodule DiscordClone.FriendshipsTest do
 
   import DiscordClone.AccountsFixtures
 
+  alias DiscordClone.Activities
+  alias DiscordClone.Activities.ActivityItem
+  alias DiscordClone.Chat
   alias DiscordClone.Friendships
   alias DiscordClone.Repo
   alias DiscordClone.Workspaces
   alias DiscordClone.Workspaces.WorkspaceMembership
 
   describe "send_friend_request/2" do
+    test "creates one private incoming-request Activity Item for the recipient" do
+      requester = user_fixture(username: "activity_requester")
+      recipient = user_fixture(username: "activity_recipient")
+
+      assert {:ok, %{relationship: relationship}} =
+               Friendships.send_friend_request(user_scope_fixture(requester), %{
+                 username: recipient.username
+               })
+
+      assert %ActivityItem{
+               recipient_user_id: recipient_id,
+               actor_user_id: requester_id,
+               kind: "friend_request_received"
+             } =
+               Repo.get_by(ActivityItem,
+                 recipient_user_id: recipient.id,
+                 kind: "friend_request_received"
+               )
+
+      assert recipient_id == recipient.id
+      assert requester_id == requester.id
+
+      assert Repo.aggregate(
+               from(item in ActivityItem,
+                 where:
+                   item.recipient_user_id == ^recipient.id and
+                     item.kind == "friend_request_received"
+               ),
+               :count
+             ) == 1
+
+      assert {:ok, %{relationship: repeated}} =
+               Friendships.send_friend_request(user_scope_fixture(requester), %{
+                 username: recipient.username
+               })
+
+      assert repeated.id == relationship.id
+
+      assert Repo.aggregate(
+               from(item in ActivityItem,
+                 where:
+                   item.recipient_user_id == ^recipient.id and
+                     item.kind == "friend_request_received"
+               ),
+               :count
+             ) == 1
+    end
+
     test "resolves only a canonical exact global username" do
       requester = user_fixture(username: "requester")
       target = user_fixture(username: "exact_target")
@@ -232,6 +283,130 @@ defmodule DiscordClone.FriendshipsTest do
       assert requester.id == context.requester.id
     end
 
+    test "acceptance creates requester Activity while request Activity remains in history",
+         context do
+      assert {:ok, %{relationship: request}} =
+               Friendships.send_friend_request(context.requester_scope, %{
+                 username: context.recipient.username
+               })
+
+      received_item =
+        Repo.get_by!(ActivityItem,
+          recipient_user_id: context.recipient.id,
+          kind: ActivityItem.friend_request_received_kind()
+        )
+
+      assert received_item.source_friend_relationship_id == request.id
+      assert is_nil(received_item.source_message_id)
+      assert is_nil(received_item.source_channel_id)
+      assert is_nil(received_item.workspace_id)
+
+      assert {:ok, %{items: [listed_received], next_cursor: nil}} =
+               Chat.list_activity_feed(context.recipient_scope)
+
+      assert listed_received.id == received_item.id
+
+      assert {:ok, %{items: [], next_cursor: nil}} =
+               Chat.list_activity_feed(context.requester_scope)
+
+      assert {:ok, friendship} =
+               Friendships.accept_friend_request(context.recipient_scope, request.id)
+
+      accepted_item =
+        Repo.get_by!(ActivityItem,
+          recipient_user_id: context.requester.id,
+          kind: ActivityItem.friend_request_accepted_kind()
+        )
+
+      assert accepted_item.actor_user_id == context.recipient.id
+      assert accepted_item.source_friend_relationship_id == friendship.id
+      assert Repo.get!(ActivityItem, received_item.id)
+
+      assert {:ok, %{friends_section: :friends}} =
+               Chat.open_activity_item(context.recipient_scope, received_item.id)
+
+      assert {:ok, 1} = Chat.unread_activity_count(context.requester_scope)
+      assert {:ok, 0} = Chat.unread_activity_count(context.recipient_scope)
+      assert {:ok, [_friendship]} = Friendships.list_friends(context.recipient_scope)
+    end
+
+    test "declining and cancelling remove obsolete request Activity without notifying requester",
+         context do
+      assert {:ok, %{relationship: declined_request}} =
+               Friendships.send_friend_request(context.requester_scope, %{
+                 username: context.recipient.username
+               })
+
+      declined_item =
+        Repo.get_by!(ActivityItem, source_friend_relationship_id: declined_request.id)
+
+      assert :ok =
+               Friendships.decline_friend_request(context.recipient_scope, declined_request.id)
+
+      refute Repo.get(ActivityItem, declined_item.id)
+      assert {:ok, 0} = Chat.unread_activity_count(context.recipient_scope)
+      assert {:ok, 0} = Chat.unread_activity_count(context.requester_scope)
+
+      assert {:ok, %{relationship: cancelled_request}} =
+               Friendships.send_friend_request(context.requester_scope, %{
+                 username: context.recipient.username
+               })
+
+      cancelled_item =
+        Repo.get_by!(ActivityItem, source_friend_relationship_id: cancelled_request.id)
+
+      assert :ok =
+               Friendships.cancel_friend_request(context.requester_scope, cancelled_request.id)
+
+      refute Repo.get(ActivityItem, cancelled_item.id)
+      assert {:ok, 0} = Chat.unread_activity_count(context.recipient_scope)
+      assert {:ok, 0} = Chat.unread_activity_count(context.requester_scope)
+    end
+
+    test "opening relationship Activity marks only that item read without resolving requests",
+         context do
+      other_requester = user_fixture(username: "activity_other_requester")
+
+      assert {:ok, %{relationship: first_request}} =
+               Friendships.send_friend_request(context.requester_scope, %{
+                 username: context.recipient.username
+               })
+
+      assert {:ok, %{relationship: second_request}} =
+               Friendships.send_friend_request(user_scope_fixture(other_requester), %{
+                 username: context.recipient.username
+               })
+
+      first_item =
+        Repo.get_by!(ActivityItem, source_friend_relationship_id: first_request.id)
+
+      second_item =
+        Repo.get_by!(ActivityItem, source_friend_relationship_id: second_request.id)
+
+      assert {:ok,
+              %{
+                friend_relationship_id: relationship_id,
+                friends_section: :incoming_requests
+              }} = Chat.open_activity_item(context.recipient_scope, first_item.id)
+
+      assert relationship_id == first_request.id
+      assert %DateTime{} = Repo.reload!(first_item).read_at
+      assert is_nil(Repo.reload!(second_item).read_at)
+      assert {:ok, 1} = Chat.unread_activity_count(context.recipient_scope)
+
+      assert {:ok, incoming_requests} =
+               Friendships.list_incoming_requests(context.recipient_scope)
+
+      assert MapSet.new(Enum.map(incoming_requests, & &1.relationship.id)) ==
+               MapSet.new([first_request.id, second_request.id])
+
+      assert {:error, :not_found} =
+               Chat.open_activity_item(context.requester_scope, first_item.id)
+
+      assert {:ok, %{items: history}} = Chat.list_activity_feed(context.recipient_scope)
+      assert first_item.id in Enum.map(history, & &1.id)
+    end
+
     test "the recipient declines and the requester cancels pending requests", context do
       assert {:ok, %{relationship: declined_request}} =
                Friendships.send_friend_request(context.requester_scope, %{
@@ -378,6 +553,44 @@ defmodule DiscordClone.FriendshipsTest do
       refute_receive {:friendships_changed, _payload}
     end
 
+    test "Activity changes publish only to the recipient after relationship commits", context do
+      unrelated_scope = user_scope_fixture(user_fixture(username: "activity_private_unrelated"))
+
+      start_activity_subscriber!(:recipient, context.recipient_scope)
+      start_activity_subscriber!(:unrelated_request, unrelated_scope)
+
+      assert {:ok, %{relationship: request}} =
+               Friendships.send_friend_request(context.requester_scope, %{
+                 username: context.recipient.username
+               })
+
+      assert_receive {:recipient,
+                      {:activity_changed,
+                       %{
+                         action: :created,
+                         source_friend_relationship_id: relationship_id
+                       }}}
+
+      assert relationship_id == request.id
+      refute_receive {:unrelated_request, {:activity_changed, _payload}}
+
+      start_activity_subscriber!(:requester, context.requester_scope)
+      start_activity_subscriber!(:unrelated_accept, unrelated_scope)
+
+      assert {:ok, friendship} =
+               Friendships.accept_friend_request(context.recipient_scope, request.id)
+
+      assert_receive {:requester,
+                      {:activity_changed,
+                       %{
+                         action: :created,
+                         source_friend_relationship_id: relationship_id
+                       }}}
+
+      assert relationship_id == friendship.id
+      refute_receive {:unrelated_accept, {:activity_changed, _payload}}
+    end
+
     test "simultaneous reverse requests retain one accepted row", context do
       calls = [
         {context.requester_scope, context.recipient.username},
@@ -400,6 +613,45 @@ defmodule DiscordClone.FriendshipsTest do
 
       assert Enum.uniq_by(results, & &1.id) |> length() == 1
       assert {:ok, [_one_friendship]} = Friendships.list_friends(context.requester_scope)
+
+      [relationship_id] = results |> Enum.map(& &1.id) |> Enum.uniq()
+
+      relationship_activity =
+        Repo.all(
+          from item in ActivityItem,
+            where: item.source_friend_relationship_id == ^relationship_id
+        )
+
+      assert MapSet.new(Enum.map(relationship_activity, & &1.kind)) ==
+               MapSet.new([
+                 ActivityItem.friend_request_received_kind(),
+                 ActivityItem.friend_request_accepted_kind()
+               ])
+
+      assert MapSet.new(Enum.map(relationship_activity, & &1.recipient_user_id)) ==
+               MapSet.new([context.requester.id, context.recipient.id])
     end
+  end
+
+  defp start_activity_subscriber!(label, scope) do
+    parent = self()
+
+    start_supervised!(%{
+      id: {__MODULE__, label},
+      start:
+        {Task, :start_link,
+         [
+           fn ->
+             :ok = Activities.subscribe(scope)
+             send(parent, {:activity_subscriber_ready, label})
+
+             receive do
+               message -> send(parent, {label, message})
+             end
+           end
+         ]}
+    })
+
+    assert_receive {:activity_subscriber_ready, ^label}
   end
 end

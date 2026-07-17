@@ -110,10 +110,7 @@ defmodule DiscordCloneWeb.ActivityLive do
         {:noreply,
          socket
          |> assign(:unread_activity_count, unread_count)
-         |> push_navigate(
-           to:
-             ~p"/workspaces/#{destination.workspace_id}/channels/#{destination.channel_id}?message_id=#{destination.message_id}"
-         )}
+         |> push_navigate(to: activity_destination_path(destination))}
 
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "Activity is no longer available.")}
@@ -171,7 +168,7 @@ defmodule DiscordCloneWeb.ActivityLive do
                 Requests for your attention
               </h1>
               <p class={["mt-2 max-w-2xl text-sm leading-6 text-base-content/60"]}>
-                Mentions from every workspace you can access, gathered in one private feed.
+                Mentions and Friend relationship updates, gathered in one private feed.
               </p>
             </div>
             <div class={["flex items-center gap-2"]}>
@@ -217,7 +214,7 @@ defmodule DiscordCloneWeb.ActivityLive do
               </div>
               <h2 class={["mt-4 text-base font-semibold"]}>You're all caught up</h2>
               <p class={["mt-1 max-w-sm text-sm leading-6 text-base-content/55"]}>
-                New mentions from your workspaces will appear here.
+                New mentions and Friend relationship updates will appear here.
               </p>
             </div>
 
@@ -225,6 +222,7 @@ defmodule DiscordCloneWeb.ActivityLive do
               :for={{dom_id, activity_item} <- @streams.activity_items}
               id={dom_id}
               data-read-state={if(activity_item.read_at, do: "read", else: "unread")}
+              data-source-kind={activity_source_kind(activity_item)}
               class={[
                 "group rounded-2xl border shadow-sm transition duration-200",
                 "hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md",
@@ -239,7 +237,7 @@ defmodule DiscordCloneWeb.ActivityLive do
                 type="button"
                 phx-click="open_activity_item"
                 phx-value-activity-item-id={activity_item.id}
-                aria-label={"Open activity in ##{activity_item.source_channel.name}"}
+                aria-label={activity_open_label(activity_item)}
                 class={[
                   "flex w-full gap-4 rounded-2xl p-5 text-left",
                   "transition-colors duration-200 focus-visible:outline-none",
@@ -254,7 +252,7 @@ defmodule DiscordCloneWeb.ActivityLive do
                     else: "bg-primary/10 text-primary ring-1 ring-primary/15"
                   )
                 ]}>
-                  <.icon name="hero-at-symbol" class="size-5" />
+                  <.icon name={activity_icon(activity_item)} class="size-5" />
                 </div>
                 <div class={["min-w-0 flex-1"]}>
                   <div class={["flex flex-wrap items-center justify-between gap-2"]}>
@@ -274,14 +272,20 @@ defmodule DiscordCloneWeb.ActivityLive do
                     </time>
                   </div>
 
-                  <div class={[
-                    "mt-1 flex flex-wrap items-center gap-1.5 text-xs font-medium",
-                    "text-base-content/55"
-                  ]}>
-                    <span data-role="workspace">{activity_item.workspace.name}</span>
-                    <span aria-hidden="true">/</span>
-                    <span data-role="channel">#{activity_item.source_channel.name}</span>
-                  </div>
+                  <%= if activity_item.source_message do %>
+                    <div class={[
+                      "mt-1 flex flex-wrap items-center gap-1.5 text-xs font-medium",
+                      "text-base-content/55"
+                    ]}>
+                      <span data-role="workspace">{activity_item.workspace.name}</span>
+                      <span aria-hidden="true">/</span>
+                      <span data-role="channel">#{activity_item.source_channel.name}</span>
+                    </div>
+                  <% else %>
+                    <p data-role="relationship" class="mt-1 text-xs font-medium text-base-content/55">
+                      Friend relationship
+                    </p>
+                  <% end %>
 
                   <p
                     data-role="preview"
@@ -290,7 +294,7 @@ defmodule DiscordCloneWeb.ActivityLive do
                       "text-sm leading-6 text-base-content/80 ring-1 ring-base-300/60"
                     ]}
                   >
-                    {activity_item.source_message.content}
+                    {activity_preview(activity_item)}
                   </p>
                 </div>
               </button>
@@ -324,7 +328,23 @@ defmodule DiscordCloneWeb.ActivityLive do
 
   defp activity_kind_label("user_mention"), do: "Direct mention"
   defp activity_kind_label("everyone_mention"), do: "Everyone mention"
+  defp activity_kind_label("friend_request_received"), do: "Sent you a Friend Request"
+  defp activity_kind_label("friend_request_accepted"), do: "Accepted your Friend Request"
   defp activity_kind_label(_kind), do: "Activity"
+
+  defp activity_source_kind(%{source_friend_relationship_id: nil}), do: "message"
+  defp activity_source_kind(_activity_item), do: "friend-relationship"
+
+  defp activity_open_label(%{source_channel: %{name: name}}), do: "Open activity in ##{name}"
+  defp activity_open_label(_activity_item), do: "Open Friend relationship activity"
+
+  defp activity_icon(%{source_friend_relationship_id: nil}), do: "hero-at-symbol"
+  defp activity_icon(_activity_item), do: "hero-user-plus"
+
+  defp activity_preview(%{source_message: %{content: content}}), do: content
+  defp activity_preview(%{kind: "friend_request_received"}), do: "Review your incoming requests."
+  defp activity_preview(%{kind: "friend_request_accepted"}), do: "Your Friendship is now active."
+  defp activity_preview(_activity_item), do: "Open this activity for details."
 
   defp activity_time(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%b %-d, %H:%M")
 
@@ -365,10 +385,7 @@ defmodule DiscordCloneWeb.ActivityLive do
         {:ok, destination} ->
           socket
           |> assign_unread_activity_count()
-          |> push_navigate(
-            to:
-              ~p"/workspaces/#{destination.workspace_id}/channels/#{destination.channel_id}?message_id=#{destination.message_id}"
-          )
+          |> push_navigate(to: activity_destination_path(destination))
 
         {:error, _reason} ->
           put_flash(socket, :error, "Activity is no longer available.")
@@ -386,6 +403,20 @@ defmodule DiscordCloneWeb.ActivityLive do
     {:ok, unread_count} = Chat.unread_activity_count(socket.assigns.current_scope)
     assign(socket, :unread_activity_count, unread_count)
   end
+
+  defp activity_destination_path(%{
+         workspace_id: workspace_id,
+         channel_id: channel_id,
+         message_id: message_id
+       }) do
+    ~p"/workspaces/#{workspace_id}/channels/#{channel_id}?message_id=#{message_id}"
+  end
+
+  defp activity_destination_path(%{friends_section: :incoming_requests}),
+    do: ~p"/friends" <> "#incoming-requests"
+
+  defp activity_destination_path(%{friends_section: :friends}),
+    do: ~p"/friends" <> "#friends-list"
 
   defp activity_consumer?(view) do
     view in [

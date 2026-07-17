@@ -6,6 +6,7 @@ defmodule DiscordCloneWeb.ActivitySyncLiveTest do
 
   alias DiscordClone.Activities.ActivityItem
   alias DiscordClone.Chat
+  alias DiscordClone.Friendships
   alias DiscordClone.Repo
   alias DiscordClone.Workspaces
 
@@ -61,6 +62,39 @@ defmodule DiscordCloneWeb.ActivitySyncLiveTest do
 
     assert has_element?(channel_view, "#activity-preview-item-#{item.id}[data-read-state='read']")
     assert has_element?(activity_view, "#activity-item-#{item.id}[data-read-state='read']")
+  end
+
+  test "synchronizes Friend Request Activity creation, reads, and cancellation across sessions",
+       %{conn: conn} do
+    recipient_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+    recipient_conn = log_in_user(conn, recipient_scope.user)
+    requester_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+
+    {:ok, first_feed_view, _html} = live(recipient_conn, ~p"/activity")
+    {:ok, second_feed_view, _html} = live(recipient_conn, ~p"/activity")
+
+    assert {:ok, %{relationship: request}} =
+             Friendships.send_friend_request(requester_scope, %{
+               username: recipient_scope.user.username
+             })
+
+    item = Repo.get_by!(ActivityItem, source_friend_relationship_id: request.id)
+
+    assert has_element?(first_feed_view, "#global-activity-unread-count", "1")
+    assert has_element?(second_feed_view, "#global-activity-unread-count", "1")
+    assert has_element?(first_feed_view, "#activity-item-#{item.id}[data-read-state='unread']")
+    assert has_element?(second_feed_view, "#activity-item-#{item.id}[data-read-state='unread']")
+
+    assert {:ok, _destination} = Chat.open_activity_item(recipient_scope, item.id)
+
+    refute has_element?(first_feed_view, "#global-activity-unread-count")
+    refute has_element?(second_feed_view, "#global-activity-unread-count")
+    assert has_element?(first_feed_view, "#activity-item-#{item.id}[data-read-state='read']")
+    assert has_element?(second_feed_view, "#activity-item-#{item.id}[data-read-state='read']")
+
+    assert :ok = Friendships.cancel_friend_request(requester_scope, request.id)
+    refute has_element?(first_feed_view, "#activity-item-#{item.id}")
+    refute has_element?(second_feed_view, "#activity-item-#{item.id}")
   end
 
   test "synchronizes mark-all and removals without disturbing loaded feed ordering", %{conn: conn} do

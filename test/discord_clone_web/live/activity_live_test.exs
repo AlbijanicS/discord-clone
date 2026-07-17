@@ -7,6 +7,7 @@ defmodule DiscordCloneWeb.ActivityLiveTest do
 
   alias DiscordClone.Activities.ActivityItem
   alias DiscordClone.Chat
+  alias DiscordClone.Friendships
   alias DiscordClone.Repo
   alias DiscordClone.Workspaces
 
@@ -25,6 +26,96 @@ defmodule DiscordCloneWeb.ActivityLiveTest do
       assert has_element?(view, "#activity-feed")
       assert has_element?(view, "#activity-feed-empty-state")
       refute has_element?(view, "#activity-feed > article")
+    end
+
+    test "renders and opens an incoming Friend Request without resolving it", %{conn: conn} do
+      recipient_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      recipient_conn = log_in_user(conn, recipient_scope.user)
+      requester_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      assert {:ok, %{relationship: request}} =
+               Friendships.send_friend_request(requester_scope, %{
+                 username: recipient_scope.user.username
+               })
+
+      item = Repo.get_by!(ActivityItem, source_friend_relationship_id: request.id)
+      {:ok, view, _html} = live(recipient_conn, ~p"/activity")
+
+      assert has_element?(
+               view,
+               "#activity-item-#{item.id}[data-source-kind='friend-relationship'][data-read-state='unread']"
+             )
+
+      assert has_element?(
+               view,
+               "#activity-item-#{item.id} [data-role='actor']",
+               requester_scope.user.username
+             )
+
+      assert has_element?(
+               view,
+               "#activity-item-#{item.id} [data-role='kind']",
+               "Sent you a Friend Request"
+             )
+
+      view
+      |> element("#activity-item-#{item.id}-open")
+      |> render_click()
+
+      assert_redirect(view, "/friends#incoming-requests")
+      assert %DateTime{} = Repo.reload!(item).read_at
+
+      assert {:ok, [%{relationship: pending}]} =
+               Friendships.list_incoming_requests(recipient_scope)
+
+      assert pending.id == request.id
+    end
+
+    test "retains accepted Friend Request Activity in history and navigates to Friends", %{
+      conn: conn
+    } do
+      requester_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      requester_conn = log_in_user(conn, requester_scope.user)
+      recipient_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      assert {:ok, %{relationship: request}} =
+               Friendships.send_friend_request(requester_scope, %{
+                 username: recipient_scope.user.username
+               })
+
+      assert {:ok, friendship} =
+               Friendships.accept_friend_request(recipient_scope, request.id)
+
+      item =
+        Repo.get_by!(ActivityItem,
+          source_friend_relationship_id: friendship.id,
+          recipient_user_id: requester_scope.user.id
+        )
+
+      assert {:ok, _destination} = Chat.open_activity_item(requester_scope, item.id)
+      {:ok, view, _html} = live(requester_conn, ~p"/activity")
+
+      assert has_element?(
+               view,
+               "#activity-item-#{item.id}[data-source-kind='friend-relationship'][data-read-state='read']"
+             )
+
+      assert has_element?(
+               view,
+               "#activity-item-#{item.id} [data-role='kind']",
+               "Accepted your Friend Request"
+             )
+
+      view
+      |> element("#activity-item-#{item.id}-open")
+      |> render_click()
+
+      assert_redirect(view, "/friends#friends-list")
+
+      assert {:ok, [%{relationship: listed_friendship}]} =
+               Friendships.list_friends(requester_scope)
+
+      assert listed_friendship.id == friendship.id
     end
 
     test "shows only the user's feed with current labels and previews newest first", %{

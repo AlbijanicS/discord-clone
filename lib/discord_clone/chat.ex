@@ -10,7 +10,8 @@ defmodule DiscordClone.Chat do
 
   alias Ecto.Multi
   alias DiscordClone.Accounts.{Scope, User}
-  alias DiscordClone.Activities.ActivityItem
+  alias DiscordClone.Activities
+  alias DiscordClone.Activities.{ActivityItem, Topics}
 
   alias DiscordClone.Chat.{
     ChannelReadState,
@@ -47,11 +48,7 @@ defmodule DiscordClone.Chat do
 
   @doc "Subscribes the scoped user to private Activity change facts."
   @spec subscribe_to_activity(term()) :: :ok | {:error, :unauthenticated}
-  def subscribe_to_activity(%Scope{user: %User{id: user_id}}) do
-    Phoenix.PubSub.subscribe(DiscordClone.PubSub, activity_topic(user_id))
-  end
-
-  def subscribe_to_activity(_scope), do: {:error, :unauthenticated}
+  defdelegate subscribe_to_activity(scope), to: Activities, as: :subscribe
 
   def change_message(attrs \\ %{}) do
     Message.changeset(%Message{}, attrs)
@@ -83,14 +80,23 @@ defmodule DiscordClone.Chat do
     with {:ok, cursor} <- cast_activity_cursor(cursor) do
       query =
         from activity_item in ActivityItem,
-          join: membership in WorkspaceMembership,
+          left_join: membership in WorkspaceMembership,
           on:
             membership.workspace_id == activity_item.workspace_id and
               membership.user_id == ^user_id,
-          where: activity_item.recipient_user_id == ^user_id,
+          where:
+            activity_item.recipient_user_id == ^user_id and
+              (not is_nil(membership.user_id) or
+                 not is_nil(activity_item.source_friend_relationship_id)),
           order_by: [desc: activity_item.inserted_at, desc: activity_item.id],
           limit: ^(@activity_feed_page_size + 1),
-          preload: [:workspace, :source_channel, :source_message, :actor_user]
+          preload: [
+            :workspace,
+            :source_channel,
+            :source_message,
+            :source_friend_relationship,
+            :actor_user
+          ]
 
       activity_items =
         query
@@ -167,43 +173,32 @@ defmodule DiscordClone.Chat do
   @doc """
   Opens one Activity Item for the scoped recipient.
 
-  The item is marked read only after its current Workspace membership, source
-  Channel, and live source Message have been validated together. All invalid or
-  inaccessible targets use `:not_found` so callers cannot infer source existence.
+  The item is marked read only after its current Message or Friend relationship
+  source has been validated. All invalid or inaccessible targets use `:not_found`
+  so callers cannot infer source existence.
   """
   @spec open_activity_item(term(), term()) ::
           {:ok,
            %{workspace_id: Ecto.UUID.t(), channel_id: Ecto.UUID.t(), message_id: Ecto.UUID.t()}}
+          | {:ok,
+             %{
+               friend_relationship_id: Ecto.UUID.t(),
+               friends_section: :incoming_requests | :friends
+             }}
           | {:error, :unauthenticated | :not_found}
-  def open_activity_item(%Scope{user: %User{id: user_id}}, activity_item_id) do
+  def open_activity_item(%Scope{user: %User{id: user_id}} = scope, activity_item_id) do
     with {:ok, activity_item_id} <- Ecto.UUID.cast(activity_item_id) do
       Repo.transaction(fn ->
-        destination =
+        activity_item =
           Repo.one(
             from activity_item in ActivityItem,
-              join: membership in WorkspaceMembership,
-              on:
-                membership.workspace_id == activity_item.workspace_id and
-                  membership.user_id == ^user_id,
-              join: channel in Channel,
-              on:
-                channel.id == activity_item.source_channel_id and
-                  channel.workspace_id == activity_item.workspace_id,
-              join: message in Message,
-              on:
-                message.id == activity_item.source_message_id and
-                  message.channel_id == activity_item.source_channel_id and
-                  is_nil(message.deleted_at),
               where:
                 activity_item.id == ^activity_item_id and
                   activity_item.recipient_user_id == ^user_id,
-              select: %{
-                workspace_id: activity_item.workspace_id,
-                channel_id: activity_item.source_channel_id,
-                message_id: activity_item.source_message_id
-              },
               lock: "FOR UPDATE"
           )
+
+        destination = activity_destination(activity_item, scope)
 
         if destination do
           {updated_count, _} =
@@ -247,6 +242,63 @@ defmodule DiscordClone.Chat do
     do: {:error, :not_found}
 
   def open_activity_item(_scope, _activity_item_id), do: {:error, :unauthenticated}
+
+  defp activity_destination(
+         %ActivityItem{
+           source_friend_relationship_id: relationship_id,
+           kind: kind
+         },
+         scope
+       )
+       when not is_nil(relationship_id) do
+    case DiscordClone.Friendships.get_relationship(scope, relationship_id) do
+      {:ok, %{status: :accepted}} ->
+        %{friend_relationship_id: relationship_id, friends_section: :friends}
+
+      {:ok, %{status: :pending}} ->
+        friends_section =
+          if kind == ActivityItem.friend_request_received_kind(),
+            do: :incoming_requests,
+            else: :friends
+
+        %{friend_relationship_id: relationship_id, friends_section: friends_section}
+
+      {:error, :not_found} ->
+        nil
+    end
+  end
+
+  defp activity_destination(
+         %ActivityItem{id: activity_item_id},
+         %Scope{user: %User{id: user_id}}
+       ) do
+    Repo.one(
+      from activity_item in ActivityItem,
+        join: membership in WorkspaceMembership,
+        on:
+          membership.workspace_id == activity_item.workspace_id and
+            membership.user_id == ^user_id,
+        join: channel in Channel,
+        on:
+          channel.id == activity_item.source_channel_id and
+            channel.workspace_id == activity_item.workspace_id,
+        join: message in Message,
+        on:
+          message.id == activity_item.source_message_id and
+            message.channel_id == activity_item.source_channel_id and
+            is_nil(message.deleted_at),
+        where:
+          activity_item.id == ^activity_item_id and
+            activity_item.recipient_user_id == ^user_id,
+        select: %{
+          workspace_id: activity_item.workspace_id,
+          channel_id: activity_item.source_channel_id,
+          message_id: activity_item.source_message_id
+        }
+    )
+  end
+
+  defp activity_destination(nil, _scope), do: nil
 
   @doc "Initializes zero-unread read states for a user across a workspace's channels."
   @spec initialize_workspace_reads_for_user(Ecto.UUID.t(), Ecto.UUID.t()) ::
@@ -1353,14 +1405,9 @@ defmodule DiscordClone.Chat do
   end
 
   defp workspace_messages_topic(workspace_id), do: "chat:workspace:#{workspace_id}:messages"
-  defp activity_topic(user_id), do: "chat:user:#{user_id}:activity"
 
   defp broadcast_activity_change(user_id, payload) do
-    Phoenix.PubSub.broadcast(
-      DiscordClone.PubSub,
-      activity_topic(user_id),
-      {:activity_changed, payload}
-    )
+    Topics.broadcast_change(user_id, payload)
   end
 
   defp broadcast_activity_changes(user_ids, payload) do
