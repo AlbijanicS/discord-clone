@@ -184,69 +184,91 @@ defmodule DiscordClone.Friendships do
   end
 
   defp persist_friend_request(requester, target) do
-    {user_low_id, user_high_id} = canonical_pair(requester.id, target.id)
-    candidate_id = Ecto.UUID.generate()
+    pair = canonical_pair(requester.id, target.id)
 
-    transaction_result =
-      Repo.transaction(fn ->
-        candidate =
-          %Relationship{id: candidate_id}
-          |> Relationship.create_changeset(%{
-            user_low_id: user_low_id,
-            user_high_id: user_high_id,
-            requested_by_user_id: requester.id
-          })
-          |> Repo.insert(
-            on_conflict: :nothing,
-            conflict_target: [:user_low_id, :user_high_id]
-          )
-          |> case do
-            {:ok, relationship} -> relationship
-            {:error, changeset} -> Repo.rollback(changeset)
-          end
-
-        relationship =
-          Repo.one!(
-            from relationship in Relationship,
-              where:
-                relationship.user_low_id == ^user_low_id and
-                  relationship.user_high_id == ^user_high_id,
-              lock: "FOR UPDATE"
-          )
-
-        cond do
-          relationship.id == candidate.id ->
-            {relationship, :requested}
-
-          relationship.status == :pending and
-              relationship.requested_by_user_id != requester.id ->
-            relationship =
-              relationship
-              |> Relationship.accept_changeset()
-              |> Repo.update!()
-
-            {relationship, :accepted}
-
-          true ->
-            {relationship, nil}
-        end
-        |> then(fn {relationship, action} ->
-          activity_recipient_ids =
-            insert_relationship_activity(relationship, action, requester.id, target.id)
-
-          {relationship, action, activity_recipient_ids}
-        end)
-      end)
-
-    case transaction_result do
-      {:ok, {relationship, action, activity_recipient_ids}} ->
-        if action, do: :ok = broadcast_change(relationship, action)
-        broadcast_activity_changes(activity_recipient_ids, :created, relationship.id)
-        {:ok, %{relationship: relationship, user: target}}
+    case Repo.transaction(fn -> persist_friend_request_transaction(pair, requester, target) end) do
+      {:ok, result} ->
+        publish_friend_request_changes(result)
+        {:ok, %{relationship: result.relationship, user: target}}
 
       {:error, changeset} ->
         {:error, changeset}
     end
+  end
+
+  defp persist_friend_request_transaction(pair, requester, target) do
+    candidate_id = insert_relationship_candidate!(pair, requester.id)
+    relationship = lock_relationship_pair!(pair)
+
+    {relationship, action} =
+      transition_friend_request!(relationship, candidate_id, requester.id)
+
+    activity_recipient_ids =
+      insert_relationship_activity(relationship, action, requester.id, target.id)
+
+    %{
+      relationship: relationship,
+      action: action,
+      activity_recipient_ids: activity_recipient_ids
+    }
+  end
+
+  defp insert_relationship_candidate!({user_low_id, user_high_id}, requester_id) do
+    candidate_id = Ecto.UUID.generate()
+
+    %Relationship{id: candidate_id}
+    |> Relationship.create_changeset(%{
+      user_low_id: user_low_id,
+      user_high_id: user_high_id,
+      requested_by_user_id: requester_id
+    })
+    |> Repo.insert(
+      on_conflict: :nothing,
+      conflict_target: [:user_low_id, :user_high_id]
+    )
+    |> case do
+      {:ok, _relationship} -> candidate_id
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp lock_relationship_pair!({user_low_id, user_high_id}) do
+    Repo.one!(
+      from relationship in Relationship,
+        where:
+          relationship.user_low_id == ^user_low_id and
+            relationship.user_high_id == ^user_high_id,
+        lock: "FOR UPDATE"
+    )
+  end
+
+  defp transition_friend_request!(relationship, candidate_id, requester_id) do
+    cond do
+      relationship.id == candidate_id ->
+        {relationship, :requested}
+
+      relationship.status == :pending and
+          relationship.requested_by_user_id != requester_id ->
+        relationship =
+          relationship
+          |> Relationship.accept_changeset()
+          |> Repo.update!()
+
+        {relationship, :accepted}
+
+      true ->
+        {relationship, nil}
+    end
+  end
+
+  defp publish_friend_request_changes(result) do
+    if result.action, do: :ok = broadcast_change(result.relationship, result.action)
+
+    broadcast_activity_changes(
+      result.activity_recipient_ids,
+      :created,
+      result.relationship.id
+    )
   end
 
   defp pending_requests_for(user_id) do
