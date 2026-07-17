@@ -125,7 +125,7 @@ defmodule DiscordCloneWeb.DirectConversationLiveTest do
     conn: conn,
     scope: scope
   } do
-    {friend, friend_scope, direct_conversation, direct_path} =
+    {friend, friend_scope, direct_conversation, direct_path, _friendship} =
       direct_conversation_fixture(scope, "live_reply")
 
     assert {:ok, parent} =
@@ -167,6 +167,9 @@ defmodule DiscordCloneWeb.DirectConversationLiveTest do
     assert_eventually_has_element(friend_view, "#direct-message-#{parent.id}-deleted")
     refute has_element?(friend_view, "#direct-message-#{parent.id}", "reply target")
 
+    render_click(author_view, "delete_direct_message", %{"message-id" => parent.id})
+    assert has_element?(author_view, "#flash-error", "could not be deleted")
+
     assert_eventually_has_element(
       friend_view,
       "#direct-message-#{reply.id}-deleted-reply-preview"
@@ -180,7 +183,7 @@ defmodule DiscordCloneWeb.DirectConversationLiveTest do
     scope: scope
   } do
     {friend, friend_scope, direct_conversation, direct_path, friendship} =
-      direct_conversation_fixture(scope, "live_reaction", include_friendship: true)
+      direct_conversation_fixture(scope, "live_reaction")
 
     assert {:ok, own_message} =
              Chat.send_direct_message(scope, direct_conversation.id, %{content: "react here"})
@@ -270,7 +273,7 @@ defmodule DiscordCloneWeb.DirectConversationLiveTest do
     flunk("expected element #{selector} to disappear")
   end
 
-  defp direct_conversation_fixture(scope, suffix, opts \\ []) do
+  defp direct_conversation_fixture(scope, suffix) do
     friend = user_fixture(username: "#{suffix}_friend")
     friend_scope = user_scope_fixture(friend)
 
@@ -281,10 +284,6 @@ defmodule DiscordCloneWeb.DirectConversationLiveTest do
     assert {:ok, direct_conversation} = Chat.open_direct_conversation(scope, friend.id)
     direct_path = ~p"/direct-messages/#{direct_conversation.id}"
 
-    if Keyword.get(opts, :include_friendship, false) do
-      {friend, friend_scope, direct_conversation, direct_path, friendship}
-    else
-      {friend, friend_scope, direct_conversation, direct_path}
-    end
+    {friend, friend_scope, direct_conversation, direct_path, friendship}
   end
 end

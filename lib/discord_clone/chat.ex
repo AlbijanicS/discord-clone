@@ -313,6 +313,7 @@ defmodule DiscordClone.Chat do
         |> order_by([message], asc: message.seq)
         |> preload(^Message.display_preloads())
         |> Repo.all()
+        |> Enum.map(&redact_deleted_direct_message/1)
 
       {:ok, messages}
     else
@@ -340,7 +341,7 @@ defmodule DiscordClone.Chat do
                where: message.id == ^message_id and message.channel_id == ^conversation_id,
                preload: ^Message.display_preloads()
            ) do
-      {:ok, message}
+      {:ok, redact_deleted_direct_message(message)}
     else
       _not_found -> {:error, :not_found}
     end
@@ -483,7 +484,7 @@ defmodule DiscordClone.Chat do
                direct_conversation_id,
                next_seq,
                reply_to_message_id,
-               "conversation"
+               :conversation
              ),
            {:ok, message} <-
              changeset
@@ -1497,7 +1498,7 @@ defmodule DiscordClone.Chat do
                channel_id,
                next_seq,
                reply_to_message_id,
-               "channel"
+               :channel
              ),
            mention_recognition <-
              resolve_mention_recognition(changeset, channel.workspace_id, user_id),
@@ -1604,7 +1605,7 @@ defmodule DiscordClone.Chat do
          channel_id,
          next_seq,
          reply_to_message_id,
-         conversation_label
+         conversation_kind
        ) do
     target =
       UUIDIdentifier.cast_or(reply_to_message_id, nil, fn reply_to_message_id ->
@@ -1624,13 +1625,18 @@ defmodule DiscordClone.Chat do
          Ecto.Changeset.add_error(
            changeset,
            :reply_to_message_id,
-           "is not an earlier message in this #{conversation_label}"
+           reply_target_error(conversation_kind)
          )}
 
       target ->
         {:ok, target}
     end
   end
+
+  defp reply_target_error(:channel), do: "is not an earlier message in this channel"
+
+  defp reply_target_error(:conversation),
+    do: "is not an earlier message in this conversation"
 
   defp preload_message_for_display(message) do
     Repo.preload(message, Message.display_preloads())
@@ -1743,7 +1749,10 @@ defmodule DiscordClone.Chat do
         end
 
       {:direct, %Message{user_id: ^user_id} = message, _direct_conversation} ->
-        delete_message_with_optional_audit(message, user_id)
+        with :ok <- reject_deleted_message(message),
+             {:ok, deleted_message} <- delete_message_with_optional_audit(message, user_id) do
+          {:ok, redact_deleted_direct_message(deleted_message)}
+        end
 
       {:direct, _message, _direct_conversation} ->
         {:error, :unauthorized}
@@ -1873,6 +1882,18 @@ defmodule DiscordClone.Chat do
       )
     end)
   end
+
+  defp redact_deleted_direct_message(%Message{} = message) do
+    reply_to_message = redact_deleted_reply_target(message.reply_to_message)
+    message = %{message | reply_to_message: reply_to_message}
+
+    if is_nil(message.deleted_at), do: message, else: %{message | content: nil}
+  end
+
+  defp redact_deleted_reply_target(%Message{deleted_at: %DateTime{}} = message),
+    do: %{message | content: nil}
+
+  defp redact_deleted_reply_target(message), do: message
 
   defp get_live_channel_message(channel_id, message_id) do
     UUIDIdentifier.cast_or(message_id, nil, fn message_id ->

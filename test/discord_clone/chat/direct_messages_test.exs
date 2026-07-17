@@ -418,19 +418,51 @@ defmodule DiscordClone.Chat.DirectMessagesTest do
       assert {:ok, [deleted_parent, persisted_reply, deleted_cleanup]} =
                Chat.list_direct_messages(recipient_scope, direct_conversation.id)
 
-      assert deleted_parent.content == "secret"
+      assert is_nil(deleted_parent.content)
       assert deleted_parent.deleted_at
       assert persisted_reply.id == reply.id
       assert persisted_reply.reply_to_message_id == parent.id
       assert persisted_reply.reply_to_message.deleted_at
+      assert is_nil(persisted_reply.reply_to_message.content)
       assert deleted_cleanup.id == cleanup_message.id
       assert deleted_cleanup.deleted_at
+      assert is_nil(deleted_cleanup.content)
+
+      assert {:error, :message_deleted} = Chat.delete_message(sender_scope, cleanup_message.id)
 
       assert {:error, :not_friends} =
                Chat.send_direct_message(recipient_scope, direct_conversation.id, %{
                  content: "former Friend reply",
                  reply_to_message_id: parent.id
                })
+    end
+
+    test "keeps Workspace Channel reply, reaction, and deletion behavior unchanged" do
+      author_scope = user_scope_fixture(user_fixture(username: "channel_parity_author"))
+      member_scope = user_scope_fixture(user_fixture(username: "channel_parity_member"))
+      outsider_scope = user_scope_fixture(user_fixture(username: "channel_parity_outsider"))
+
+      assert {:ok, workspace} = Workspaces.create_workspace(author_scope, %{name: "Parity"})
+      add_workspace_member!(workspace, member_scope)
+
+      assert {:ok, parent} =
+               Chat.send_message(author_scope, workspace.default_channel_id, %{content: "parent"})
+
+      assert {:ok, reply} =
+               Chat.send_message(member_scope, workspace.default_channel_id, %{
+                 content: "reply",
+                 reply_to_message_id: parent.id
+               })
+
+      assert reply.reply_to_message_id == parent.id
+      assert {:ok, _reaction} = Chat.toggle_reaction(member_scope, parent.id, "👍")
+      assert {:ok, summaries} = Chat.list_reaction_summaries(author_scope, [parent.id])
+      assert [%{emoji: "👍", count: 1, reacted?: false}] = Map.fetch!(summaries, parent.id)
+      assert {:error, :not_found} = Chat.toggle_reaction(outsider_scope, parent.id, "❤️")
+      assert {:error, :unauthorized} = Chat.delete_message(member_scope, parent.id)
+      assert {:ok, deleted_parent} = Chat.delete_message(author_scope, parent.id)
+      assert deleted_parent.deleted_at
+      assert deleted_parent.content == "parent"
     end
   end
 
