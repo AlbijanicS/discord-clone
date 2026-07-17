@@ -42,3 +42,17 @@ Rule of thumb: **durable state → Postgres via Ecto; ephemeral real-time state 
 - LiveViews grouped by area: `workspace_live/` (home, entry, shell, presence, audit log, invites, member actions menu), `channel_live/` (message view + rows), `user_live/` (auth screens).
 - Controllers only for non-LiveView flows: `invite_controller` (accept invite via link), `user_session_controller`.
 - Routes in `router.ex` are split across `live_session :require_authenticated_user` (workspaces, channels, settings) and `live_session :current_user` (register/login). Follow the router placement rules in `AGENTS.md` when adding routes.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked as local Markdown under `.scratch/`; external PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default triage vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository using root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.

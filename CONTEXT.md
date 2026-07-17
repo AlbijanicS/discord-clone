@@ -1,8 +1,8 @@
 # Discord Clone
 
-This context describes the collaboration domain for the Discord clone: users
-create workspaces, join them through memberships, organize conversation into
-channels, and later exchange messages in those channels.
+This context describes the collaboration domain for the Discord clone: Users
+create Workspaces, join them through memberships, and exchange Messages in
+Workspace Channels or one-to-one Direct Conversations.
 
 ## Language
 
@@ -22,17 +22,45 @@ _Avoid_: Workspace object, workspace param
 A user who has permission to participate in a workspace through membership.
 _Avoid_: Participant
 
+**Friend Request**:
+A User's pending request to establish a mutual Friendship with another User.
+_Avoid_: Pending friend, friend invitation
+
+**Friendship**:
+An accepted, mutual relationship between exactly two Users.
+_Avoid_: User friend, follower, contact
+
+**Friend Presence**:
+Whether a Friend currently has at least one authenticated application connection.
+_Avoid_: Workspace presence, last seen
+
 **Workspace Role**:
 A named permission level held by a workspace member.
 _Avoid_: Global role
+
+**Conversation**:
+A durable message timeline presented as either a Workspace Channel or a Direct Conversation.
+_Avoid_: Thread, chatroom
 
 **Channel**:
 A named conversation space inside a workspace.
 _Avoid_: Room
 
+**Direct Conversation**:
+A private conversation between exactly two Friends that does not belong to a Workspace.
+_Avoid_: DM Channel, private Channel, private chat
+
+**Message**:
+A durable item sent by a User within a Conversation.
+_Avoid_: Post, chat entry
+
+**Direct Message**:
+A Message sent within a Direct Conversation.
+_Avoid_: Private message, Workspace message
+
 **Message Reply**:
-A Channel message that references exactly one earlier message in the same
-Channel and remains part of the normal Channel timeline.
+A Message that references exactly one earlier Message in the same Conversation
+and remains part of its normal timeline.
 _Avoid_: Direct reply, thread
 
 **User Mention**:
@@ -46,13 +74,13 @@ from within a Channel message.
 _Avoid_: User mention, role mention
 
 **Activity Feed**:
-A User's global collection of relevant activity across every Workspace in
-which they participate.
+A User's global collection of relevant activity across their Workspaces and
+Direct Conversations.
 _Avoid_: Workspace activity, Activity Page
 
 **Activity Item**:
-A durable mention entry in a User's Activity Feed that links to its source
-message and records whether the User has read it.
+A durable entry in a User's Activity Feed that links to the relevant Message
+or Friend relationship and records whether the User has read it.
 _Avoid_: Notification
 
 **Landing Channel**:
@@ -67,24 +95,61 @@ The workflow of opening a workspace and navigating to its landing channel.
 _Avoid_: Workspace details page
 
 **Read State**:
-A Workspace Member's per-Channel read position and cached unread summary,
+A User's per-Conversation read position and cached unread summary,
 including unread count and first/last unread message sequence bounds.
 _Avoid_: Read receipt
 
 **Unread Span**:
 An inclusive `{from_seq, to_seq}` interval of unread message sequences for one
-User and Channel.
+User and Conversation.
 _Avoid_: Unread range
 
 ## Relationships
 
 - A **User** may own many **Workspaces**
+- Hard deletion of a **User** is not supported while Direct Conversation identity depends on that User
+- A future account-removal workflow must deactivate or anonymize the **User** while preserving durable identity
+- A **User** may send a **Friend Request** to another **User**
+- A **User** may target a **Friend Request** using another User's exact global username without sharing a **Workspace**
+- Users cannot browse or fuzzy-search a global User directory
+- A **Friend Request** becomes a **Friendship** only when the receiving User accepts it
+- Sending a **Friend Request** to a User who already sent one in the opposite direction accepts the existing request
+- A **Friendship** is mutual rather than directional
+- Between the same two Users, at most one **Friend Request** or **Friendship** may exist
+- Blocking Users is not part of the Friendship model
+- **Friend Presence** is either online or offline; idle, invisible, custom status, and last-seen history are not supported
+- **Friend Presence** is visible only to current Friends and is not persisted
+- Two Friends may have one **Direct Conversation**
+- A **Direct Conversation** may be created only between Users who have an accepted **Friendship**
+- Accepting a **Friend Request** does not create a **Direct Conversation**
+- A **Direct Conversation** is created lazily when either Friend first chooses to message the other
+- A **Direct Conversation** contains **Direct Messages**
+- A **Direct Conversation** does not belong to a **Workspace**
+- The **Direct Messages** area is a User-level destination rather than a special **Workspace**
+- The **Direct Messages** area brings together Friends, Friend Requests, and Direct Conversations
+- A **Direct Conversation** always has exactly two Users; group direct conversations are not part of the domain
+- Users who need a group conversation create or use a **Workspace** and its **Channels**
+- Ending a **Friendship** preserves its **Direct Conversation** and message history for both Users
+- Users who are no longer Friends may read their existing **Direct Conversation** but may not send new **Direct Messages**
+- Users who are no longer Friends may delete their own **Direct Messages** and remove their own existing reactions
+- Users who are no longer Friends may not reply, add reactions, or broadcast typing in their **Direct Conversation**
+- Restoring a **Friendship** re-enables its existing **Direct Conversation** rather than creating another one
+- An open **Direct Conversation** remains visible and changes immediately between writable and read-only modes as its **Friendship** changes
+- Every created **Direct Conversation** remains in both Users' Direct Messages list, including empty and read-only Conversations
+- Direct Conversations are ordered by their latest Message activity, with empty Conversations ordered by creation time
+- Direct Conversations cannot initially be hidden, pinned, closed, or manually reordered
+- A User may delete their own **Direct Message**, but not the other participant's **Direct Message**
+- Deleting a **Direct Message** replaces it with a deleted-message placeholder for both Users
+- A User may still delete their own **Direct Message** after the **Friendship** ends
+- Direct Messages cannot be hidden or deleted for only one participant
 - A **Workspace Identifier** points to one **Workspace**
 - A **Workspace** has zero or more **Workspace Members**
 - A **Workspace Member** has one **Workspace Role**
 - A **Workspace** contains one or more **Channels** when created through the
   public workspace workflow
-- A **Message Reply** references a message in the same **Channel**
+- A **Channel** and a **Direct Conversation** are each a **Conversation**
+- A **Conversation** contains **Messages**
+- A **Message Reply** references a **Message** in the same **Conversation**
 - A **Message Reply** does not create a thread or nested conversation
 - A **Message Reply** may reference another **Message Reply**, but preserves only
   one direct reference rather than a reply chain
@@ -101,14 +166,24 @@ _Avoid_: Unread range
   currently selected Workspace
 - A User's **Activity Feed** includes **User Mentions** addressed to that User
   and authorized **Everyone Mentions** in their Workspaces
+- A User's **Activity Feed** includes each **Direct Message** they receive
+- Receiving a **Friend Request** creates an **Activity Item** for the receiving User
+- Accepting a **Friend Request** creates an **Activity Item** for the requesting User
+- Declining a **Friend Request** does not create an **Activity Item**
+- Viewing a Friend Request **Activity Item** marks the item read without resolving the request
+- Cancelling a pending **Friend Request** removes its received-request **Activity Item**
 - A User's own messages never create entries in that User's **Activity Feed**
-- Opening an **Activity Item** navigates to its source message in the source
-  Workspace and Channel and marks that item as read
+- Opening a Message-backed **Activity Item** navigates to its source **Message**
+  in the source **Conversation** and marks that item as read
+- Opening a Friend relationship-backed **Activity Item** navigates to the
+  relevant Friends or Friend Requests view and marks that item as read
 - Opening the **Activity Feed** does not itself mark **Activity Items** as read
 - A User may mark every **Activity Item** as read, and the activity bell count
   reflects unread items
-- **Activity Item** read state is independent from Channel **Read State**;
-  changing either one does not automatically clear the other
+- Mention **Activity Item** read state is independent from Channel **Read State**
+- A **Direct Message** becomes read after remaining genuinely visible to its recipient for one continuous second
+- Reading a **Direct Message** also marks its **Activity Item** read in the same workflow
+- Read **Direct Message** Activity Items disappear from the primary unread activity view but remain in Activity history
 - Losing Workspace membership permanently removes that Workspace's entries from
   the former member's **Activity Feed**
 - Deleting the message referenced by a **Message Reply** preserves the reply and
@@ -134,9 +209,9 @@ _Avoid_: Unread range
 - **Workspace Entry** redirects to the **Landing Channel**
 - Resolving a **Landing Channel** is a scoped **Workspace Entry** workflow, not
   part of **Channel** creation
-- A **Read State** belongs to one **User** and one **Channel**
+- A **Read State** belongs to one **User** and one **Conversation**
 - A **Read State** summarizes zero or more **Unread Spans**
-- An **Unread Span** belongs to one **User** and one **Channel**
+- An **Unread Span** belongs to one **User** and one **Conversation**
 
 ## Example Dialogue
 
