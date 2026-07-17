@@ -251,6 +251,35 @@ defmodule DiscordClone.Chat.Unread do
     :ok
   end
 
+  @doc false
+  def lock_direct_read_state_and_spans!(user_id, conversation_id) do
+    ensure_channel_read_state!(user_id, conversation_id)
+    read_state = lock_channel_read_state!(user_id, conversation_id)
+
+    spans =
+      Repo.all(
+        from span in ChannelUnreadSpan,
+          where: span.channel_id == ^conversation_id and span.user_id == ^user_id,
+          order_by: [asc: span.from_seq, asc: span.id],
+          lock: "FOR UPDATE",
+          select: {span.from_seq, span.to_seq}
+      )
+
+    {read_state, spans}
+  end
+
+  @doc false
+  def apply_locked_visible_range!(read_state, spans, from_seq, to_seq) do
+    next_spans = Spans.subtract(spans, from_seq, to_seq)
+
+    if next_spans == spans do
+      {read_state, false}
+    else
+      replace_channel_unread_spans!(read_state.user_id, read_state.channel_id, next_spans)
+      {update_read_state_summary!(read_state, next_spans), true}
+    end
+  end
+
   defp add_unread_message!(recipient_user_id, conversation_id, message_seq) do
     ensure_channel_read_state!(recipient_user_id, conversation_id)
     read_state = lock_channel_read_state!(recipient_user_id, conversation_id)

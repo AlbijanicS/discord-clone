@@ -4,9 +4,11 @@ defmodule DiscordCloneWeb.DirectConversationLiveTest do
   import DiscordClone.AccountsFixtures
   import Phoenix.LiveViewTest
 
+  alias DiscordClone.Activities.ActivityItem
   alias DiscordClone.Chat
   alias DiscordClone.Chat.Runtime
   alias DiscordClone.Friendships
+  alias DiscordClone.Repo
 
   setup :register_and_log_in_user
 
@@ -110,6 +112,16 @@ defmodule DiscordCloneWeb.DirectConversationLiveTest do
     assert has_element?(sender_view, "#direct-message-#{message.id}")
     assert has_element?(recipient_view, "#direct-message-#{message.id}")
 
+    refute has_element?(
+             sender_view,
+             "#direct-message-#{message.id}[data-visible-read-observe='true']"
+           )
+
+    assert has_element?(
+             recipient_view,
+             "#direct-message-#{message.id}[data-visible-read-observe='true']"
+           )
+
     Process.unlink(sender_view.pid)
     ref = Process.monitor(sender_view.pid)
     GenServer.stop(sender_view.pid)
@@ -120,6 +132,54 @@ defmodule DiscordCloneWeb.DirectConversationLiveTest do
     assert has_element?(reconnected_view, "#direct-message-#{message.id}", "A durable hello")
 
     assert user.id == message.user_id
+  end
+
+  test "genuine visibility synchronizes Direct Message and Activity badges across sessions", %{
+    conn: conn,
+    user: user,
+    scope: scope
+  } do
+    {_friend, friend_scope, direct_conversation, direct_path, _friendship} =
+      direct_conversation_fixture(scope, "live_visibility")
+
+    assert {:ok, _updated_count} = Chat.mark_all_activity_read(scope)
+
+    assert {:ok, first_message} =
+             Chat.send_direct_message(friend_scope, direct_conversation.id, %{content: "first"})
+
+    assert {:ok, second_message} =
+             Chat.send_direct_message(friend_scope, direct_conversation.id, %{content: "second"})
+
+    second_conn = build_conn() |> log_in_user(user)
+    {:ok, reading_view, _html} = live(conn, direct_path)
+    {:ok, second_view, _html} = live(second_conn, direct_path)
+    {:ok, activity_view, _html} = live(conn, ~p"/activity")
+    {:ok, primary_activity_view, _html} = live(second_conn, ~p"/workspaces")
+
+    first_item = Repo.get_by!(ActivityItem, source_message_id: first_message.id)
+    second_item = Repo.get_by!(ActivityItem, source_message_id: second_message.id)
+
+    assert has_element?(reading_view, "#direct-messages-unread-count", "2")
+    assert has_element?(second_view, "#direct-conversation-unread-#{direct_conversation.id}", "2")
+    assert has_element?(activity_view, "#global-activity-unread-count", "2")
+    assert has_element?(primary_activity_view, "#activity-preview-item-#{first_item.id}")
+    assert has_element?(primary_activity_view, "#activity-preview-item-#{second_item.id}")
+
+    render_hook(reading_view, "visible_read_observed", %{
+      "ranges" => [
+        %{"from_seq" => first_message.seq, "to_seq" => second_message.seq}
+      ]
+    })
+
+    refute has_element?(reading_view, "#direct-messages-unread-count")
+    refute has_element?(second_view, "#direct-messages-unread-count")
+    refute has_element?(second_view, "#direct-conversation-unread-#{direct_conversation.id}")
+    refute has_element?(activity_view, "#global-activity-unread-count")
+    refute has_element?(primary_activity_view, "#activity-preview-item-#{first_item.id}")
+    refute has_element?(primary_activity_view, "#activity-preview-item-#{second_item.id}")
+
+    assert has_element?(activity_view, "#activity-item-#{first_item.id}[data-read-state='read']")
+    assert has_element?(activity_view, "#activity-item-#{second_item.id}[data-read-state='read']")
   end
 
   test "current Friends reply and both sessions share author deletion placeholders", %{

@@ -115,7 +115,6 @@ const ChannelMessages = {
 
   updated() {
     this.cancelScrollAnchor()
-    this.cancelVisibleReadTimers()
     this.scheduleApplyScrollTarget()
     this.syncVisibleReadRows()
 

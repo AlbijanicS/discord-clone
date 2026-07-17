@@ -39,11 +39,7 @@ defmodule DiscordCloneWeb.ActivityLive do
       |> assign(:activity_feed_pages_loaded, 1)
       |> assign(:activity_next_cursor, activity_feed_page.next_cursor)
       |> stream(:workspaces, workspaces)
-      |> stream(
-        :activity_preview_items,
-        Enum.take(activity_feed_page.items, @activity_preview_limit),
-        reset: true
-      )
+      |> refresh_activity_preview()
       |> stream_configure(:activity_items, dom_id: &"activity-item-#{&1.id}")
       |> stream(:activity_items, activity_feed_page.items)
 
@@ -89,11 +85,7 @@ defmodule DiscordCloneWeb.ActivityLive do
        socket
        |> assign(:activity_next_cursor, activity_feed_page.next_cursor)
        |> assign(:unread_activity_count, unread_count)
-       |> stream(
-         :activity_preview_items,
-         Enum.take(activity_feed_page.items, @activity_preview_limit),
-         reset: true
-       )
+       |> refresh_activity_preview()
        |> stream(:activity_items, activity_feed_page.items, reset: true)}
     else
       {:error, _reason} ->
@@ -127,11 +119,7 @@ defmodule DiscordCloneWeb.ActivityLive do
         {:noreply,
          socket
          |> assign(:activity_next_cursor, activity_feed_page.next_cursor)
-         |> stream(
-           :activity_preview_items,
-           Enum.take(activity_feed_page.items, @activity_preview_limit),
-           reset: true
-         )
+         |> refresh_activity_preview()
          |> stream(:activity_items, activity_feed_page.items, reset: true)}
 
       {:error, _reason} ->
@@ -381,15 +369,17 @@ defmodule DiscordCloneWeb.ActivityLive do
 
   defp assign_activity_summary(socket) do
     {:ok, unread_count} = Chat.unread_activity_count(socket.assigns.current_scope)
-    {:ok, activity_feed_page} = Chat.list_activity_feed(socket.assigns.current_scope)
 
     socket
     |> assign(:unread_activity_count, unread_count)
-    |> stream(
-      :activity_preview_items,
-      Enum.take(activity_feed_page.items, @activity_preview_limit),
-      reset: true
-    )
+    |> refresh_activity_preview()
+  end
+
+  defp refresh_activity_preview(socket) do
+    {:ok, activity_preview_items} =
+      Chat.list_activity_preview(socket.assigns.current_scope, @activity_preview_limit)
+
+    stream(socket, :activity_preview_items, activity_preview_items, reset: true)
   end
 
   defp handle_activity_preview_event(

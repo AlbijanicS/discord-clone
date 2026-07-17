@@ -660,6 +660,67 @@ defmodule DiscordClone.Chat do
   def send_direct_message(_scope, _direct_conversation_id, _attrs),
     do: {:error, :unauthenticated}
 
+  @doc "Marks one bounded sequence range genuinely visible for a Direct Conversation participant."
+  @spec mark_direct_messages_visible(term(), term(), term(), term()) ::
+          {:ok, ChannelReadState.t()}
+          | {:error, :unauthenticated | :not_found | :invalid_range | :range_too_large}
+  def mark_direct_messages_visible(
+        %Scope{user: %User{id: user_id}},
+        direct_conversation_id,
+        from_seq,
+        to_seq
+      ) do
+    with %DirectConversation{} = direct_conversation <-
+           get_participant_direct_conversation(user_id, direct_conversation_id),
+         %Conversation{} = conversation <- Repo.get(Conversation, direct_conversation.id),
+         :ok <- validate_direct_visible_range(conversation, from_seq, to_seq) do
+      Repo.transaction(fn ->
+        {read_state, spans} =
+          Unread.lock_direct_read_state_and_spans!(user_id, direct_conversation.id)
+
+        activity_item_ids =
+          lock_visible_direct_activity_item_ids(
+            user_id,
+            direct_conversation.id,
+            from_seq,
+            to_seq
+          )
+
+        {read_state, read_state_changed?} =
+          Unread.apply_locked_visible_range!(read_state, spans, from_seq, to_seq)
+
+        activity_updated_count = mark_locked_activity_items_read(activity_item_ids)
+        {read_state, read_state_changed?, activity_updated_count}
+      end)
+      |> case do
+        {:ok, {read_state, read_state_changed?, activity_updated_count}} ->
+          if read_state_changed? do
+            :ok = Unread.broadcast_changes([{:direct_conversation, user_id, read_state}])
+          end
+
+          if activity_updated_count > 0 do
+            :ok =
+              broadcast_activity_change(user_id, %{
+                action: :read,
+                conversation_id: direct_conversation.id,
+                updated_count: activity_updated_count
+              })
+          end
+
+          {:ok, read_state}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      nil -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def mark_direct_messages_visible(_scope, _direct_conversation_id, _from_seq, _to_seq),
+    do: {:error, :unauthenticated}
+
   defp persist_direct_message(
          %Scope{user: %User{id: user_id}} = scope,
          direct_conversation_id,
@@ -725,6 +786,54 @@ defmodule DiscordClone.Chat do
 
   defp direct_message_reply_target(_attrs), do: nil
 
+  defp validate_direct_visible_range(%Conversation{} = conversation, from_seq, to_seq)
+       when is_integer(from_seq) and is_integer(to_seq) do
+    cond do
+      from_seq < 1 or from_seq > to_seq -> {:error, :invalid_range}
+      to_seq - from_seq + 1 > @message_page_size -> {:error, :range_too_large}
+      to_seq > conversation.last_message_seq -> {:error, :invalid_range}
+      true -> :ok
+    end
+  end
+
+  defp validate_direct_visible_range(_conversation, _from_seq, _to_seq),
+    do: {:error, :invalid_range}
+
+  defp lock_visible_direct_activity_item_ids(user_id, conversation_id, from_seq, to_seq) do
+    Repo.all(
+      from activity_item in ActivityItem,
+        join: message in Message,
+        on: message.id == activity_item.source_message_id,
+        where:
+          activity_item.recipient_user_id == ^user_id and
+            activity_item.source_conversation_id == ^conversation_id and
+            activity_item.kind == ^ActivityItem.direct_message_kind() and
+            is_nil(activity_item.read_at) and
+            message.channel_id == ^conversation_id and
+            message.user_id != ^user_id and
+            message.seq >= ^from_seq and message.seq <= ^to_seq,
+        order_by: [asc: activity_item.id],
+        lock: "FOR UPDATE",
+        select: activity_item.id
+    )
+  end
+
+  defp mark_locked_activity_items_read([]), do: 0
+
+  defp mark_locked_activity_items_read(activity_item_ids) do
+    now = DateTime.utc_now(:microsecond)
+
+    {updated_count, _rows} =
+      Repo.update_all(
+        from(activity_item in ActivityItem,
+          where: activity_item.id in ^activity_item_ids and is_nil(activity_item.read_at)
+        ),
+        set: [read_at: now, updated_at: now]
+      )
+
+    updated_count
+  end
+
   defp get_writable_direct_conversation!(
          %Scope{user: %User{id: user_id}} = scope,
          direct_conversation_id
@@ -766,6 +875,28 @@ defmodule DiscordClone.Chat do
 
   def unread_activity_count(_scope), do: {:error, :unauthenticated}
 
+  @doc "Lists the scoped user's primary Activity preview, excluding handled Direct Messages."
+  @spec list_activity_preview(term(), pos_integer()) ::
+          {:ok, [ActivityItem.t()]} | {:error, :unauthenticated | :invalid_limit}
+  def list_activity_preview(scope, limit \\ 5)
+
+  def list_activity_preview(%Scope{user: %User{id: user_id}}, limit)
+      when is_integer(limit) and limit > 0 and limit <= @activity_feed_page_size do
+    items =
+      Repo.all(
+        from activity_item in activity_feed_query(user_id),
+          where:
+            activity_item.kind != ^ActivityItem.direct_message_kind() or
+              is_nil(activity_item.read_at),
+          limit: ^limit
+      )
+
+    {:ok, items}
+  end
+
+  def list_activity_preview(%Scope{user: %User{}}, _limit), do: {:error, :invalid_limit}
+  def list_activity_preview(_scope, _limit), do: {:error, :unauthenticated}
+
   @doc "Returns one stable page of the scoped user's accessible global Activity Feed."
   @spec list_activity_feed(term(), nil | activity_feed_cursor()) ::
           {:ok, %{items: [ActivityItem.t()], next_cursor: nil | activity_feed_cursor()}}
@@ -774,31 +905,7 @@ defmodule DiscordClone.Chat do
 
   def list_activity_feed(%Scope{user: %User{id: user_id}}, cursor) do
     with {:ok, cursor} <- cast_activity_cursor(cursor) do
-      query =
-        from activity_item in ActivityItem,
-          left_join: membership in WorkspaceMembership,
-          on:
-            membership.workspace_id == activity_item.workspace_id and
-              membership.user_id == ^user_id,
-          left_join: direct_conversation in DirectConversation,
-          on: direct_conversation.id == activity_item.source_conversation_id,
-          where:
-            activity_item.recipient_user_id == ^user_id and
-              (not is_nil(membership.user_id) or
-                 not is_nil(activity_item.source_friend_relationship_id) or
-                 (activity_item.kind == ^ActivityItem.direct_message_kind() and
-                    (direct_conversation.user_low_id == ^user_id or
-                       direct_conversation.user_high_id == ^user_id))),
-          order_by: [desc: activity_item.inserted_at, desc: activity_item.id],
-          limit: ^(@activity_feed_page_size + 1),
-          preload: [
-            :workspace,
-            :source_channel,
-            :source_message,
-            :source_friend_relationship,
-            :actor_user,
-            source_direct_conversation: [:user_low, :user_high]
-          ]
+      query = activity_feed_query(user_id) |> limit(^(@activity_feed_page_size + 1))
 
       activity_items =
         query
@@ -818,6 +925,32 @@ defmodule DiscordClone.Chat do
   end
 
   def list_activity_feed(_scope, _cursor), do: {:error, :unauthenticated}
+
+  defp activity_feed_query(user_id) do
+    from activity_item in ActivityItem,
+      left_join: membership in WorkspaceMembership,
+      on:
+        membership.workspace_id == activity_item.workspace_id and
+          membership.user_id == ^user_id,
+      left_join: direct_conversation in DirectConversation,
+      on: direct_conversation.id == activity_item.source_conversation_id,
+      where:
+        activity_item.recipient_user_id == ^user_id and
+          (not is_nil(membership.user_id) or
+             not is_nil(activity_item.source_friend_relationship_id) or
+             (activity_item.kind == ^ActivityItem.direct_message_kind() and
+                (direct_conversation.user_low_id == ^user_id or
+                   direct_conversation.user_high_id == ^user_id))),
+      order_by: [desc: activity_item.inserted_at, desc: activity_item.id],
+      preload: [
+        :workspace,
+        :source_channel,
+        :source_message,
+        :source_friend_relationship,
+        :actor_user,
+        source_direct_conversation: [:user_low, :user_high]
+      ]
+  end
 
   @doc "Marks the scoped user's currently committed unread Activity Items read."
   @spec mark_all_activity_read(term()) ::

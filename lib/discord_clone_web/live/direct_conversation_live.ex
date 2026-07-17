@@ -9,6 +9,7 @@ defmodule DiscordCloneWeb.DirectConversationLive do
 
   @reaction_palette ["👍", "❤️", "😂", "🎉", "👀"]
   @rendered_message_limit 300
+  @visible_read_range_limit 50
 
   @impl true
   def mount(%{"direct_conversation_id" => direct_conversation_id} = params, _session, socket) do
@@ -127,9 +128,29 @@ defmodule DiscordCloneWeb.DirectConversationLive do
     end
   end
 
-  # The shared message-history hook emits these events for every Conversation
-  # kind. Direct Conversations do not persist scroll anchors here.
+  # The shared message-history hook emits this event for every Conversation kind.
+  # Direct Conversations do not persist scroll anchors here.
   def handle_event("scroll_anchor_observed", _params, socket), do: {:noreply, socket}
+
+  def handle_event("visible_read_observed", %{"ranges" => ranges}, socket)
+      when is_list(ranges) do
+    ranges = parse_visible_read_ranges(ranges)
+
+    if valid_visible_read_ranges?(socket, ranges) do
+      Enum.each(ranges, fn {from_seq, to_seq} ->
+        _result =
+          Chat.mark_direct_messages_visible(
+            socket.assigns.current_scope,
+            socket.assigns.direct_conversation.id,
+            from_seq,
+            to_seq
+          )
+      end)
+    end
+
+    {:noreply, socket}
+  end
+
   def handle_event("visible_read_observed", _params, socket), do: {:noreply, socket}
 
   def handle_event("navigate_direct_message", %{"message-id" => message_id}, socket) do
@@ -395,6 +416,7 @@ defmodule DiscordCloneWeb.DirectConversationLive do
                   :for={{dom_id, message} <- @streams.direct_messages}
                   id={dom_id}
                   data-message-seq={message.seq}
+                  data-visible-read-observe={message.user_id != @current_scope.user.id && "true"}
                   data-message-navigation-target={
                     to_string(message.id == @message_navigation_target_id)
                   }
@@ -899,6 +921,55 @@ defmodule DiscordCloneWeb.DirectConversationLive do
   defp messages_by_id(messages), do: Map.new(messages, &{&1.id, &1})
   defp message_seq(nil), do: nil
   defp message_seq(message), do: message.seq
+
+  defp parse_visible_read_ranges(ranges) do
+    ranges
+    |> Enum.reduce_while([], fn range, parsed_ranges ->
+      with %{"from_seq" => from_seq, "to_seq" => to_seq} <- range,
+           {:ok, from_seq} <- ScrollAnchoring.parse_integer(from_seq),
+           {:ok, to_seq} <- ScrollAnchoring.parse_integer(to_seq) do
+        {:cont, [{from_seq, to_seq} | parsed_ranges]}
+      else
+        _invalid -> {:halt, :invalid}
+      end
+    end)
+    |> case do
+      :invalid -> :invalid
+      parsed_ranges -> Enum.reverse(parsed_ranges)
+    end
+  end
+
+  defp valid_visible_read_ranges?(_socket, :invalid), do: false
+  defp valid_visible_read_ranges?(_socket, []), do: false
+
+  defp valid_visible_read_ranges?(socket, ranges) do
+    received_rendered_seqs =
+      socket.assigns.direct_messages_by_id
+      |> Map.values()
+      |> Enum.reject(&(&1.user_id == socket.assigns.current_scope.user.id))
+      |> MapSet.new(& &1.seq)
+
+    length(ranges) <= @visible_read_range_limit and
+      ordered_visible_read_ranges?(ranges) and
+      Enum.all?(ranges, fn {from_seq, to_seq} ->
+        from_seq > 0 and
+          from_seq <= to_seq and
+          to_seq - from_seq + 1 <= @visible_read_range_limit and
+          Enum.all?(from_seq..to_seq, &MapSet.member?(received_rendered_seqs, &1))
+      end)
+  end
+
+  defp ordered_visible_read_ranges?(ranges) do
+    ranges
+    |> Enum.reduce_while(nil, fn {from_seq, to_seq}, previous_to_seq ->
+      if is_nil(previous_to_seq) or from_seq > previous_to_seq do
+        {:cont, to_seq}
+      else
+        {:halt, false}
+      end
+    end)
+    |> then(&(&1 != false))
+  end
 
   defp message_form do
     %{}

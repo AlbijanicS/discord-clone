@@ -12,6 +12,8 @@ defmodule DiscordClone.Chat.ChannelReadState do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
+  @type t :: %__MODULE__{}
+
   schema "conversation_read_states" do
     field :unread_count, :integer, default: 0
     field :first_unread_seq, :integer
