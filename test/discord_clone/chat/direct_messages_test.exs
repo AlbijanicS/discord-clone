@@ -305,6 +305,135 @@ defmodule DiscordClone.Chat.DirectMessagesTest do
     end
   end
 
+  describe "Direct Message interactions" do
+    test "current Friends reply to an earlier message and invalid targets are non-disclosing" do
+      {sender_scope, recipient_scope, direct_conversation, _friendship} =
+        direct_conversation_fixture("reply")
+
+      assert {:ok, parent} =
+               Chat.send_direct_message(sender_scope, direct_conversation.id, %{content: "parent"})
+
+      assert {:ok, reply} =
+               Chat.send_direct_message(recipient_scope, direct_conversation.id, %{
+                 content: "flat reply",
+                 reply_to_message_id: parent.id
+               })
+
+      assert reply.reply_to_message_id == parent.id
+      assert reply.reply_to_message.id == parent.id
+
+      assert {:error, :invalid_message, future_changeset} =
+               Chat.send_direct_message(sender_scope, direct_conversation.id, %{
+                 content: "future",
+                 reply_to_message_id: Ecto.UUID.generate()
+               })
+
+      assert "is not an earlier message in this conversation" in errors_on(future_changeset).reply_to_message_id
+
+      {other_scope, _other_recipient_scope, other_conversation, _friendship} =
+        direct_conversation_fixture("cross_reply")
+
+      assert {:ok, other_message} =
+               Chat.send_direct_message(other_scope, other_conversation.id, %{content: "private"})
+
+      assert {:error, :invalid_message, cross_changeset} =
+               Chat.send_direct_message(sender_scope, direct_conversation.id, %{
+                 content: "cross",
+                 reply_to_message_id: other_message.id
+               })
+
+      assert errors_on(cross_changeset).reply_to_message_id ==
+               errors_on(future_changeset).reply_to_message_id
+
+      assert reply.seq == 2
+    end
+
+    test "participants toggle reactions live and former Friends may only remove their own" do
+      {sender_scope, recipient_scope, direct_conversation, friendship} =
+        direct_conversation_fixture("reaction")
+
+      assert {:ok, message} =
+               Chat.send_direct_message(sender_scope, direct_conversation.id, %{content: "react"})
+
+      outsider_scope = user_scope_fixture(user_fixture(username: "reaction_direct_outsider"))
+      assert :ok = Chat.subscribe_to_direct_reactions(recipient_scope, direct_conversation.id)
+
+      assert {:error, :not_found} =
+               Chat.subscribe_to_direct_reactions(outsider_scope, direct_conversation.id)
+
+      assert {:error, :not_found} = Chat.toggle_reaction(outsider_scope, message.id, "👍")
+      assert {:error, :not_found} = Chat.delete_message(outsider_scope, message.id)
+
+      assert {:error, :not_found} =
+               Chat.list_reaction_summaries(outsider_scope, [message.id])
+
+      assert {:ok, _reaction} = Chat.toggle_reaction(sender_scope, message.id, "👍")
+
+      assert {:ok, summaries} = Chat.list_reaction_summaries(recipient_scope, [message.id])
+      assert [summary] = Map.fetch!(summaries, message.id)
+
+      assert summary == %{emoji: "👍", count: 1, reacted?: false}
+      assert :ok = Friendships.remove_friend(recipient_scope, friendship.id)
+
+      assert {:error, :not_friends} = Chat.toggle_reaction(recipient_scope, message.id, "❤️")
+      assert {:ok, _deleted_reaction} = Chat.toggle_reaction(sender_scope, message.id, "👍")
+      assert {:ok, %{}} = Chat.list_reaction_summaries(sender_scope, [message.id])
+    end
+
+    test "only authors soft-delete Direct Messages and deleted reply previews preserve structure" do
+      {sender_scope, recipient_scope, direct_conversation, friendship} =
+        direct_conversation_fixture("delete")
+
+      assert {:ok, parent} =
+               Chat.send_direct_message(sender_scope, direct_conversation.id, %{content: "secret"})
+
+      assert {:ok, reply} =
+               Chat.send_direct_message(recipient_scope, direct_conversation.id, %{
+                 content: "reply",
+                 reply_to_message_id: parent.id
+               })
+
+      assert {:error, :unauthorized} = Chat.delete_message(recipient_scope, parent.id)
+      assert {:ok, deleted} = Chat.delete_message(sender_scope, parent.id)
+      assert deleted.deleted_at
+
+      assert {:error, :invalid_message, deleted_target_changeset} =
+               Chat.send_direct_message(recipient_scope, direct_conversation.id, %{
+                 content: "stale reply",
+                 reply_to_message_id: parent.id
+               })
+
+      assert "is not an earlier message in this conversation" in errors_on(
+               deleted_target_changeset
+             ).reply_to_message_id
+
+      assert {:ok, cleanup_message} =
+               Chat.send_direct_message(sender_scope, direct_conversation.id, %{
+                 content: "former Friend cleanup"
+               })
+
+      assert :ok = Friendships.remove_friend(recipient_scope, friendship.id)
+      assert {:ok, _deleted_cleanup} = Chat.delete_message(sender_scope, cleanup_message.id)
+
+      assert {:ok, [deleted_parent, persisted_reply, deleted_cleanup]} =
+               Chat.list_direct_messages(recipient_scope, direct_conversation.id)
+
+      assert deleted_parent.content == "secret"
+      assert deleted_parent.deleted_at
+      assert persisted_reply.id == reply.id
+      assert persisted_reply.reply_to_message_id == parent.id
+      assert persisted_reply.reply_to_message.deleted_at
+      assert deleted_cleanup.id == cleanup_message.id
+      assert deleted_cleanup.deleted_at
+
+      assert {:error, :not_friends} =
+               Chat.send_direct_message(recipient_scope, direct_conversation.id, %{
+                 content: "former Friend reply",
+                 reply_to_message_id: parent.id
+               })
+    end
+  end
+
   defp direct_conversation_fixture(suffix \\ "durable") do
     sender_scope = user_scope_fixture(user_fixture(username: "#{suffix}_direct_sender"))
     recipient_scope = user_scope_fixture(user_fixture(username: "#{suffix}_direct_recipient"))

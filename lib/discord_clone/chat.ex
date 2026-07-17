@@ -364,6 +364,24 @@ defmodule DiscordClone.Chat do
   def subscribe_to_direct_messages(_scope, _direct_conversation_id),
     do: {:error, :unauthenticated}
 
+  @doc "Subscribes one participant to committed Direct Message reaction changes."
+  @spec subscribe_to_direct_reactions(term(), term()) ::
+          :ok | {:error, :unauthenticated | :not_found}
+  def subscribe_to_direct_reactions(
+        %Scope{user: %User{id: user_id}},
+        direct_conversation_id
+      ) do
+    with %DirectConversation{id: conversation_id} <-
+           get_participant_direct_conversation(user_id, direct_conversation_id) do
+      Phoenix.PubSub.subscribe(DiscordClone.PubSub, ConversationTopics.reactions(conversation_id))
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def subscribe_to_direct_reactions(_scope, _direct_conversation_id),
+    do: {:error, :unauthenticated}
+
   @doc "Subscribes one participant to only their private Direct Conversation Read State."
   @spec subscribe_to_direct_read_state(term(), term()) ::
           :ok | {:error, :unauthenticated | :not_found}
@@ -457,29 +475,42 @@ defmodule DiscordClone.Chat do
         %Message{channel_id: direct_conversation_id, user_id: user_id}
         |> Message.direct_message_changeset(%{content: direct_message_content(attrs)})
 
-      case changeset |> Ecto.Changeset.put_change(:seq, next_seq) |> Repo.insert() do
-        {:ok, message} ->
-          locked_conversation
-          |> Ecto.Changeset.change(last_message_seq: next_seq)
-          |> Repo.update!()
+      reply_to_message_id = direct_message_reply_target(attrs)
 
-          read_state_changes =
-            Unread.fanout_on_direct_send!(direct_conversation, user_id, next_seq)
+      with {:ok, reply_to_message_id} <-
+             validate_reply_target(
+               changeset,
+               direct_conversation_id,
+               next_seq,
+               reply_to_message_id,
+               "conversation"
+             ),
+           {:ok, message} <-
+             changeset
+             |> Ecto.Changeset.put_change(:seq, next_seq)
+             |> Ecto.Changeset.put_change(:reply_to_message_id, reply_to_message_id)
+             |> Repo.insert() do
+        locked_conversation
+        |> Ecto.Changeset.change(last_message_seq: next_seq)
+        |> Repo.update!()
 
-          recipient_user_id = DirectConversation.other_user_id(direct_conversation, user_id)
+        read_state_changes =
+          Unread.fanout_on_direct_send!(direct_conversation, user_id, next_seq)
 
-          %ActivityItem{}
-          |> ActivityItem.create_direct_message_changeset(%{
-            recipient_user_id: recipient_user_id,
-            actor_user_id: user_id,
-            source_message_id: message.id,
-            source_conversation_id: direct_conversation.id
-          })
-          |> Repo.insert!()
+        recipient_user_id = DirectConversation.other_user_id(direct_conversation, user_id)
 
-          {message, read_state_changes, recipient_user_id}
+        %ActivityItem{}
+        |> ActivityItem.create_direct_message_changeset(%{
+          recipient_user_id: recipient_user_id,
+          actor_user_id: user_id,
+          source_message_id: message.id,
+          source_conversation_id: direct_conversation.id
+        })
+        |> Repo.insert!()
 
-        {:error, changeset} ->
+        {message, read_state_changes, recipient_user_id}
+      else
+        {:error, %Ecto.Changeset{} = changeset} ->
           Repo.rollback({:invalid_message, changeset})
       end
     end)
@@ -489,6 +520,11 @@ defmodule DiscordClone.Chat do
     do: Map.get(attrs, :content) || Map.get(attrs, "content")
 
   defp direct_message_content(_attrs), do: nil
+
+  defp direct_message_reply_target(attrs) when is_map(attrs),
+    do: Map.get(attrs, :reply_to_message_id) || Map.get(attrs, "reply_to_message_id")
+
+  defp direct_message_reply_target(_attrs), do: nil
 
   defp get_writable_direct_conversation!(
          %Scope{user: %User{id: user_id}} = scope,
@@ -1456,7 +1492,13 @@ defmodule DiscordClone.Chat do
       next_seq = locked_conversation.last_message_seq + 1
 
       with {:ok, reply_to_message_id} <-
-             validate_reply_target(changeset, channel_id, next_seq, reply_to_message_id),
+             validate_reply_target(
+               changeset,
+               channel_id,
+               next_seq,
+               reply_to_message_id,
+               "channel"
+             ),
            mention_recognition <-
              resolve_mention_recognition(changeset, channel.workspace_id, user_id),
            {:ok, message} <-
@@ -1554,9 +1596,16 @@ defmodule DiscordClone.Chat do
     Enum.map(activity_items, & &1.recipient_user_id)
   end
 
-  defp validate_reply_target(_changeset, _channel_id, _next_seq, nil), do: {:ok, nil}
+  defp validate_reply_target(_changeset, _channel_id, _next_seq, nil, _conversation_label),
+    do: {:ok, nil}
 
-  defp validate_reply_target(changeset, channel_id, next_seq, reply_to_message_id) do
+  defp validate_reply_target(
+         changeset,
+         channel_id,
+         next_seq,
+         reply_to_message_id,
+         conversation_label
+       ) do
     target =
       UUIDIdentifier.cast_or(reply_to_message_id, nil, fn reply_to_message_id ->
         Repo.one(
@@ -1575,7 +1624,7 @@ defmodule DiscordClone.Chat do
          Ecto.Changeset.add_error(
            changeset,
            :reply_to_message_id,
-           "is not an earlier message in this channel"
+           "is not an earlier message in this #{conversation_label}"
          )}
 
       target ->
@@ -1587,54 +1636,120 @@ defmodule DiscordClone.Chat do
     Repo.preload(message, Message.display_preloads())
   end
 
-  def toggle_reaction(%Scope{user: %User{id: user_id}}, message_id, emoji) do
-    with {:ok, normalized_emoji} <- Emoji.validate_reaction(emoji),
-         %Message{} = message <- get_member_message(message_id, user_id),
-         :ok <- reject_deleted_message(message),
-         :ok <- Workspaces.member_participation_status(message.channel.workspace_id, user_id) do
-      case Repo.get_by(MessageReaction,
-             message_id: message.id,
-             user_id: user_id,
-             emoji: normalized_emoji
-           ) do
+  def toggle_reaction(%Scope{user: %User{id: user_id}} = scope, message_id, emoji) do
+    with {:ok, normalized_emoji} <- Emoji.validate_reaction(emoji) do
+      case get_accessible_message(message_id, user_id) do
+        {:channel, message} ->
+          toggle_channel_reaction(message, user_id, normalized_emoji)
+
+        {:direct, message, direct_conversation} ->
+          toggle_direct_reaction(
+            scope,
+            message,
+            direct_conversation,
+            user_id,
+            normalized_emoji
+          )
+
         nil ->
-          %MessageReaction{}
-          |> MessageReaction.changeset(%{
-            message_id: message.id,
-            user_id: user_id,
-            emoji: normalized_emoji
-          })
-          |> Repo.insert()
-
-        %MessageReaction{} = reaction ->
-          Repo.delete(reaction)
-      end
-      |> case do
-        {:ok, reaction_or_deleted_reaction} ->
-          :ok = broadcast_reaction_changed(message, normalized_emoji)
-          {:ok, reaction_or_deleted_reaction}
-
-        {:error, changeset} ->
-          {:error, changeset}
+          {:error, :not_found}
       end
     else
-      nil -> {:error, :not_found}
-      {:error, :message_deleted} -> {:error, :message_deleted}
-      {:error, :muted} -> {:error, :muted}
-      {:error, :timeout} -> {:error, :timeout}
       {:error, reason} -> {:error, :invalid_emoji, reason}
     end
   end
 
   def toggle_reaction(_scope, _message_id, _emoji), do: {:error, :unauthenticated}
 
+  defp toggle_channel_reaction(message, user_id, normalized_emoji) do
+    with :ok <- reject_deleted_message(message),
+         :ok <- Workspaces.member_participation_status(message.channel.workspace_id, user_id) do
+      persist_reaction_toggle(message, user_id, normalized_emoji)
+    end
+  end
+
+  defp toggle_direct_reaction(
+         scope,
+         message,
+         direct_conversation,
+         user_id,
+         normalized_emoji
+       ) do
+    with :ok <- reject_deleted_message(message) do
+      Repo.transaction(fn ->
+        case reaction_for(message.id, user_id, normalized_emoji) do
+          %MessageReaction{} = reaction ->
+            Repo.delete!(reaction)
+
+          nil ->
+            other_user_id = DirectConversation.other_user_id(direct_conversation, user_id)
+
+            case Friendships.lock_accepted_friendship(scope, other_user_id) do
+              :ok -> insert_reaction!(message.id, user_id, normalized_emoji)
+              {:error, reason} -> Repo.rollback(reason)
+            end
+        end
+      end)
+      |> case do
+        {:ok, reaction_or_deleted_reaction} ->
+          :ok = broadcast_reaction_changed(message, normalized_emoji)
+          {:ok, reaction_or_deleted_reaction}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp persist_reaction_toggle(message, user_id, normalized_emoji) do
+    case reaction_for(message.id, user_id, normalized_emoji) do
+      nil ->
+        %MessageReaction{}
+        |> MessageReaction.changeset(%{
+          message_id: message.id,
+          user_id: user_id,
+          emoji: normalized_emoji
+        })
+        |> Repo.insert()
+
+      %MessageReaction{} = reaction ->
+        Repo.delete(reaction)
+    end
+    |> case do
+      {:ok, reaction_or_deleted_reaction} ->
+        :ok = broadcast_reaction_changed(message, normalized_emoji)
+        {:ok, reaction_or_deleted_reaction}
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  defp reaction_for(message_id, user_id, emoji) do
+    Repo.get_by(MessageReaction, message_id: message_id, user_id: user_id, emoji: emoji)
+  end
+
+  defp insert_reaction!(message_id, user_id, emoji) do
+    %MessageReaction{}
+    |> MessageReaction.changeset(%{message_id: message_id, user_id: user_id, emoji: emoji})
+    |> Repo.insert!()
+  end
+
   def delete_message(%Scope{user: %User{id: user_id}}, message_id) do
-    with %Message{} = message <- get_member_message(message_id, user_id),
-         :ok <- authorize_delete_message(message, user_id) do
-      delete_message_with_optional_audit(message, user_id)
-    else
-      nil -> {:error, :not_found}
-      {:error, reason} -> {:error, reason}
+    case get_accessible_message(message_id, user_id) do
+      {:channel, message} ->
+        with :ok <- authorize_delete_message(message, user_id) do
+          delete_message_with_optional_audit(message, user_id)
+        end
+
+      {:direct, %Message{user_id: ^user_id} = message, _direct_conversation} ->
+        delete_message_with_optional_audit(message, user_id)
+
+      {:direct, _message, _direct_conversation} ->
+        {:error, :unauthorized}
+
+      nil ->
+        {:error, :not_found}
     end
   end
 
@@ -1675,7 +1790,7 @@ defmodule DiscordClone.Chat do
       when is_list(message_ids) do
     message_ids = Enum.uniq(message_ids)
 
-    with :ok <- authorize_member_messages(message_ids, user_id) do
+    with :ok <- authorize_accessible_messages(message_ids, user_id) do
       summaries =
         MessageReaction
         |> where([reaction], reaction.message_id in type(^message_ids, {:array, :binary_id}))
@@ -1730,6 +1845,35 @@ defmodule DiscordClone.Chat do
     end)
   end
 
+  defp get_accessible_message(message_id, user_id) do
+    case get_member_message(message_id, user_id) do
+      %Message{} = message ->
+        {:channel, message}
+
+      nil ->
+        case get_direct_participant_message(message_id, user_id) do
+          {message, direct_conversation} -> {:direct, message, direct_conversation}
+          nil -> nil
+        end
+    end
+  end
+
+  defp get_direct_participant_message(message_id, user_id) do
+    UUIDIdentifier.cast_or(message_id, nil, fn message_id ->
+      Repo.one(
+        from message in Message,
+          join: direct_conversation in DirectConversation,
+          on: direct_conversation.id == message.channel_id,
+          where:
+            message.id == ^message_id and
+              (direct_conversation.user_low_id == ^user_id or
+                 direct_conversation.user_high_id == ^user_id),
+          select: {message, direct_conversation},
+          limit: 1
+      )
+    end)
+  end
+
   defp get_live_channel_message(channel_id, message_id) do
     UUIDIdentifier.cast_or(message_id, nil, fn message_id ->
       Repo.one(
@@ -1743,18 +1887,24 @@ defmodule DiscordClone.Chat do
     end)
   end
 
-  defp authorize_member_messages(message_ids, user_id) do
+  defp authorize_accessible_messages(message_ids, user_id) do
     UUIDIdentifier.cast_or(message_ids, {:error, :not_found}, fn message_ids ->
       accessible_message_count =
         Repo.one(
           from message in Message,
-            join: channel in Channel,
+            left_join: channel in Channel,
             on: channel.id == message.channel_id,
-            join: membership in WorkspaceMembership,
+            left_join: membership in WorkspaceMembership,
             on:
               membership.workspace_id == channel.workspace_id and
                 membership.user_id == ^user_id,
+            left_join: direct_conversation in DirectConversation,
+            on: direct_conversation.id == message.channel_id,
             where: message.id in type(^message_ids, {:array, :binary_id}),
+            where:
+              not is_nil(membership.id) or
+                direct_conversation.user_low_id == ^user_id or
+                direct_conversation.user_high_id == ^user_id,
             select: count(message.id)
         )
 
