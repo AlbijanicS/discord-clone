@@ -121,6 +121,7 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
           conversation_read_states_last_viewed_anchor_seq_positive
           conversation_unread_spans_positive_bounds
           conversation_unread_spans_ordered_bounds
+          direct_conversations_canonical_pair
           friend_relationships_canonical_pair
           friend_relationships_requester_in_pair
           friend_relationships_valid_status
@@ -162,6 +163,7 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
           activity_items_recipient_friend_relationship_kind_index
           friend_relationships_user_low_id_user_high_id_index
           conversation_read_states_conversation_id_user_id_index
+          direct_conversations_user_low_id_user_high_id_index
         ) do
       assert MapSet.member?(unique_indexes, name)
     end
@@ -243,6 +245,9 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
       "channels_workspace_id_fkey" => "no_action",
       "conversation_read_states_conversation_id_fkey" => "delete_all",
       "conversation_unread_spans_conversation_id_fkey" => "delete_all",
+      "direct_conversations_conversation_id_fkey" => "delete_all",
+      "direct_conversations_user_high_id_fkey" => "restrict",
+      "direct_conversations_user_low_id_fkey" => "restrict",
       "friend_relationships_requested_by_user_id_fkey" => "restrict",
       "friend_relationships_user_high_id_fkey" => "restrict",
       "friend_relationships_user_low_id_fkey" => "restrict",

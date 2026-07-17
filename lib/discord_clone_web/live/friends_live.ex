@@ -3,7 +3,7 @@ defmodule DiscordCloneWeb.FriendsLive do
 
   use DiscordCloneWeb, :live_view
 
-  alias DiscordClone.Friendships
+  alias DiscordClone.{Chat, Friendships}
 
   @empty_form %{"username" => ""}
 
@@ -67,6 +67,17 @@ defmodule DiscordCloneWeb.FriendsLive do
       socket,
       "Friendship removed."
     )
+  end
+
+  def handle_event("message_friend", %{"user_id" => friend_user_id}, socket) do
+    case Chat.open_direct_conversation(socket.assigns.current_scope, friend_user_id) do
+      {:ok, direct_conversation} ->
+        {:noreply, push_navigate(socket, to: ~p"/direct-messages/#{direct_conversation.id}")}
+
+      {:error, _reason} ->
+        {:noreply,
+         assign(socket, :request_outcome, {:error, "Direct Conversation could not be opened."})}
+    end
   end
 
   @impl true
@@ -317,20 +328,35 @@ defmodule DiscordCloneWeb.FriendsLive do
           >
             Cancel
           </button>
-          <button
-            :if={@direction == :friends}
-            id={"remove-friend-#{relationship_entry.relationship.id}"}
-            type="button"
-            phx-click="remove_friend"
-            phx-value-relationship_id={relationship_entry.relationship.id}
-            data-confirm={"Remove @#{relationship_entry.user.username} from your friends?"}
-            class={[
-              "shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-error/75",
-              "transition hover:bg-error/10 hover:text-error"
-            ]}
-          >
-            Remove
-          </button>
+          <div :if={@direction == :friends} class={["flex shrink-0 items-center gap-2"]}>
+            <button
+              id={"message-friend-#{relationship_entry.user.id}"}
+              type="button"
+              phx-click="message_friend"
+              phx-value-user_id={relationship_entry.user.id}
+              class={[
+                "inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2",
+                "text-xs font-semibold text-primary-content shadow-sm transition",
+                "hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none",
+                "focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+              ]}
+            >
+              <.icon name="hero-chat-bubble-left-right" class="size-4" /> Message
+            </button>
+            <button
+              id={"remove-friend-#{relationship_entry.relationship.id}"}
+              type="button"
+              phx-click="remove_friend"
+              phx-value-relationship_id={relationship_entry.relationship.id}
+              data-confirm={"Remove @#{relationship_entry.user.username} from your friends?"}
+              class={[
+                "rounded-lg px-3 py-2 text-xs font-semibold text-error/75",
+                "transition hover:bg-error/10 hover:text-error"
+              ]}
+            >
+              Remove
+            </button>
+          </div>
         </article>
       </div>
     </section>

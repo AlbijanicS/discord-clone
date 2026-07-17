@@ -17,6 +17,7 @@ defmodule DiscordClone.Chat do
     ChannelReadState,
     Conversation,
     ConversationTopics,
+    DirectConversation,
     Emoji,
     Message,
     MentionParser,
@@ -27,6 +28,7 @@ defmodule DiscordClone.Chat do
   }
 
   alias DiscordClone.{Repo, UUIDIdentifier, Workspaces}
+  alias DiscordClone.Friendships.Relationship
 
   alias DiscordClone.Workspaces.{
     Channel,
@@ -53,6 +55,158 @@ defmodule DiscordClone.Chat do
   def change_message(attrs \\ %{}) do
     Message.changeset(%Message{}, attrs)
   end
+
+  @doc """
+  Finds or lazily creates the scoped User's Direct Conversation with another User.
+
+  An existing Conversation remains accessible after Friendship removal. Only
+  first creation requires an accepted Friendship.
+  """
+  @spec open_direct_conversation(term(), term()) ::
+          {:ok, DirectConversation.t()}
+          | {:error, :unauthenticated | :invalid_participant | :not_found | :not_friends}
+  def open_direct_conversation(%Scope{user: %User{id: user_id}}, friend_user_id) do
+    with {:ok, friend_user_id} <- Ecto.UUID.cast(friend_user_id),
+         :ok <- reject_same_direct_participant(user_id, friend_user_id),
+         %User{} <- Repo.get(User, friend_user_id) do
+      pair = canonical_user_pair(user_id, friend_user_id)
+
+      case direct_conversation_for_pair(pair) do
+        %DirectConversation{} = direct_conversation ->
+          {:ok, preload_direct_conversation(direct_conversation)}
+
+        nil ->
+          create_direct_conversation_for_friends(pair)
+      end
+    else
+      :error -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def open_direct_conversation(_scope, _friend_user_id), do: {:error, :unauthenticated}
+
+  @doc "Finds the scoped User's existing Direct Conversation with another participant."
+  @spec find_direct_conversation(term(), term()) ::
+          {:ok, DirectConversation.t()}
+          | {:error, :unauthenticated | :invalid_participant | :not_found}
+  def find_direct_conversation(%Scope{user: %User{id: user_id}}, other_user_id) do
+    with {:ok, other_user_id} <- Ecto.UUID.cast(other_user_id),
+         :ok <- reject_same_direct_participant(user_id, other_user_id),
+         %DirectConversation{} = direct_conversation <-
+           direct_conversation_for_pair(canonical_user_pair(user_id, other_user_id)) do
+      {:ok, preload_direct_conversation(direct_conversation)}
+    else
+      :error -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def find_direct_conversation(_scope, _other_user_id), do: {:error, :unauthenticated}
+
+  @doc "Returns a Direct Conversation destination only when the scoped User participates."
+  @spec get_direct_conversation(term(), term()) ::
+          {:ok, %{direct_conversation: DirectConversation.t(), other_participant: User.t()}}
+          | {:error, :unauthenticated | :not_found}
+  def get_direct_conversation(%Scope{user: %User{id: user_id}}, direct_conversation_id) do
+    with {:ok, direct_conversation_id} <- Ecto.UUID.cast(direct_conversation_id),
+         %DirectConversation{} = direct_conversation <-
+           Repo.one(
+             from direct_conversation in DirectConversation,
+               where:
+                 direct_conversation.id == ^direct_conversation_id and
+                   (direct_conversation.user_low_id == ^user_id or
+                      direct_conversation.user_high_id == ^user_id)
+           ) do
+      direct_conversation = preload_direct_conversation(direct_conversation)
+
+      {:ok,
+       %{
+         direct_conversation: direct_conversation,
+         other_participant: other_direct_participant(direct_conversation, user_id)
+       }}
+    else
+      _other -> {:error, :not_found}
+    end
+  end
+
+  def get_direct_conversation(_scope, _direct_conversation_id),
+    do: {:error, :unauthenticated}
+
+  defp reject_same_direct_participant(user_id, user_id),
+    do: {:error, :invalid_participant}
+
+  defp reject_same_direct_participant(_user_id, _friend_user_id), do: :ok
+
+  defp canonical_user_pair(first_user_id, second_user_id) do
+    if first_user_id < second_user_id,
+      do: {first_user_id, second_user_id},
+      else: {second_user_id, first_user_id}
+  end
+
+  defp direct_conversation_for_pair({user_low_id, user_high_id}) do
+    Repo.get_by(DirectConversation,
+      user_low_id: user_low_id,
+      user_high_id: user_high_id
+    )
+  end
+
+  defp create_direct_conversation_for_friends({user_low_id, user_high_id} = pair) do
+    case Repo.transaction(fn ->
+           accepted_friendship =
+             Repo.one(
+               from relationship in Relationship,
+                 where:
+                   relationship.user_low_id == ^user_low_id and
+                     relationship.user_high_id == ^user_high_id and
+                     relationship.status == :accepted,
+                 lock: "FOR SHARE"
+             )
+
+           if is_nil(accepted_friendship), do: Repo.rollback(:not_friends)
+
+           conversation =
+             %Conversation{}
+             |> Conversation.direct_conversation_changeset()
+             |> Repo.insert!()
+
+           %DirectConversation{id: conversation.id}
+           |> DirectConversation.create_changeset(%{
+             user_low_id: user_low_id,
+             user_high_id: user_high_id
+           })
+           |> Repo.insert!(
+             on_conflict: :nothing,
+             conflict_target: [:user_low_id, :user_high_id]
+           )
+
+           direct_conversation = direct_conversation_for_pair(pair)
+
+           if direct_conversation.id != conversation.id do
+             Repo.delete!(conversation)
+           end
+
+           direct_conversation
+         end) do
+      {:ok, direct_conversation} ->
+        {:ok, preload_direct_conversation(direct_conversation)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp preload_direct_conversation(direct_conversation) do
+    Repo.preload(direct_conversation, [:conversation, :user_low, :user_high])
+  end
+
+  defp other_direct_participant(%DirectConversation{user_low_id: user_id} = direct, user_id),
+    do: direct.user_high
+
+  defp other_direct_participant(%DirectConversation{} = direct, _user_id),
+    do: direct.user_low
 
   @doc "Returns the scoped user's global unread activity count."
   @spec unread_activity_count(term()) :: {:ok, non_neg_integer()} | {:error, :unauthenticated}
