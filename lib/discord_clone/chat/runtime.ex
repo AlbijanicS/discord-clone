@@ -4,9 +4,10 @@ defmodule DiscordClone.Chat.Runtime do
   import Ecto.Query
 
   alias DiscordClone.Chat.{
-    ChannelRegistry,
-    ChannelServer,
-    ChannelSupervisor,
+    ConversationRegistry,
+    ConversationServer,
+    ConversationSupervisor,
+    Conversation,
     Message,
     PresenceEvents,
     WorkspaceRegistry,
@@ -108,68 +109,75 @@ defmodule DiscordClone.Chat.Runtime do
     :ok
   end
 
-  def channel_pid(channel_id) do
-    UUIDIdentifier.cast_or(channel_id, nil, fn channel_id ->
-      case Registry.lookup(ChannelRegistry, channel_id) do
+  def conversation_pid(conversation_id) do
+    UUIDIdentifier.cast_or(conversation_id, nil, fn conversation_id ->
+      case Registry.lookup(ConversationRegistry, conversation_id) do
         [{pid, _value}] -> if Process.alive?(pid), do: pid
         [] -> nil
       end
     end)
   end
 
-  def ensure_channel(channel_id) do
-    UUIDIdentifier.cast_or(channel_id, {:error, :not_found}, fn channel_id ->
-      do_ensure_channel(channel_id)
+  def ensure_conversation(conversation_id) do
+    UUIDIdentifier.cast_or(conversation_id, {:error, :not_found}, fn conversation_id ->
+      do_ensure_conversation(conversation_id)
     end)
   end
 
-  defp do_ensure_channel(channel_id) do
-    case channel_pid(channel_id) do
+  defp do_ensure_conversation(conversation_id) do
+    case conversation_pid(conversation_id) do
       pid when is_pid(pid) ->
-        :ok = ChannelServer.touch(pid)
+        :ok = ConversationServer.touch(pid)
         {:ok, pid}
 
       nil ->
-        recent_messages = load_recent_messages(channel_id)
+        if Repo.exists?(
+             from conversation in Conversation, where: conversation.id == ^conversation_id
+           ) do
+          recent_messages = load_recent_messages(conversation_id)
 
-        case DynamicSupervisor.start_child(
-               ChannelSupervisor,
-               {ChannelServer, {channel_id, recent_messages, channel_via_tuple(channel_id)}}
-             ) do
-          {:ok, pid} -> {:ok, pid}
-          {:error, {:already_started, pid}} -> {:ok, pid}
-          {:error, reason} -> {:error, reason}
+          case DynamicSupervisor.start_child(
+                 ConversationSupervisor,
+                 {ConversationServer,
+                  {conversation_id, recent_messages, conversation_via_tuple(conversation_id)}}
+               ) do
+            {:ok, pid} -> {:ok, pid}
+            {:error, {:already_started, pid}} -> {:ok, pid}
+            {:error, reason} -> {:error, reason}
+          end
+        else
+          {:error, :not_found}
         end
     end
   end
 
-  def list_recent_messages(channel_id) do
-    with {:ok, pid} <- ensure_channel(channel_id) do
-      ChannelServer.list_recent_messages(pid)
+  def list_recent_messages(conversation_id) do
+    with {:ok, pid} <- ensure_conversation(conversation_id) do
+      ConversationServer.list_recent_messages(pid)
     end
   end
 
   def put_recent_message(%Message{} = message) do
-    with {:ok, pid} <- ensure_channel(message.channel_id) do
-      ChannelServer.put_recent_message(pid, message)
+    with {:ok, pid} <- ensure_conversation(message.channel_id) do
+      ConversationServer.put_recent_message(pid, message)
     end
   end
 
-  def list_typing_user_ids(channel_id) do
-    with {:ok, pid} <- ensure_channel(channel_id) do
-      ChannelServer.list_typing_user_ids(pid)
+  def list_typing_user_ids(conversation_id) do
+    with {:ok, pid} <- ensure_conversation(conversation_id) do
+      ConversationServer.list_typing_user_ids(pid)
     end
   end
 
-  def user_started_typing(channel_id, user_id) do
-    with {:ok, pid} <- ensure_channel(channel_id) do
-      ChannelServer.user_started_typing(pid, user_id)
+  def user_started_typing(conversation_id, user_id) do
+    with {:ok, pid} <- ensure_conversation(conversation_id) do
+      ConversationServer.user_started_typing(pid, user_id)
     end
   end
 
-  def user_stopped_typing(channel_id, user_id) do
-    with {:ok, pid} <- ensure_channel(channel_id) do
-      ChannelServer.user_stopped_typing(pid, user_id)
+  def user_stopped_typing(conversation_id, user_id) do
+    with {:ok, pid} <- ensure_conversation(conversation_id) do
+      ConversationServer.user_stopped_typing(pid, user_id)
     end
   end
 
@@ -177,9 +185,9 @@ defmodule DiscordClone.Chat.Runtime do
     Phoenix.PubSub.broadcast(DiscordClone.PubSub, workspace_presence_topic(workspace_id), event)
   end
 
-  defp load_recent_messages(channel_id) do
+  defp load_recent_messages(conversation_id) do
     Message
-    |> where([message], message.channel_id == ^channel_id)
+    |> where([message], message.channel_id == ^conversation_id)
     |> order_by([message], desc: message.seq)
     |> limit(^@recent_message_limit)
     |> preload(^Message.display_preloads())
@@ -191,8 +199,8 @@ defmodule DiscordClone.Chat.Runtime do
     {:via, Registry, {WorkspaceRegistry, workspace_id}}
   end
 
-  defp channel_via_tuple(channel_id) do
-    {:via, Registry, {ChannelRegistry, channel_id}}
+  defp conversation_via_tuple(conversation_id) do
+    {:via, Registry, {ConversationRegistry, conversation_id}}
   end
 
   defp workspace_presence_topic(workspace_id), do: "chat:workspace_presence:#{workspace_id}"

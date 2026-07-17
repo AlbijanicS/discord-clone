@@ -33,7 +33,7 @@ Three-layer split: **contexts** (`lib/discord_clone/`) own all business logic an
 Supervision tree children are started in `application.ex`: two `Registry` + `DynamicSupervisor` pairs plus `Phoenix.PubSub`.
 
 - **WorkspaceServer** (one GenServer per active workspace, keyed in `WorkspaceRegistry`, started under `WorkspaceSupervisor`) — tracks online presence for a workspace. Started on demand via `WorkspacePresenceRuntime`. Presence changes broadcast over PubSub (`WorkspacePresence`), consumed by LiveViews.
-- **ChannelServer** (one GenServer per active channel, keyed in `ChannelRegistry`, started under `ChannelSupervisor`) — in-memory cache of recent messages and transient typing indicators. Idle channels shut down after a 15-minute inactivity timeout; the supervisor reloads recent messages from Postgres on next start.
+- **ConversationServer** (one GenServer per active Conversation, keyed in `ConversationRegistry`, started under `ConversationSupervisor`) — in-memory cache of recent Messages and transient typing indicators for either Conversation kind. Idle Conversations shut down after a 15-minute inactivity timeout; the supervisor reloads recent Messages from Postgres on next start. Authorization remains in public contexts rather than this kind-agnostic runtime.
 
 Rule of thumb: **durable state → Postgres via Ecto; ephemeral real-time state (presence, typing, hot message cache) → these GenServers.** LiveViews read/write through the Chat context, which delegates to the runtime and broadcasts via PubSub.
 

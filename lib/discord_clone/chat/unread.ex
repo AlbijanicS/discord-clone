@@ -14,6 +14,7 @@ defmodule DiscordClone.Chat.Unread do
   alias DiscordClone.Chat.{
     ChannelReadState,
     ChannelUnreadSpan,
+    ConversationTopics,
     MessageWindow,
     Unread.Spans
   }
@@ -190,7 +191,10 @@ defmodule DiscordClone.Chat.Unread do
 
   def subscribe_to_channel_read_state(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
-      Phoenix.PubSub.subscribe(DiscordClone.PubSub, channel_read_state_topic(user_id, channel_id))
+      Phoenix.PubSub.subscribe(
+        DiscordClone.PubSub,
+        ConversationTopics.read_state(user_id, channel_id)
+      )
     else
       nil -> {:error, :not_found}
     end
@@ -438,9 +442,6 @@ defmodule DiscordClone.Chat.Unread do
 
   defp validate_unread_range(_from_seq, _to_seq), do: {:error, :invalid_range}
 
-  defp channel_read_state_topic(user_id, channel_id),
-    do: "chat:user:#{user_id}:channel:#{channel_id}:read_state"
-
   defp broadcast_channel_read_state_changed(
          workspace_id,
          user_id,
@@ -448,7 +449,7 @@ defmodule DiscordClone.Chat.Unread do
        ) do
     Phoenix.PubSub.broadcast(
       DiscordClone.PubSub,
-      channel_read_state_topic(user_id, read_state.channel_id),
+      ConversationTopics.read_state(user_id, read_state.channel_id),
       {:channel_read_state_changed,
        %{
          workspace_id: workspace_id,

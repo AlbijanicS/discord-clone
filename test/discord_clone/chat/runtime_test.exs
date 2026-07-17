@@ -14,9 +14,9 @@ defmodule DiscordClone.Chat.RuntimeTest do
       assert Runtime.join_workspace_presence("not-a-uuid", "also-invalid", self()) ==
                {:error, :not_found}
 
-      assert Runtime.ensure_channel("not-a-uuid") == {:error, :not_found}
+      assert Runtime.ensure_conversation("not-a-uuid") == {:error, :not_found}
       assert Runtime.workspace_presence_pid("not-a-uuid") == nil
-      assert Runtime.channel_pid("not-a-uuid") == nil
+      assert Runtime.conversation_pid("not-a-uuid") == nil
     end
 
     test "starts and finds a workspace presence runtime by durable workspace ID" do

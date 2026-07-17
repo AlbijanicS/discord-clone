@@ -133,7 +133,7 @@ A channel belongs to one workspace and groups messages plus live process state.
 - Use a unique index on `[:workspace_id, :name]`.
 - Channel names should be normalized to a predictable format before insert.
 - Deleting a channel should delete its messages.
-- Every active channel may have one associated `ChannelServer` process.
+- Every active Channel may have one associated shared `ConversationServer` process.
 - New workspaces start with a `general` channel.
 - Channel names do not have to remain `general`; renaming the default channel
   later should preserve the landing role because the workspace stores the
@@ -282,9 +282,9 @@ The first implementation can stay simple with three contexts:
 
 The OTP modules can live under `DiscordClone.Chat`, for example:
 
-- `DiscordClone.Chat.ChannelServer`
-- `DiscordClone.Chat.ChannelSupervisor`
-- `DiscordClone.Chat.ChannelRegistry`
+- `DiscordClone.Chat.ConversationServer`
+- `DiscordClone.Chat.ConversationSupervisor`
+- `DiscordClone.Chat.ConversationRegistry`
 
 ## First Migration Order
 
@@ -343,6 +343,6 @@ These can be added after the core model works:
   reasonable because the live state needs are similar.
 - Unread counts: persist per-user read positions with `channel_reads`, not as
   counters on users or channels. A Channel read row stores a User's durable
-  message cursor for a Channel in Postgres. ChannelServer must not own read or
+  message cursor for a Channel in Postgres. ConversationServer must not own read or
   unread state because process memory is allowed to reset on crash, shutdown,
   or reconnect.

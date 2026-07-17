@@ -15,6 +15,7 @@ defmodule DiscordClone.Chat do
   alias DiscordClone.Chat.{
     ChannelReadState,
     Conversation,
+    ConversationTopics,
     Emoji,
     Message,
     MentionParser,
@@ -390,8 +391,8 @@ defmodule DiscordClone.Chat do
     Enum.each(messages, fn %Message{} = message ->
       Phoenix.PubSub.broadcast(
         DiscordClone.PubSub,
-        channel_messages_topic(message.channel_id),
-        {:message_deleted, %{channel_id: message.channel_id, message_id: message.id}}
+        ConversationTopics.messages(message.channel_id),
+        {:message_deleted, %{conversation_id: message.channel_id, message_id: message.id}}
       )
     end)
 
@@ -562,13 +563,14 @@ defmodule DiscordClone.Chat do
   defdelegate subtract_visible_read_range(scope, channel_id, from_seq, to_seq), to: Unread
   defdelegate subscribe_to_channel_read_state(scope, channel_id), to: Unread
 
-  # Subscribes to a channel's message topic. Transient typing indicators
-  # (`:typing_started` / `:typing_stopped`, broadcast by the channel runtime)
+  # Subscribes to the Channel's shared Conversation topic. Transient typing
+  # indicators (`:typing_started` / `:typing_stopped`, broadcast by the
+  # Conversation runtime)
   # ride on this same topic, so a message subscriber also receives typing
   # events — there is deliberately no separate typing subscription.
   def subscribe_to_channel_messages(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
-      Phoenix.PubSub.subscribe(DiscordClone.PubSub, channel_messages_topic(channel_id))
+      Phoenix.PubSub.subscribe(DiscordClone.PubSub, ConversationTopics.messages(channel_id))
     else
       nil -> {:error, :not_found}
     end
@@ -578,7 +580,7 @@ defmodule DiscordClone.Chat do
 
   def subscribe_to_channel_reactions(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
-      Phoenix.PubSub.subscribe(DiscordClone.PubSub, channel_reactions_topic(channel_id))
+      Phoenix.PubSub.subscribe(DiscordClone.PubSub, ConversationTopics.reactions(channel_id))
     else
       nil -> {:error, :not_found}
     end
@@ -628,7 +630,7 @@ defmodule DiscordClone.Chat do
 
   def ensure_channel_runtime(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
-      Runtime.ensure_channel(channel_id)
+      Runtime.ensure_conversation(channel_id)
     else
       nil -> {:error, :not_found}
     end
@@ -1336,7 +1338,7 @@ defmodule DiscordClone.Chat do
     Phoenix.PubSub.broadcast_from(
       DiscordClone.PubSub,
       self(),
-      channel_messages_topic(message.channel_id),
+      ConversationTopics.messages(message.channel_id),
       {:message_created, message}
     )
   end
@@ -1345,13 +1347,11 @@ defmodule DiscordClone.Chat do
     Phoenix.PubSub.broadcast_from(
       DiscordClone.PubSub,
       self(),
-      channel_messages_topic(message.channel_id),
-      {:message_deleted, %{channel_id: message.channel_id, message_id: message.id}}
+      ConversationTopics.messages(message.channel_id),
+      {:message_deleted, %{conversation_id: message.channel_id, message_id: message.id}}
     )
   end
 
-  defp channel_messages_topic(channel_id), do: "chat:channel:#{channel_id}"
-  defp channel_reactions_topic(channel_id), do: "chat:channel:#{channel_id}:reactions"
   defp workspace_messages_topic(workspace_id), do: "chat:workspace:#{workspace_id}:messages"
   defp activity_topic(user_id), do: "chat:user:#{user_id}:activity"
 
@@ -1375,7 +1375,7 @@ defmodule DiscordClone.Chat do
     Phoenix.PubSub.broadcast_from(
       DiscordClone.PubSub,
       self(),
-      channel_reactions_topic(message.channel_id),
+      ConversationTopics.reactions(message.channel_id),
       {:reaction_changed, %{message_id: message.id, emoji: emoji}}
     )
   end

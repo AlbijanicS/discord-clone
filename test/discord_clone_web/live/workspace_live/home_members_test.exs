@@ -20,12 +20,12 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMembersTest do
     } do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
 
-      assert Runtime.channel_pid(workspace.default_channel_id) == nil
+      assert Runtime.conversation_pid(workspace.default_channel_id) == nil
 
       {:ok, _view, _html} =
         live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
 
-      assert is_pid(Runtime.channel_pid(workspace.default_channel_id))
+      assert is_pid(Runtime.conversation_pid(workspace.default_channel_id))
     end
 
     test "does not start a channel runtime during disconnected static render", %{
@@ -37,7 +37,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMembersTest do
       conn = get(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
 
       assert html_response(conn, 200)
-      assert Runtime.channel_pid(workspace.default_channel_id) == nil
+      assert Runtime.conversation_pid(workspace.default_channel_id) == nil
     end
 
     test "renders durable workspace members in the channel shell", %{

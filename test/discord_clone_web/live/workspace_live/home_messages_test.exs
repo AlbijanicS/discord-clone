@@ -739,7 +739,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMessagesTest do
       ref = Process.monitor(first_pid)
       Process.exit(first_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
-      _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
+      _ = :sys.get_state(DiscordClone.Chat.ConversationSupervisor)
 
       second_message =
         insert_message!(
@@ -754,7 +754,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMessagesTest do
       assert has_element?(view, "#message-#{first_message.id}-content", "before runtime loss")
       assert has_element?(view, "#message-#{second_message.id}-content", "after runtime loss")
 
-      replacement_pid = Runtime.channel_pid(channel_id)
+      replacement_pid = Runtime.conversation_pid(channel_id)
       assert is_pid(replacement_pid)
       assert replacement_pid != first_pid
     end
@@ -780,7 +780,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMessagesTest do
       ref = Process.monitor(first_pid)
       Process.exit(first_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
-      _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
+      _ = :sys.get_state(DiscordClone.Chat.ConversationSupervisor)
 
       {:ok, view, _html} = live(conn, ~p"/workspaces/#{workspace.id}/channels/#{channel_id}")
 
@@ -790,7 +790,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMessagesTest do
                "👍 1"
              )
 
-      replacement_pid = Runtime.channel_pid(channel_id)
+      replacement_pid = Runtime.conversation_pid(channel_id)
       assert is_pid(replacement_pid)
       assert replacement_pid != first_pid
     end
@@ -1294,7 +1294,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMessagesTest do
              )
     end
 
-    test "removes another member typing indicator after runtime expiry", %{
+    test "removes another member typing indicator after typing stops", %{
       conn: conn,
       scope: receiver_scope
     } do
@@ -1325,12 +1325,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMessagesTest do
                "typing_sender"
              )
 
-      assert pid = Runtime.channel_pid(channel_id)
-      assert %{typing_users: %{^sender_id => deadline}} = :sys.get_state(pid)
+      assert :ok = Chat.user_stopped_typing(sender_scope, channel_id)
 
-      send(pid, {:typing_expired, sender_id, deadline})
-
-      assert_receive {:typing_stopped, %{channel_id: ^channel_id, user_id: ^sender_id}}
+      assert_receive {:typing_stopped, %{conversation_id: ^channel_id, user_id: ^sender_id}}
 
       refute has_element?(
                receiver_view,
@@ -1367,7 +1364,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMessagesTest do
                "typing_sender"
              )
 
-      runtime_pid = Runtime.channel_pid(channel_id)
+      runtime_pid = Runtime.conversation_pid(channel_id)
       ref = Process.monitor(runtime_pid)
       Process.exit(runtime_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^runtime_pid, :killed}
@@ -1387,7 +1384,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMessagesTest do
                "typing_sender"
              )
 
-      restarted_runtime_pid = Runtime.channel_pid(channel_id)
+      restarted_runtime_pid = Runtime.conversation_pid(channel_id)
       restarted_ref = Process.monitor(restarted_runtime_pid)
       Process.exit(restarted_runtime_pid, :kill)
       assert_receive {:DOWN, ^restarted_ref, :process, ^restarted_runtime_pid, :killed}

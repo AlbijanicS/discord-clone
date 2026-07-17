@@ -138,20 +138,20 @@ Prefer messages and state that are easy to inspect in tests. Avoid hiding core
 process behavior behind broad helper functions that make supervision and
 recovery harder to understand.
 
-## Channel Process Direction
+## Conversation Process Direction
 
-The next major target is the channel process foundation.
+The shared Conversation process foundation serves Channels and Direct Conversations.
 
 Expected modules:
 
-- `DiscordClone.Chat.ChannelRegistry`
-- `DiscordClone.Chat.ChannelSupervisor`
-- `DiscordClone.Chat.ChannelServer`
+- `DiscordClone.Chat.ConversationRegistry`
+- `DiscordClone.Chat.ConversationSupervisor`
+- `DiscordClone.Chat.ConversationServer`
 
 Expected first slice:
 
-- start/find a channel process by durable `channel_id`
-- register processes by channel ID, not by channel name
+- start/find a Conversation process by durable `conversation_id`
+- register processes by Conversation ID, not by a subtype name
 - expose lookup/start through `DiscordClone.Chat`
 - initialize minimal channel state
 - prove that entering a channel starts or finds the process
@@ -182,7 +182,7 @@ writes the expiry audit event). So a timeout's *effect* ends exactly at its
 the next time presence starts. `expire_member_timeout/1` re-checks `expires_at`
 before writing, so a stale or duplicate timer cannot expire a timeout early.
 
-**Channel runtime (`ChannelServer`).** A channel process caches recent messages
+**Conversation runtime (`ConversationServer`).** A Conversation process caches recent messages
 and transient typing indicators. Both are in-memory only: on the 15-minute idle
 shutdown or on a crash they reset, and the supervisor reloads recent messages
 from Postgres on next start. Durable messages, reactions, and read state survive;
@@ -202,10 +202,10 @@ navigation stays continuously online.
 
 `DiscordClone.Chat` owns PubSub topic construction and broadcasting decisions.
 
-Current message topics use durable channel IDs:
+Current message topics use durable Conversation IDs:
 
 ```elixir
-"chat:channel:#{channel_id}"
+"chat:conversation:#{conversation_id}"
 ```
 
 Future presence and typing events should follow the same principle: keep topic

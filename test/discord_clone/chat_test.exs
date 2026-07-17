@@ -1035,7 +1035,7 @@ defmodule DiscordClone.ChatTest do
       ref = Process.monitor(first_pid)
       Process.exit(first_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
-      _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
+      _ = :sys.get_state(DiscordClone.Chat.ConversationSupervisor)
 
       assert Chat.list_unread_counts(scope, workspace.id) == {:ok, %{}}
       assert {:ok, second_pid} = Chat.ensure_channel_runtime(scope, channel_id)
@@ -1466,13 +1466,11 @@ defmodule DiscordClone.ChatTest do
       assert {:ok, _reaction} = Chat.toggle_reaction(scope, message.id, "👍")
 
       assert {:ok, first_pid} = Chat.ensure_channel_runtime(scope, channel_id)
-      assert %{channel_id: ^channel_id} = :sys.get_state(first_pid)
-
       ref = Process.monitor(first_pid)
       Process.exit(first_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
-      _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
-      assert Runtime.channel_pid(channel_id) == nil
+      _ = :sys.get_state(DiscordClone.Chat.ConversationSupervisor)
+      assert Runtime.conversation_pid(channel_id) == nil
 
       assert {:ok, summaries} = Chat.list_reaction_summaries(scope, [message.id])
 
@@ -1537,10 +1535,11 @@ defmodule DiscordClone.ChatTest do
       assert :ok = Chat.user_started_typing(scope, channel_id)
 
       assert_receive {:subscriber_received, ^subscriber,
-                      {:typing_started, %{channel_id: ^channel_id, user_id: user_id} = payload}}
+                      {:typing_started,
+                       %{conversation_id: ^channel_id, user_id: user_id} = payload}}
 
       assert user_id == scope.user.id
-      assert Map.keys(payload) |> Enum.sort() == [:channel_id, :user_id]
+      assert Map.keys(payload) |> Enum.sort() == [:conversation_id, :user_id]
       assert {:ok, [user_id]} = Chat.list_typing_user_ids(scope, channel_id)
       assert user_id == scope.user.id
     end
@@ -1572,11 +1571,11 @@ defmodule DiscordClone.ChatTest do
       assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
 
       assert :ok = Chat.user_started_typing(scope, channel_id)
-      assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: user_id}}
+      assert_receive {:typing_started, %{conversation_id: ^channel_id, user_id: user_id}}
       assert user_id == scope.user.id
 
       assert :ok = Chat.user_started_typing(scope, channel_id)
-      refute_receive {:typing_started, %{channel_id: ^channel_id, user_id: ^user_id}}, 50
+      refute_receive {:typing_started, %{conversation_id: ^channel_id, user_id: ^user_id}}, 50
       assert {:ok, [^user_id]} = Chat.list_typing_user_ids(scope, channel_id)
     end
 
@@ -1588,16 +1587,19 @@ defmodule DiscordClone.ChatTest do
       assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
 
       assert :ok = Chat.user_started_typing(scope, channel_id)
-      assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: user_id}}
+      assert_receive {:typing_started, %{conversation_id: ^channel_id, user_id: user_id}}
       assert user_id == scope.user.id
 
       assert :ok = Chat.user_stopped_typing(scope, channel_id)
-      assert_receive {:typing_stopped, %{channel_id: ^channel_id, user_id: ^user_id} = payload}
-      assert Map.keys(payload) |> Enum.sort() == [:channel_id, :user_id]
+
+      assert_receive {:typing_stopped,
+                      %{conversation_id: ^channel_id, user_id: ^user_id} = payload}
+
+      assert Map.keys(payload) |> Enum.sort() == [:conversation_id, :user_id]
       assert {:ok, []} = Chat.list_typing_user_ids(scope, channel_id)
 
       assert :ok = Chat.user_stopped_typing(scope, channel_id)
-      refute_receive {:typing_stopped, %{channel_id: ^channel_id, user_id: ^user_id}}, 50
+      refute_receive {:typing_stopped, %{conversation_id: ^channel_id, user_id: ^user_id}}, 50
     end
 
     test "typing expires automatically and subscribers receive a stopped event" do
@@ -1605,16 +1607,18 @@ defmodule DiscordClone.ChatTest do
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
       channel_id = workspace.default_channel_id
 
-      put_channel_typing_timeout(0)
+      put_conversation_typing_timeout(0)
 
       assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
 
       assert :ok = Chat.user_started_typing(scope, channel_id)
-      assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: user_id}}
+      assert_receive {:typing_started, %{conversation_id: ^channel_id, user_id: user_id}}
       assert user_id == scope.user.id
 
-      assert_receive {:typing_stopped, %{channel_id: ^channel_id, user_id: ^user_id} = payload}
-      assert Map.keys(payload) |> Enum.sort() == [:channel_id, :user_id]
+      assert_receive {:typing_stopped,
+                      %{conversation_id: ^channel_id, user_id: ^user_id} = payload}
+
+      assert Map.keys(payload) |> Enum.sort() == [:conversation_id, :user_id]
       assert {:ok, []} = Chat.list_typing_user_ids(scope, channel_id)
     end
 
@@ -1625,23 +1629,23 @@ defmodule DiscordClone.ChatTest do
 
       assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
       assert :ok = Chat.user_started_typing(scope, channel_id)
-      assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: user_id}}
+      assert_receive {:typing_started, %{conversation_id: ^channel_id, user_id: user_id}}
       assert user_id == scope.user.id
       assert {:ok, [^user_id]} = Chat.list_typing_user_ids(scope, channel_id)
 
-      first_pid = Runtime.channel_pid(channel_id)
+      first_pid = Runtime.conversation_pid(channel_id)
       ref = Process.monitor(first_pid)
       Process.exit(first_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
-      _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
+      _ = :sys.get_state(DiscordClone.Chat.ConversationSupervisor)
 
       assert {:ok, []} = Chat.list_typing_user_ids(scope, channel_id)
 
       assert :ok = Chat.user_started_typing(scope, channel_id)
-      assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: ^user_id}}
+      assert_receive {:typing_started, %{conversation_id: ^channel_id, user_id: ^user_id}}
       assert {:ok, [^user_id]} = Chat.list_typing_user_ids(scope, channel_id)
 
-      second_pid = Runtime.channel_pid(channel_id)
+      second_pid = Runtime.conversation_pid(channel_id)
       assert is_pid(second_pid)
       assert second_pid != first_pid
     end
@@ -2272,7 +2276,7 @@ defmodule DiscordClone.ChatTest do
       ref = Process.monitor(first_pid)
       Process.exit(first_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
-      _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
+      _ = :sys.get_state(DiscordClone.Chat.ConversationSupervisor)
 
       second_message =
         insert_message!(
@@ -2287,7 +2291,7 @@ defmodule DiscordClone.ChatTest do
 
       assert {:ok, second_pid} = Chat.ensure_channel_runtime(scope, channel_id)
       assert second_pid != first_pid
-      assert %{channel_id: ^channel_id} = :sys.get_state(second_pid)
+      assert Runtime.conversation_pid(channel_id) == second_pid
     end
 
     test "rejects anonymous scopes" do
@@ -2639,7 +2643,7 @@ defmodule DiscordClone.ChatTest do
 
       assert_receive {:subscriber_received, ^subscriber, {:message_deleted, payload}}
       assert payload.message_id == message.id
-      assert payload.channel_id == workspace.default_channel_id
+      assert payload.conversation_id == workspace.default_channel_id
 
       assert {:ok, [cached_message]} =
                Chat.list_recent_messages(owner_scope, workspace.default_channel_id)
@@ -2892,7 +2896,7 @@ defmodule DiscordClone.ChatTest do
       runtime_ref = Process.monitor(runtime_pid)
       Process.exit(runtime_pid, :kill)
       assert_receive {:DOWN, ^runtime_ref, :process, ^runtime_pid, :killed}
-      _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
+      _ = :sys.get_state(DiscordClone.Chat.ConversationSupervisor)
 
       assert {:ok, recent_messages} = Chat.list_recent_messages(scope, channel_id)
       reloaded_nested_reply = Enum.find(recent_messages, &(&1.id == nested_reply.id))
@@ -3282,13 +3286,13 @@ defmodule DiscordClone.ChatTest do
 
       assert :ok = Chat.subscribe_to_channel_messages(scope, channel_id)
       assert :ok = Chat.user_started_typing(scope, channel_id)
-      assert_receive {:typing_started, %{channel_id: ^channel_id, user_id: user_id}}
+      assert_receive {:typing_started, %{conversation_id: ^channel_id, user_id: user_id}}
 
       assert {:ok, message} =
                Chat.send_message(scope, channel_id, %{"content" => "typing resolved"})
 
       assert message.content == "typing resolved"
-      assert_receive {:typing_stopped, %{channel_id: ^channel_id, user_id: ^user_id}}
+      assert_receive {:typing_stopped, %{conversation_id: ^channel_id, user_id: ^user_id}}
       assert {:ok, []} = Chat.list_typing_user_ids(scope, channel_id)
     end
 
@@ -3307,7 +3311,7 @@ defmodule DiscordClone.ChatTest do
       ref = Process.monitor(first_pid)
       Process.exit(first_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^first_pid, :killed}
-      _ = :sys.get_state(DiscordClone.Chat.ChannelSupervisor)
+      _ = :sys.get_state(DiscordClone.Chat.ConversationSupervisor)
 
       subscriber = start_subscriber(scope, channel_id)
       assert_receive {:subscribed, ^subscriber}
@@ -3657,15 +3661,15 @@ defmodule DiscordClone.ChatTest do
     end)
   end
 
-  defp put_channel_typing_timeout(timeout_ms) do
-    previous = Application.get_env(:discord_clone, :channel_runtime_typing_timeout_ms)
-    Application.put_env(:discord_clone, :channel_runtime_typing_timeout_ms, timeout_ms)
+  defp put_conversation_typing_timeout(timeout_ms) do
+    previous = Application.get_env(:discord_clone, :conversation_runtime_typing_timeout_ms)
+    Application.put_env(:discord_clone, :conversation_runtime_typing_timeout_ms, timeout_ms)
 
     on_exit(fn ->
       if is_nil(previous) do
-        Application.delete_env(:discord_clone, :channel_runtime_typing_timeout_ms)
+        Application.delete_env(:discord_clone, :conversation_runtime_typing_timeout_ms)
       else
-        Application.put_env(:discord_clone, :channel_runtime_typing_timeout_ms, previous)
+        Application.put_env(:discord_clone, :conversation_runtime_typing_timeout_ms, previous)
       end
     end)
   end

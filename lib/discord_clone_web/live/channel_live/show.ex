@@ -685,8 +685,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     {:noreply, refresh_reaction_summary(socket, message_id)}
   end
 
-  def handle_info({:typing_started, %{channel_id: channel_id, user_id: user_id}}, socket) do
-    if socket.assigns.selected_channel.id == channel_id do
+  def handle_info(
+        {:typing_started, %{conversation_id: conversation_id, user_id: user_id}},
+        socket
+      ) do
+    if socket.assigns.selected_channel.id == conversation_id do
       typing_user_ids = MapSet.put(socket.assigns.typing_user_ids, user_id)
 
       {:noreply,
@@ -698,8 +701,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
-  def handle_info({:typing_stopped, %{channel_id: channel_id, user_id: user_id}}, socket) do
-    if socket.assigns.selected_channel.id == channel_id do
+  def handle_info(
+        {:typing_stopped, %{conversation_id: conversation_id, user_id: user_id}},
+        socket
+      ) do
+    if socket.assigns.selected_channel.id == conversation_id do
       typing_user_ids = MapSet.delete(socket.assigns.typing_user_ids, user_id)
 
       {:noreply, assign(socket, :typing_user_ids, typing_user_ids)}
@@ -1111,7 +1117,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   def handle_event("delete_message", %{"message-id" => message_id}, socket) do
     case Chat.delete_message(socket.assigns.current_scope, message_id) do
       {:ok, _message} ->
-        payload = %{channel_id: socket.assigns.selected_channel.id, message_id: message_id}
+        payload = %{
+          conversation_id: socket.assigns.selected_channel.id,
+          message_id: message_id
+        }
+
         {:noreply, refresh_deleted_message(socket, payload)}
 
       {:error, _reason} ->
@@ -1670,8 +1680,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     restream_message_row(socket, message_id)
   end
 
-  defp refresh_deleted_message(socket, %{channel_id: channel_id, message_id: message_id}) do
-    if socket.assigns.selected_channel.id == channel_id do
+  defp refresh_deleted_message(
+         socket,
+         %{conversation_id: conversation_id, message_id: message_id}
+       ) do
+    if socket.assigns.selected_channel.id == conversation_id do
       case Chat.fetch_message(socket.assigns.current_scope, message_id) do
         {:ok, message} ->
           socket
