@@ -3,12 +3,15 @@ defmodule DiscordCloneWeb.FriendsLive do
 
   use DiscordCloneWeb, :live_view
 
-  alias DiscordClone.{Chat, Friendships}
+  alias DiscordClone.{Chat, Friendships, Workspaces}
+  alias DiscordCloneWeb.DirectMessagesLive.Shell, as: DirectMessagesShell
 
   @empty_form %{"username" => ""}
 
   @impl true
   def mount(_params, _session, socket) do
+    {:ok, workspaces} = Workspaces.list_workspaces(socket.assigns.current_scope)
+
     {:ok, incoming_requests} =
       Friendships.list_incoming_requests(socket.assigns.current_scope)
 
@@ -25,6 +28,7 @@ defmodule DiscordCloneWeb.FriendsLive do
      socket
      |> assign(:form, to_form(@empty_form, as: :friend_request))
      |> assign(:request_outcome, nil)
+     |> stream(:workspaces, workspaces)
      |> stream_configure(:incoming_requests,
        dom_id: &"incoming-request-#{&1.relationship.id}"
      )
@@ -118,122 +122,136 @@ defmodule DiscordCloneWeb.FriendsLive do
     {:noreply, refresh_relationship_streams(socket)}
   end
 
+  def handle_info(_message, socket), do: {:noreply, socket}
+
   @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope}>
-      <main id="friends-home" class={["min-h-screen bg-base-200/45 px-5 py-10 sm:px-8"]}>
-        <div class={["mx-auto w-full max-w-5xl"]}>
-          <header class={["mb-8 flex flex-col gap-3"]}>
-            <div class={["flex items-center gap-2 text-primary"]}>
-              <.icon name="hero-user-group" class="size-5" />
-              <span class={["text-xs font-bold uppercase tracking-[0.2em]"]}>Friends</span>
-            </div>
-            <h1 class={["text-3xl font-bold tracking-tight text-base-content sm:text-4xl"]}>
-              Find your people, precisely.
-            </h1>
-            <p class={["max-w-2xl text-sm leading-6 text-base-content/60"]}>
-              Send a private Friend Request with an exact global username. There is no public directory.
-            </p>
-          </header>
+      <DirectMessagesShell.app
+        workspace_stream={@streams.workspaces}
+        conversation_stream={@streams.direct_conversation_destinations}
+        incoming_request_count={@incoming_friend_request_count}
+        direct_message_unread_count={@direct_message_unread_count}
+        current_action={friends_action(@live_action)}
+      >
+        <main id="friends-home" class={["min-h-full bg-base-200/45 px-5 py-10 sm:px-8"]}>
+          <div class={["mx-auto w-full max-w-5xl"]}>
+            <header class={["mb-8 flex flex-col gap-3"]}>
+              <div class={["flex items-center gap-2 text-primary"]}>
+                <.icon name="hero-user-group" class="size-5" />
+                <span class={["text-xs font-bold uppercase tracking-[0.2em]"]}>Friends</span>
+              </div>
+              <h1 class={["text-3xl font-bold tracking-tight text-base-content sm:text-4xl"]}>
+                Find your people, precisely.
+              </h1>
+              <p class={["max-w-2xl text-sm leading-6 text-base-content/60"]}>
+                Send a private Friend Request with an exact global username. There is no public directory.
+              </p>
+            </header>
 
-          <section class={["rounded-3xl border border-base-300 bg-base-100 p-5 shadow-sm sm:p-7"]}>
-            <div class={["flex items-center gap-3"]}>
-              <div class={[
-                "flex size-10 items-center justify-center rounded-2xl bg-primary/10 text-primary"
-              ]}>
-                <.icon name="hero-user-plus" class="size-5" />
+            <section class={["rounded-3xl border border-base-300 bg-base-100 p-5 shadow-sm sm:p-7"]}>
+              <div class={["flex items-center gap-3"]}>
+                <div class={[
+                  "flex size-10 items-center justify-center rounded-2xl bg-primary/10 text-primary"
+                ]}>
+                  <.icon name="hero-user-plus" class="size-5" />
+                </div>
+                <div>
+                  <h2 class={["font-semibold text-base-content"]}>Send a Friend Request</h2>
+                  <p class={["text-xs text-base-content/55"]}>Exact username matching only</p>
+                </div>
               </div>
-              <div>
-                <h2 class={["font-semibold text-base-content"]}>Send a Friend Request</h2>
-                <p class={["text-xs text-base-content/55"]}>Exact username matching only</p>
-              </div>
-            </div>
 
-            <.form
-              for={@form}
-              id="friend-request-form"
-              phx-submit="send_friend_request"
-              class={["mt-5 flex flex-col gap-3 sm:flex-row sm:items-end"]}
-            >
-              <div class={["min-w-0 flex-1"]}>
-                <.input
-                  field={@form[:username]}
-                  type="text"
-                  label="Global username"
-                  placeholder="exact_username"
-                  autocomplete="off"
-                  required
-                />
-              </div>
-              <button
-                id="send-friend-request-button"
-                type="submit"
-                class={[
-                  "inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-primary px-5",
-                  "text-sm font-semibold text-primary-content shadow-sm transition duration-200",
-                  "hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none",
-                  "focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-                ]}
+              <.form
+                for={@form}
+                id="friend-request-form"
+                phx-submit="send_friend_request"
+                class={["mt-5 flex flex-col gap-3 sm:flex-row sm:items-end"]}
               >
-                <.icon name="hero-paper-airplane" class="size-4" /> Send request
-              </button>
-            </.form>
+                <div class={["min-w-0 flex-1"]}>
+                  <.input
+                    field={@form[:username]}
+                    type="text"
+                    label="Global username"
+                    placeholder="exact_username"
+                    autocomplete="off"
+                    required
+                  />
+                </div>
+                <button
+                  id="send-friend-request-button"
+                  type="submit"
+                  phx-disable-with="Sending request…"
+                  class={[
+                    "inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-primary px-5",
+                    "text-sm font-semibold text-primary-content shadow-sm transition duration-200",
+                    "hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none",
+                    "focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+                  ]}
+                >
+                  <.icon name="hero-paper-airplane" class="size-4" /> Send request
+                </button>
+              </.form>
 
-            <%= if @request_outcome do %>
-              <div
-                id="friend-request-outcome"
-                data-kind={elem(@request_outcome, 0)}
-                class={[
-                  "mt-4 rounded-xl border px-4 py-3 text-sm",
-                  elem(@request_outcome, 0) == :success &&
-                    "border-success/25 bg-success/10 text-success",
-                  elem(@request_outcome, 0) == :error &&
-                    "border-error/25 bg-error/10 text-error"
-                ]}
-              >
-                {elem(@request_outcome, 1)}
-              </div>
-            <% end %>
-          </section>
+              <%= if @request_outcome do %>
+                <div
+                  id="friend-request-outcome"
+                  data-kind={elem(@request_outcome, 0)}
+                  class={[
+                    "mt-4 rounded-xl border px-4 py-3 text-sm",
+                    elem(@request_outcome, 0) == :success &&
+                      "border-success/25 bg-success/10 text-success",
+                    elem(@request_outcome, 0) == :error &&
+                      "border-error/25 bg-error/10 text-error"
+                  ]}
+                >
+                  {elem(@request_outcome, 1)}
+                </div>
+              <% end %>
+            </section>
 
-          <div class={["mt-7 grid gap-6 lg:grid-cols-2"]}>
-            <.relationship_panel
-              id="incoming-requests"
-              title="Incoming"
-              subtitle="Friend Requests waiting for you"
-              empty="No incoming requests"
-              icon="hero-inbox-arrow-down"
-              stream={@streams.incoming_requests}
-              direction={:incoming}
-            />
-            <.relationship_panel
-              id="outgoing-requests"
-              title="Outgoing"
-              subtitle="Friend Requests you have sent"
-              empty="No outgoing requests"
-              icon="hero-paper-airplane"
-              stream={@streams.outgoing_requests}
-              direction={:outgoing}
-            />
+            <div class={["mt-7 grid gap-6 lg:grid-cols-2"]}>
+              <.relationship_panel
+                id="incoming-requests"
+                title="Incoming"
+                subtitle="Friend Requests waiting for you"
+                empty="No incoming requests"
+                icon="hero-inbox-arrow-down"
+                stream={@streams.incoming_requests}
+                direction={:incoming}
+              />
+              <.relationship_panel
+                id="outgoing-requests"
+                title="Outgoing"
+                subtitle="Friend Requests you have sent"
+                empty="No outgoing requests"
+                icon="hero-paper-airplane"
+                stream={@streams.outgoing_requests}
+                direction={:outgoing}
+              />
+            </div>
+
+            <div class={["mt-7"]}>
+              <.relationship_panel
+                id="friends-list"
+                title="Friends"
+                subtitle="Your mutual Friendships"
+                empty="No friends yet"
+                icon="hero-user-group"
+                stream={@streams.friends}
+                direction={:friends}
+              />
+            </div>
           </div>
-
-          <div class={["mt-7"]}>
-            <.relationship_panel
-              id="friends-list"
-              title="Friends"
-              subtitle="Your mutual Friendships"
-              empty="No friends yet"
-              icon="hero-user-group"
-              stream={@streams.friends}
-              direction={:friends}
-            />
-          </div>
-        </div>
-      </main>
+        </main>
+      </DirectMessagesShell.app>
     </Layouts.app>
     """
   end
+
+  defp friends_action(:requests), do: :requests
+  defp friends_action(_action), do: :friends
 
   attr :id, :string, required: true
   attr :title, :string, required: true

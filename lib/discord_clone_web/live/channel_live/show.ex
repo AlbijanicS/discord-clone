@@ -150,6 +150,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         current_scope={@current_scope}
         unread_activity_count={@unread_activity_count}
         activity_preview_stream={@streams.activity_preview_items}
+        direct_message_unread_count={@direct_message_unread_count}
         main_state={:channel}
         online_user_ids={@online_user_ids}
         channel_unread_counts={@channel_unread_counts}

@@ -55,6 +55,98 @@ defmodule DiscordClone.Chat do
     Message.changeset(%Message{}, attrs)
   end
 
+  @doc "Lists the scoped User's Direct Conversation destinations by recent activity."
+  @spec list_direct_conversation_destinations(term()) ::
+          {:ok,
+           [
+             %{
+               direct_conversation: DirectConversation.t(),
+               other_participant: User.t(),
+               latest_message_at: DateTime.t() | nil,
+               unread_count: non_neg_integer(),
+               writable?: boolean()
+             }
+           ]}
+          | {:error, :unauthenticated}
+  def list_direct_conversation_destinations(%Scope{user: %User{id: user_id}} = scope) do
+    {:ok, friends} = Friendships.list_friends(scope)
+    friend_user_ids = MapSet.new(friends, & &1.user.id)
+
+    latest_messages =
+      from message in Message,
+        group_by: message.channel_id,
+        select: %{
+          conversation_id: message.channel_id,
+          latest_message_at: max(message.inserted_at)
+        }
+
+    destinations =
+      Repo.all(
+        from direct_conversation in DirectConversation,
+          join: conversation in Conversation,
+          on: conversation.id == direct_conversation.id,
+          join: user_low in User,
+          on: user_low.id == direct_conversation.user_low_id,
+          join: user_high in User,
+          on: user_high.id == direct_conversation.user_high_id,
+          left_join: latest_message in subquery(latest_messages),
+          on: latest_message.conversation_id == direct_conversation.id,
+          left_join: read_state in ChannelReadState,
+          on:
+            read_state.channel_id == direct_conversation.id and
+              read_state.user_id == ^user_id,
+          where:
+            direct_conversation.user_low_id == ^user_id or
+              direct_conversation.user_high_id == ^user_id,
+          order_by: [
+            desc:
+              fragment(
+                "COALESCE(?, ?)",
+                latest_message.latest_message_at,
+                conversation.inserted_at
+              ),
+            asc: direct_conversation.id
+          ],
+          select:
+            {direct_conversation, conversation, user_low, user_high,
+             latest_message.latest_message_at, read_state.unread_count}
+      )
+      |> Enum.map(fn
+        {direct_conversation, conversation, user_low, user_high, latest_message_at, unread_count} ->
+          direct_conversation = %{
+            direct_conversation
+            | conversation: conversation,
+              user_low: user_low,
+              user_high: user_high
+          }
+
+          other_participant = DirectConversation.other_user(direct_conversation, user_id)
+
+          %{
+            direct_conversation: direct_conversation,
+            other_participant: other_participant,
+            latest_message_at: latest_message_at,
+            unread_count: unread_count || 0,
+            writable?: MapSet.member?(friend_user_ids, other_participant.id)
+          }
+      end)
+
+    {:ok, destinations}
+  end
+
+  def list_direct_conversation_destinations(_scope), do: {:error, :unauthenticated}
+
+  @doc "Subscribes the scoped User to Direct Messages navigation changes."
+  @spec subscribe_to_direct_navigation(term()) :: :ok | {:error, :unauthenticated}
+  def subscribe_to_direct_navigation(%Scope{user: %User{id: user_id}}) do
+    Phoenix.PubSub.subscribe(
+      DiscordClone.PubSub,
+      ConversationTopics.direct_navigation(user_id)
+    )
+  end
+
+  def subscribe_to_direct_navigation(_scope), do: {:error, :unauthenticated}
+
   @doc """
   Finds or lazily creates the scoped User's Direct Conversation with another User.
 
@@ -188,6 +280,16 @@ defmodule DiscordClone.Chat do
            direct_conversation
          end) do
       {:ok, direct_conversation} ->
+        :ok =
+          broadcast_direct_navigation_changed(direct_conversation.user_low_id, %{
+            action: :created
+          })
+
+        :ok =
+          broadcast_direct_navigation_changed(direct_conversation.user_high_id, %{
+            action: :created
+          })
+
         {:ok, preload_direct_conversation(direct_conversation)}
 
       {:error, reason} ->
@@ -300,7 +402,11 @@ defmodule DiscordClone.Chat do
           {:ok, Message.t()}
           | {:error, :unauthenticated | :not_found | :not_friends}
           | {:error, :invalid_message, Ecto.Changeset.t()}
-  def send_direct_message(%Scope{user: %User{}} = scope, direct_conversation_id, attrs) do
+  def send_direct_message(
+        %Scope{user: %User{id: sender_user_id}} = scope,
+        direct_conversation_id,
+        attrs
+      ) do
     with {:ok, direct_conversation_id} <- Ecto.UUID.cast(direct_conversation_id) do
       case persist_direct_message(scope, direct_conversation_id, attrs) do
         {:ok, {message, read_state_changes, recipient_user_id}} ->
@@ -308,6 +414,12 @@ defmodule DiscordClone.Chat do
           :ok = Runtime.put_recent_message(message)
           :ok = Unread.broadcast_changes(read_state_changes)
           :ok = broadcast_direct_message_created(message)
+          :ok = broadcast_direct_navigation_changed(sender_user_id, %{action: :message_created})
+
+          :ok =
+            broadcast_direct_navigation_changed(recipient_user_id, %{
+              action: :message_created
+            })
 
           :ok =
             broadcast_activity_change(recipient_user_id, %{
@@ -1826,6 +1938,10 @@ defmodule DiscordClone.Chat do
     end)
 
     :ok
+  end
+
+  defp broadcast_direct_navigation_changed(user_id, payload) do
+    ConversationTopics.broadcast_direct_navigation_change(user_id, payload)
   end
 
   defp broadcast_reaction_changed(%Message{} = message, emoji) do

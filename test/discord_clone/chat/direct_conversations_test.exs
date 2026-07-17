@@ -9,6 +9,93 @@ defmodule DiscordClone.Chat.DirectConversationsTest do
   alias DiscordClone.Repo
   alias DiscordClone.Workspaces
 
+  describe "list_direct_conversation_destinations/1" do
+    test "lists every Conversation by latest activity with unread and Friendship state" do
+      user = user_fixture(username: "destination_owner")
+      scope = user_scope_fixture(user)
+
+      {older_friend, older_scope, older_conversation, _older_friendship} =
+        direct_conversation_with(scope, "destination_older")
+
+      {active_friend, active_scope, active_conversation, _active_friendship} =
+        direct_conversation_with(scope, "destination_active")
+
+      {former_friend, _former_scope, former_conversation, former_friendship} =
+        direct_conversation_with(scope, "destination_former")
+
+      Repo.update_all(
+        from(conversation in Conversation, where: conversation.id == ^older_conversation.id),
+        set: [inserted_at: ~U[2026-01-01 10:00:00.000000Z]]
+      )
+
+      Repo.update_all(
+        from(conversation in Conversation, where: conversation.id == ^former_conversation.id),
+        set: [inserted_at: ~U[2026-01-02 10:00:00.000000Z]]
+      )
+
+      assert {:ok, _message} =
+               Chat.send_direct_message(active_scope, active_conversation.id, %{
+                 content: "most recent"
+               })
+
+      assert :ok = Friendships.remove_friend(scope, former_friendship.id)
+
+      assert {:ok, destinations} = Chat.list_direct_conversation_destinations(scope)
+
+      assert Enum.map(destinations, & &1.direct_conversation.id) == [
+               active_conversation.id,
+               former_conversation.id,
+               older_conversation.id
+             ]
+
+      assert [active, former, older] = destinations
+      assert active.other_participant.id == active_friend.id
+      assert active.unread_count == 1
+      assert active.writable?
+      assert %DateTime{} = active.latest_message_at
+
+      assert former.other_participant.id == former_friend.id
+      assert former.unread_count == 0
+      refute former.writable?
+      assert is_nil(former.latest_message_at)
+
+      assert older.other_participant.id == older_friend.id
+      assert older.unread_count == 0
+      assert older.writable?
+      assert is_nil(older.latest_message_at)
+      assert older_scope.user.id == older_friend.id
+    end
+
+    test "uses the durable Conversation identifier as the final ordering tie-breaker" do
+      user = user_fixture(username: "destination_tie_owner")
+      scope = user_scope_fixture(user)
+
+      {_first_friend, _first_scope, first_conversation, _first_friendship} =
+        direct_conversation_with(scope, "destination_tie_first")
+
+      {_second_friend, _second_scope, second_conversation, _second_friendship} =
+        direct_conversation_with(scope, "destination_tie_second")
+
+      tied_at = ~U[2026-01-03 10:00:00.000000Z]
+
+      Repo.update_all(
+        from(conversation in Conversation,
+          where: conversation.id in ^[first_conversation.id, second_conversation.id]
+        ),
+        set: [inserted_at: tied_at]
+      )
+
+      assert {:ok, destinations} = Chat.list_direct_conversation_destinations(scope)
+
+      assert Enum.map(destinations, & &1.direct_conversation.id) ==
+               Enum.sort([first_conversation.id, second_conversation.id])
+    end
+
+    test "rejects an unauthenticated destination query" do
+      assert {:error, :unauthenticated} = Chat.list_direct_conversation_destinations(nil)
+    end
+  end
+
   describe "open_direct_conversation/2" do
     test "creates one empty Direct Conversation lazily for an accepted Friendship" do
       {first_user, second_user, first_scope, _second_scope, _friendship} = accepted_friendship()
@@ -264,5 +351,18 @@ defmodule DiscordClone.Chat.DirectConversationsTest do
     assert {:ok, friendship} = Friendships.accept_friend_request(second_scope, request.id)
 
     {first_user, second_user, first_scope, second_scope, friendship}
+  end
+
+  defp direct_conversation_with(scope, username) do
+    friend = user_fixture(username: username)
+    friend_scope = user_scope_fixture(friend)
+
+    assert {:ok, %{relationship: request}} =
+             Friendships.send_friend_request(scope, %{username: friend.username})
+
+    assert {:ok, friendship} = Friendships.accept_friend_request(friend_scope, request.id)
+    assert {:ok, direct_conversation} = Chat.open_direct_conversation(scope, friend.id)
+
+    {friend, friend_scope, direct_conversation, friendship}
   end
 end

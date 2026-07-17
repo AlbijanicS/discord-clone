@@ -3,7 +3,8 @@ defmodule DiscordCloneWeb.DirectConversationLive do
 
   use DiscordCloneWeb, :live_view
 
-  alias DiscordClone.Chat
+  alias DiscordClone.{Chat, Workspaces}
+  alias DiscordCloneWeb.DirectMessagesLive.Shell, as: DirectMessagesShell
 
   @impl true
   def mount(%{"direct_conversation_id" => direct_conversation_id}, _session, socket) do
@@ -11,13 +12,15 @@ defmodule DiscordCloneWeb.DirectConversationLive do
            Chat.get_direct_conversation(socket.assigns.current_scope, direct_conversation_id),
          :ok <- subscribe_to_messages(socket, direct_conversation_id),
          {:ok, messages} <-
-           Chat.list_direct_messages(socket.assigns.current_scope, direct_conversation_id) do
+           Chat.list_direct_messages(socket.assigns.current_scope, direct_conversation_id),
+         {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope) do
       {:ok,
        socket
        |> assign(:direct_conversation, destination.direct_conversation)
        |> assign(:other_participant, destination.other_participant)
        |> assign(:message_form, message_form())
        |> assign(:direct_messages_empty?, messages == [])
+       |> stream(:workspaces, workspaces)
        |> stream_configure(:direct_messages, dom_id: &"direct-message-#{&1.id}")
        |> stream(:direct_messages, messages)}
     else
@@ -65,145 +68,154 @@ defmodule DiscordCloneWeb.DirectConversationLive do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope}>
-      <main
-        id="direct-conversation"
-        class={[
-          "min-h-screen bg-base-200/45 px-5 py-10 sm:px-8",
-          "transition-colors duration-300"
-        ]}
+      <DirectMessagesShell.app
+        workspace_stream={@streams.workspaces}
+        conversation_stream={@streams.direct_conversation_destinations}
+        incoming_request_count={@incoming_friend_request_count}
+        direct_message_unread_count={@direct_message_unread_count}
+        selected_conversation_id={@direct_conversation.id}
       >
-        <div class={["mx-auto flex min-h-[70vh] w-full max-w-4xl flex-col"]}>
-          <header class={[
-            "flex items-center gap-4 rounded-3xl border border-base-300 bg-base-100",
-            "px-5 py-4 shadow-sm sm:px-6"
-          ]}>
-            <.link
-              id="direct-conversation-back"
-              navigate={~p"/friends"}
-              aria-label="Back to Friends"
-              class={[
-                "inline-flex size-10 items-center justify-center rounded-xl text-base-content/55",
-                "transition hover:bg-base-200 hover:text-base-content focus-visible:outline-none",
-                "focus-visible:ring-2 focus-visible:ring-primary"
-              ]}
-            >
-              <.icon name="hero-arrow-left" class="size-5" />
-            </.link>
-
-            <div class={[
-              "flex size-11 items-center justify-center rounded-full bg-primary/10",
-              "text-base font-bold text-primary"
+        <main
+          id="direct-conversation"
+          class={[
+            "min-h-screen bg-base-200/45 px-5 py-10 sm:px-8",
+            "transition-colors duration-300"
+          ]}
+        >
+          <div class={["mx-auto flex min-h-[70vh] w-full max-w-4xl flex-col"]}>
+            <header class={[
+              "flex items-center gap-4 rounded-3xl border border-base-300 bg-base-100",
+              "px-5 py-4 shadow-sm sm:px-6"
             ]}>
-              {@other_participant.username |> String.first() |> String.upcase()}
-            </div>
-
-            <div id={"direct-conversation-participant-#{@other_participant.id}"} class={["min-w-0"]}>
-              <p class={["truncate font-semibold text-base-content"]}>
-                {@other_participant.username}
-              </p>
-              <p class={["text-xs text-base-content/50"]}>Direct Conversation</p>
-            </div>
-          </header>
-
-          <section class={[
-            "relative mt-5 flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border",
-            "border-base-300 bg-base-100 shadow-sm"
-          ]}>
-            <div
-              :if={@direct_messages_empty?}
-              id="direct-conversation-empty"
-              class={[
-                "flex flex-1 flex-col items-center justify-center p-8 text-center"
-              ]}
-            >
-              <div class={[
-                "mx-auto flex size-14 items-center justify-center rounded-2xl",
-                "bg-primary/10 text-primary"
-              ]}>
-                <.icon name="hero-chat-bubble-left-right" class="size-7" />
-              </div>
-              <h1 class={["mt-5 text-xl font-bold tracking-tight text-base-content"]}>
-                Start your conversation
-              </h1>
-              <p class={["mt-2 text-sm leading-6 text-base-content/55"]}>
-                This Direct Conversation with @{@other_participant.username} is empty and ready for your first message.
-              </p>
-            </div>
-
-            <div
-              id="direct-messages"
-              phx-update="stream"
-              class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-6 sm:px-7"
-            >
-              <article
-                :for={{dom_id, message} <- @streams.direct_messages}
-                id={dom_id}
-                data-message-seq={message.seq}
+              <.link
+                id="direct-conversation-back"
+                navigate={~p"/friends"}
+                aria-label="Back to Friends"
                 class={[
-                  "group flex gap-3 rounded-2xl px-3 py-2 transition duration-200",
-                  "hover:bg-base-200/60"
+                  "inline-flex size-10 items-center justify-center rounded-xl text-base-content/55",
+                  "transition hover:bg-base-200 hover:text-base-content focus-visible:outline-none",
+                  "focus-visible:ring-2 focus-visible:ring-primary"
+                ]}
+              >
+                <.icon name="hero-arrow-left" class="size-5" />
+              </.link>
+
+              <div class={[
+                "flex size-11 items-center justify-center rounded-full bg-primary/10",
+                "text-base font-bold text-primary"
+              ]}>
+                {@other_participant.username |> String.first() |> String.upcase()}
+              </div>
+
+              <div id={"direct-conversation-participant-#{@other_participant.id}"} class={["min-w-0"]}>
+                <p class={["truncate font-semibold text-base-content"]}>
+                  {@other_participant.username}
+                </p>
+                <p class={["text-xs text-base-content/50"]}>Direct Conversation</p>
+              </div>
+            </header>
+
+            <section class={[
+              "relative mt-5 flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border",
+              "border-base-300 bg-base-100 shadow-sm"
+            ]}>
+              <div
+                :if={@direct_messages_empty?}
+                id="direct-conversation-empty"
+                class={[
+                  "flex flex-1 flex-col items-center justify-center p-8 text-center"
                 ]}
               >
                 <div class={[
-                  "flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10",
-                  "text-sm font-bold text-primary ring-1 ring-primary/15"
+                  "mx-auto flex size-14 items-center justify-center rounded-2xl",
+                  "bg-primary/10 text-primary"
                 ]}>
-                  {message.user.username |> String.first() |> String.upcase()}
+                  <.icon name="hero-chat-bubble-left-right" class="size-7" />
                 </div>
-                <div class="min-w-0 flex-1">
-                  <div class="flex flex-wrap items-baseline gap-2">
-                    <span class="text-sm font-semibold text-base-content">
-                      {message.user.username}
-                    </span>
-                    <time
-                      datetime={DateTime.to_iso8601(message.inserted_at)}
-                      class="text-xs text-base-content/45"
-                    >
-                      {Calendar.strftime(message.inserted_at, "%H:%M")}
-                    </time>
-                  </div>
-                  <p
-                    data-direct-message-content
-                    class="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-base-content/80"
-                  >
-                    {message.content}
-                  </p>
-                </div>
-              </article>
-            </div>
+                <h1 class={["mt-5 text-xl font-bold tracking-tight text-base-content"]}>
+                  Start your conversation
+                </h1>
+                <p class={["mt-2 text-sm leading-6 text-base-content/55"]}>
+                  This Direct Conversation with @{@other_participant.username} is empty and ready for your first message.
+                </p>
+              </div>
 
-            <div class="border-t border-base-300/70 bg-base-100 p-4 sm:p-5">
-              <.form
-                for={@message_form}
-                id="direct-message-form"
-                phx-submit="send_direct_message"
-                class="flex items-end gap-3"
+              <div
+                id="direct-messages"
+                phx-update="stream"
+                class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-6 sm:px-7"
               >
-                <.input
-                  field={@message_form[:content]}
-                  type="text"
-                  placeholder={"Message @#{@other_participant.username}"}
-                  autocomplete="off"
-                  class="min-h-11 w-full rounded-2xl border border-base-300 bg-base-200/65 px-4 py-3 text-sm text-base-content outline-none transition placeholder:text-base-content/40 focus:border-primary/35 focus:bg-base-100 focus:ring-2 focus:ring-primary/15"
-                />
-                <button
-                  id="direct-message-send"
-                  type="submit"
-                  aria-label="Send Direct Message"
+                <article
+                  :for={{dom_id, message} <- @streams.direct_messages}
+                  id={dom_id}
+                  data-message-seq={message.seq}
                   class={[
-                    "inline-flex size-11 shrink-0 items-center justify-center rounded-2xl",
-                    "bg-primary text-primary-content shadow-sm transition duration-200",
-                    "hover:-translate-y-0.5 hover:bg-primary/90 focus-visible:outline-none",
-                    "focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+                    "group flex gap-3 rounded-2xl px-3 py-2 transition duration-200",
+                    "hover:bg-base-200/60"
                   ]}
                 >
-                  <.icon name="hero-paper-airplane" class="size-5" />
-                </button>
-              </.form>
-            </div>
-          </section>
-        </div>
-      </main>
+                  <div class={[
+                    "flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10",
+                    "text-sm font-bold text-primary ring-1 ring-primary/15"
+                  ]}>
+                    {message.user.username |> String.first() |> String.upcase()}
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex flex-wrap items-baseline gap-2">
+                      <span class="text-sm font-semibold text-base-content">
+                        {message.user.username}
+                      </span>
+                      <time
+                        datetime={DateTime.to_iso8601(message.inserted_at)}
+                        class="text-xs text-base-content/45"
+                      >
+                        {Calendar.strftime(message.inserted_at, "%H:%M")}
+                      </time>
+                    </div>
+                    <p
+                      data-direct-message-content
+                      class="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-base-content/80"
+                    >
+                      {message.content}
+                    </p>
+                  </div>
+                </article>
+              </div>
+
+              <div class="border-t border-base-300/70 bg-base-100 p-4 sm:p-5">
+                <.form
+                  for={@message_form}
+                  id="direct-message-form"
+                  phx-submit="send_direct_message"
+                  class="flex items-end gap-3"
+                >
+                  <.input
+                    field={@message_form[:content]}
+                    type="text"
+                    placeholder={"Message @#{@other_participant.username}"}
+                    autocomplete="off"
+                    class="min-h-11 w-full rounded-2xl border border-base-300 bg-base-200/65 px-4 py-3 text-sm text-base-content outline-none transition placeholder:text-base-content/40 focus:border-primary/35 focus:bg-base-100 focus:ring-2 focus:ring-primary/15"
+                  />
+                  <button
+                    id="direct-message-send"
+                    type="submit"
+                    aria-label="Send Direct Message"
+                    phx-disable-with="Sending…"
+                    class={[
+                      "inline-flex size-11 shrink-0 items-center justify-center rounded-2xl",
+                      "bg-primary text-primary-content shadow-sm transition duration-200",
+                      "hover:-translate-y-0.5 hover:bg-primary/90 focus-visible:outline-none",
+                      "focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+                    ]}
+                  >
+                    <.icon name="hero-paper-airplane" class="size-5" />
+                  </button>
+                </.form>
+              </div>
+            </section>
+          </div>
+        </main>
+      </DirectMessagesShell.app>
     </Layouts.app>
     """
   end

@@ -74,6 +74,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
         current_scope={@current_scope}
         unread_activity_count={@unread_activity_count}
         activity_preview_stream={@streams.activity_preview_items}
+        direct_message_unread_count={@direct_message_unread_count}
         invite_form={@invite_form}
         invite_url={@invite_url}
         main_state={:invite}

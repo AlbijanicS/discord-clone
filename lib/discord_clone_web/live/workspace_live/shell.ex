@@ -2,6 +2,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   use DiscordCloneWeb, :html
 
   alias DiscordClone.Workspaces
+  alias DiscordCloneWeb.GlobalDestinationRail
   alias DiscordCloneWeb.WorkspaceLive.MemberActionsMenu
 
   attr :workspace_stream, :any, required: true
@@ -30,6 +31,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   attr :channel_unread_counts, :map, default: %{}
   attr :unread_activity_count, :integer, default: 0
   attr :activity_preview_stream, :any, default: []
+  attr :direct_message_unread_count, :integer, default: 0
 
   slot :inner_block
 
@@ -39,82 +41,13 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
       id="workspace-app-shell"
       class={workspace_shell_class(@show_workspace_form?)}
     >
-      <aside
-        id="workspace-sidebar"
-        class="flex min-h-0 flex-col items-center bg-base-300 p-3 shadow-[inset_-1px_0_0_rgb(255_255_255/0.03)]"
-      >
-        <button
-          :if={@workspace_form && !@show_workspace_form?}
-          id="workspace-create-toggle"
-          type="button"
-          class="btn btn-square btn-sm btn-ghost mb-3 shrink-0 transition hover:scale-105"
-          phx-click="show_workspace_form"
-          aria-label="Create workspace"
-          title="Create workspace"
-        >
-          <.icon name="hero-plus" class="size-4" />
-        </button>
-
-        <div
-          id="workspaces"
-          phx-update="stream"
-          class="flex min-h-0 w-full justify-center gap-2 overflow-x-auto lg:flex-col lg:items-center lg:overflow-y-auto"
-        >
-          <div id="workspace-empty-state" class="hidden only:block text-sm text-base-content/60">
-            Create a workspace to start.
-          </div>
-          <.link
-            :for={{dom_id, workspace} <- @workspace_stream}
-            id={workspace_dom_id(dom_id, workspace, @selected_workspace)}
-            navigate={~p"/workspaces/#{workspace.id}"}
-            aria-current={selected_workspace_aria(workspace, @selected_workspace)}
-            phx-hook={selected_workspace?(workspace, @selected_workspace) && "ContextMenu"}
-            title={workspace.name}
-            class={[
-              "flex size-12 shrink-0 items-center justify-center rounded-lg text-base font-bold shadow-sm ring-1 transition hover:-translate-y-0.5",
-              selected_workspace?(workspace, @selected_workspace) &&
-                "bg-primary text-primary-content ring-primary",
-              !selected_workspace?(workspace, @selected_workspace) &&
-                "bg-base-100 ring-base-300 hover:bg-primary hover:text-primary-content"
-            ]}
-            data-stream-id={dom_id}
-            data-context-menu-type="workspace"
-            data-context-menu-id={workspace.id}
-            aria-label={"Open #{workspace.name}"}
-          >
-            <span aria-hidden="true">{workspace_initial(workspace)}</span>
-          </.link>
-        </div>
-
-        <.form
-          :if={@workspace_form && @show_workspace_form?}
-          for={@workspace_form}
-          id="workspace-create-form"
-          phx-submit="create_workspace"
-          class="mt-4 space-y-2"
-        >
-          <.input
-            field={@workspace_form[:name]}
-            type="text"
-            label="Workspace name"
-            placeholder="Design guild"
-            autocomplete="off"
-          />
-          <div class="grid grid-cols-2 gap-2">
-            <button
-              id="workspace-create-cancel"
-              type="button"
-              class="btn btn-sm btn-ghost"
-              phx-click="cancel_workspace_form"
-            >
-              Cancel
-            </button>
-            <.button type="submit" class="btn btn-primary btn-sm">
-              Create
-            </.button>
-          </div>
-        </.form>
-      </aside>
+      <GlobalDestinationRail.rail
+        workspace_stream={@workspace_stream}
+        selected_workspace={@selected_workspace}
+        workspace_form={@workspace_form}
+        show_workspace_form?={@show_workspace_form?}
+        direct_message_unread_count={@direct_message_unread_count}
+      />
 
       <aside
         id="channel-sidebar"
@@ -833,15 +766,6 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
     """
   end
 
-  defp workspace_dom_id(_dom_id, workspace, selected_workspace)
-       when not is_nil(selected_workspace) and workspace.id == selected_workspace.id,
-       do: "workspace-#{workspace.id}"
-
-  defp workspace_dom_id(dom_id, _workspace, _selected_workspace), do: dom_id
-
-  defp selected_workspace?(workspace, selected_workspace),
-    do: selected_workspace && workspace.id == selected_workspace.id
-
   defp selected_channel?(channel, selected_channel),
     do: selected_channel && channel.id == selected_channel.id
 
@@ -860,10 +784,6 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   defp channel_unread_label(1, channel), do: "1 unread message in #{channel.name}"
 
   defp channel_unread_label(count, channel), do: "#{count} unread messages in #{channel.name}"
-
-  defp selected_workspace_aria(workspace, selected_workspace) do
-    if selected_workspace?(workspace, selected_workspace), do: "page"
-  end
 
   defp selected_channel_aria(channel, selected_channel) do
     if selected_channel?(channel, selected_channel), do: "page"
@@ -1026,16 +946,6 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   defp workspace_shell_class(_show_workspace_form?),
     do:
       "fixed inset-0 grid min-h-screen overflow-hidden bg-base-100 lg:grid-cols-[5rem_18rem_minmax(0,1fr)] xl:grid-cols-[5rem_18rem_minmax(0,1fr)_16rem]"
-
-  defp workspace_initial(workspace) do
-    workspace.name
-    |> String.trim()
-    |> String.first()
-    |> case do
-      nil -> "?"
-      initial -> String.upcase(initial)
-    end
-  end
 
   defp context_menu_style(%{x: x, y: y}), do: "left: #{x}px; top: #{y}px;"
   defp context_menu_style(_position), do: nil

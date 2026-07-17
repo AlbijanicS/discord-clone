@@ -56,7 +56,8 @@ defmodule DiscordCloneWeb.Router do
     live_session :require_authenticated_user,
       on_mount: [
         {DiscordCloneWeb.UserAuth, :require_authenticated},
-        {DiscordCloneWeb.ActivityLive, :assign_unread_count}
+        {DiscordCloneWeb.ActivityLive, :assign_unread_count},
+        {DiscordCloneWeb.DirectMessagesNavigation, :assign_destination}
       ] do
       live "/workspaces", WorkspaceLive.Home, :index
       live "/workspaces/:workspace_id", WorkspaceLive.Entry, :show
@@ -65,6 +66,8 @@ defmodule DiscordCloneWeb.Router do
       live "/workspaces/:workspace_id/channels/:channel_id", ChannelLive.Show, :show
       live "/activity", ActivityLive, :index
       live "/friends", FriendsLive, :index
+      live "/direct-messages", FriendsLive, :friends
+      live "/direct-messages/requests", FriendsLive, :requests
       live "/direct-messages/:direct_conversation_id", DirectConversationLive, :show
       live "/users/settings", UserLive.Settings, :edit
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email

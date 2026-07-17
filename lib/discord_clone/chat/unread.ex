@@ -492,16 +492,22 @@ defmodule DiscordClone.Chat.Unread do
   end
 
   defp broadcast_direct_read_state_changed(user_id, %ChannelReadState{} = read_state) do
-    Phoenix.PubSub.broadcast(
-      DiscordClone.PubSub,
-      ConversationTopics.read_state(user_id, read_state.channel_id),
-      {:conversation_read_state_changed,
-       %{
-         conversation_id: read_state.channel_id,
-         unread_count: read_state.unread_count,
-         first_unread_seq: read_state.first_unread_seq,
-         last_unread_seq: read_state.last_unread_seq
-       }}
-    )
+    :ok =
+      Phoenix.PubSub.broadcast(
+        DiscordClone.PubSub,
+        ConversationTopics.read_state(user_id, read_state.channel_id),
+        {:conversation_read_state_changed,
+         %{
+           conversation_id: read_state.channel_id,
+           unread_count: read_state.unread_count,
+           first_unread_seq: read_state.first_unread_seq,
+           last_unread_seq: read_state.last_unread_seq
+         }}
+      )
+
+    ConversationTopics.broadcast_direct_navigation_change(user_id, %{
+      action: :read_state_changed,
+      conversation_id: read_state.channel_id
+    })
   end
 end
