@@ -45,9 +45,14 @@ const MessageComposer = {
       this.pushEvent("mention_keydown", {key: event.key})
     }
 
+    this.handleBlur = () => {
+      this.pushEvent("message_typing", {message: {content: ""}})
+    }
+
     if (this.input) {
       this.input.addEventListener("input", this.handleInput)
       this.input.addEventListener("keydown", this.handleKeydown)
+      this.input.addEventListener("blur", this.handleBlur)
     }
 
     this.handleEvent("clear_message_composer", ({input_id}) => {
@@ -80,6 +85,7 @@ const MessageComposer = {
     if (this.input) {
       this.input.removeEventListener("input", this.handleInput)
       this.input.removeEventListener("keydown", this.handleKeydown)
+      this.input.removeEventListener("blur", this.handleBlur)
     }
   },
 }

@@ -181,6 +181,13 @@ defmodule DiscordClone.Chat.Runtime do
     end
   end
 
+  def user_stopped_typing_if_running(conversation_id, user_id) do
+    case conversation_pid(conversation_id) do
+      pid when is_pid(pid) -> ConversationServer.user_stopped_typing(pid, user_id)
+      nil -> :ok
+    end
+  end
+
   defp broadcast_workspace_presence(workspace_id, event) do
     Phoenix.PubSub.broadcast(DiscordClone.PubSub, workspace_presence_topic(workspace_id), event)
   end

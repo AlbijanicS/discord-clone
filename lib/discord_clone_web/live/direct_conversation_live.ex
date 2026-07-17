@@ -4,19 +4,23 @@ defmodule DiscordCloneWeb.DirectConversationLive do
   use DiscordCloneWeb, :live_view
 
   alias DiscordClone.{Chat, Workspaces}
+  alias DiscordCloneWeb.ChannelLive.ScrollAnchoring
   alias DiscordCloneWeb.DirectMessagesLive.Shell, as: DirectMessagesShell
 
   @reaction_palette ["👍", "❤️", "😂", "🎉", "👀"]
+  @rendered_message_limit 300
 
   @impl true
-  def mount(%{"direct_conversation_id" => direct_conversation_id}, _session, socket) do
+  def mount(%{"direct_conversation_id" => direct_conversation_id} = params, _session, socket) do
     with {:ok, destination} <-
            Chat.get_direct_conversation(socket.assigns.current_scope, direct_conversation_id),
          :ok <- subscribe_to_messages(socket, direct_conversation_id),
-         {:ok, messages} <-
-           Chat.list_direct_messages(socket.assigns.current_scope, direct_conversation_id),
+         {:ok, message_window} <- open_message_window(socket, direct_conversation_id, params),
+         messages = message_window.messages,
          {:ok, reaction_summaries} <-
            Chat.list_reaction_summaries(socket.assigns.current_scope, Enum.map(messages, & &1.id)),
+         {:ok, runtime_monitor_ref} <- monitor_runtime(socket, direct_conversation_id),
+         {:ok, typing_user_ids} <- list_typing_user_ids(socket, direct_conversation_id),
          {:ok, destinations} <-
            Chat.list_direct_conversation_destinations(socket.assigns.current_scope),
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope) do
@@ -29,6 +33,16 @@ defmodule DiscordCloneWeb.DirectConversationLive do
        |> assign(:reaction_summaries, reaction_summaries)
        |> assign(:writable?, destination_writable?(destinations, direct_conversation_id))
        |> assign(:direct_messages_empty?, messages == [])
+       |> assign(:direct_messages_by_id, messages_by_id(messages))
+       |> assign(:oldest_message, List.first(messages))
+       |> assign(:latest_message, List.last(messages))
+       |> assign(:message_window_meta, message_window.meta)
+       |> assign(:loading_older_messages?, false)
+       |> assign(:loading_newer_messages?, false)
+       |> assign(:message_navigation_target_id, get_in(message_window, [:target, :id]))
+       |> assign(:message_scroll_target, message_window[:scroll_target])
+       |> assign(:typing_user_ids, MapSet.new(typing_user_ids))
+       |> assign(:runtime_monitor_ref, runtime_monitor_ref)
        |> stream(:workspaces, workspaces)
        |> stream_configure(:direct_messages, dom_id: &"direct-message-#{&1.id}")
        |> stream(:direct_messages, messages)}
@@ -42,6 +56,99 @@ defmodule DiscordCloneWeb.DirectConversationLive do
   end
 
   @impl true
+  def handle_event(
+        "load_older_messages",
+        _params,
+        %{assigns: %{loading_older_messages?: true}} = socket
+      ) do
+    {:noreply, socket}
+  end
+
+  def handle_event("load_older_messages", _params, %{assigns: %{oldest_message: nil}} = socket) do
+    {:noreply, assign(socket, :loading_older_messages?, false)}
+  end
+
+  def handle_event("load_older_messages", params, socket) do
+    if ScrollAnchoring.unstable_scroll_edge_event?(params) do
+      {:noreply, assign(socket, :loading_older_messages?, false)}
+    else
+      case Chat.load_older_direct_message_window(
+             socket.assigns.current_scope,
+             socket.assigns.direct_conversation.id,
+             socket.assigns.oldest_message.seq
+           ) do
+        {:ok, window} ->
+          {:noreply,
+           socket
+           |> merge_message_window(window, :older)
+           |> ScrollAnchoring.preserve_scroll_after_older_load(params)}
+
+        {:error, _reason} ->
+          {:noreply, direct_conversation_unavailable(socket)}
+      end
+    end
+  end
+
+  def handle_event(
+        "load_newer_messages",
+        _params,
+        %{assigns: %{loading_newer_messages?: true}} = socket
+      ) do
+    {:noreply, socket}
+  end
+
+  def handle_event("load_newer_messages", _params, %{assigns: %{latest_message: nil}} = socket) do
+    {:noreply, assign(socket, :loading_newer_messages?, false)}
+  end
+
+  def handle_event("load_newer_messages", params, socket) do
+    cond do
+      ScrollAnchoring.unstable_scroll_edge_event?(params) ->
+        {:noreply, assign(socket, :loading_newer_messages?, false)}
+
+      socket.assigns.message_window_meta.has_newer? ->
+        case Chat.load_newer_direct_message_window(
+               socket.assigns.current_scope,
+               socket.assigns.direct_conversation.id,
+               socket.assigns.latest_message.seq
+             ) do
+          {:ok, window} ->
+            {:noreply,
+             socket
+             |> merge_message_window(window, :newer)
+             |> ScrollAnchoring.restore_scroll_after_newer_load(params)}
+
+          {:error, _reason} ->
+            {:noreply, direct_conversation_unavailable(socket)}
+        end
+
+      true ->
+        {:noreply, assign(socket, :loading_newer_messages?, false)}
+    end
+  end
+
+  # The shared message-history hook emits these events for every Conversation
+  # kind. Direct Conversations do not persist scroll anchors here.
+  def handle_event("scroll_anchor_observed", _params, socket), do: {:noreply, socket}
+  def handle_event("visible_read_observed", _params, socket), do: {:noreply, socket}
+
+  def handle_event("navigate_direct_message", %{"message-id" => message_id}, socket) do
+    case navigate_to_message_window(socket, message_id) do
+      {:ok, window} -> {:noreply, replace_message_window(socket, window)}
+      {:error, _reason} -> {:noreply, put_flash(socket, :error, "That message is unavailable.")}
+    end
+  end
+
+  def handle_event("message_typing", %{"message" => %{"content" => content}}, socket) do
+    if String.trim(content) == "" do
+      stop_typing(socket)
+    else
+      start_typing(socket)
+    end
+  end
+
+  def handle_event("message_typing", _params, socket), do: start_typing(socket)
+
   def handle_event("send_direct_message", %{"message" => message_params}, socket) do
     message_params = put_reply_target(message_params, socket.assigns.reply_target)
 
@@ -97,7 +204,7 @@ defmodule DiscordCloneWeb.DirectConversationLive do
       ) do
     case Chat.toggle_reaction(socket.assigns.current_scope, message_id, emoji) do
       {:ok, _reaction} ->
-        {:noreply, reload_messages(socket)}
+        {:noreply, refresh_reaction_summary(socket, message_id)}
 
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "Reaction could not be saved.")}
@@ -109,35 +216,73 @@ defmodule DiscordCloneWeb.DirectConversationLive do
 
   def handle_event("delete_direct_message", %{"message-id" => message_id}, socket) do
     case Chat.delete_message(socket.assigns.current_scope, message_id) do
-      {:ok, _message} -> {:noreply, reload_messages(socket)}
+      {:ok, _message} -> {:noreply, refresh_message(socket, message_id)}
       {:error, _reason} -> {:noreply, put_flash(socket, :error, "Message could not be deleted.")}
     end
   end
 
   @impl true
   def handle_info(
-        {:direct_message_created, %{conversation_id: conversation_id}},
+        {:direct_message_created, %{conversation_id: conversation_id, message_id: message_id}},
         %{assigns: %{direct_conversation: %{id: conversation_id}}} = socket
       ) do
-    {:noreply, reload_messages(socket)}
+    {:noreply, handle_created_message(socket, message_id)}
   end
 
   def handle_info(
-        {:message_deleted, %{conversation_id: conversation_id}},
+        {:message_deleted, %{conversation_id: conversation_id, message_id: message_id}},
         %{assigns: %{direct_conversation: %{id: conversation_id}}} = socket
       ) do
-    {:noreply, reload_messages(socket)}
+    {:noreply, refresh_message(socket, message_id)}
   end
 
-  def handle_info({:reaction_changed, _payload}, socket) do
-    {:noreply, reload_messages(socket)}
+  def handle_info({:reaction_changed, %{message_id: message_id}}, socket) do
+    {:noreply, refresh_reaction_summary(socket, message_id)}
   end
 
   def handle_info({:friendships_changed, _payload}, socket) do
     {:noreply, refresh_writable_capability(socket)}
   end
 
+  def handle_info(
+        {:typing_started, %{conversation_id: conversation_id, user_id: user_id}},
+        %{assigns: %{direct_conversation: %{id: conversation_id}}} = socket
+      ) do
+    {:noreply,
+     socket
+     |> assign(:typing_user_ids, MapSet.put(socket.assigns.typing_user_ids, user_id))
+     |> monitor_current_runtime()}
+  end
+
+  def handle_info(
+        {:typing_stopped, %{conversation_id: conversation_id, user_id: user_id}},
+        %{assigns: %{direct_conversation: %{id: conversation_id}}} = socket
+      ) do
+    {:noreply,
+     assign(socket, :typing_user_ids, MapSet.delete(socket.assigns.typing_user_ids, user_id))}
+  end
+
+  def handle_info(
+        {:DOWN, monitor_ref, :process, _pid, _reason},
+        %{assigns: %{runtime_monitor_ref: monitor_ref}} = socket
+      ) do
+    {:noreply,
+     socket
+     |> assign(:typing_user_ids, MapSet.new())
+     |> assign(:runtime_monitor_ref, nil)}
+  end
+
   def handle_info(_message, socket), do: {:noreply, socket}
+
+  @impl true
+  def terminate(_reason, socket) do
+    if direct_conversation = Map.get(socket.assigns, :direct_conversation) do
+      _result =
+        Chat.direct_user_stopped_typing(socket.assigns.current_scope, direct_conversation.id)
+    end
+
+    :ok
+  end
 
   @impl true
   def render(assigns) do
@@ -216,17 +361,48 @@ defmodule DiscordCloneWeb.DirectConversationLive do
               </div>
 
               <div
+                id="direct-older-messages-loading"
+                data-loading={to_string(@loading_older_messages?)}
+                aria-live="polite"
+                class={[!@loading_older_messages? && "sr-only"]}
+              >
+                Loading older Direct Messages
+              </div>
+
+              <div
+                id="direct-newer-messages-loading"
+                data-loading={to_string(@loading_newer_messages?)}
+                aria-live="polite"
+                class={[!@loading_newer_messages? && "sr-only"]}
+              >
+                Loading newer Direct Messages
+              </div>
+
+              <div
                 id="direct-messages"
                 phx-update="stream"
+                phx-hook="ChannelMessages"
+                data-has-older-messages={to_string(@message_window_meta.has_older?)}
+                data-has-newer-messages={to_string(@message_window_meta.has_newer?)}
+                data-loading-older={to_string(@loading_older_messages?)}
+                data-loading-newer={to_string(@loading_newer_messages?)}
+                data-scroll-target-kind={ScrollAnchoring.scroll_target_kind(@message_scroll_target)}
+                data-scroll-target-seq={ScrollAnchoring.scroll_target_seq(@message_scroll_target)}
+                data-scroll-target-token={ScrollAnchoring.scroll_target_token(@message_scroll_target)}
                 class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-6 sm:px-7"
               >
                 <article
                   :for={{dom_id, message} <- @streams.direct_messages}
                   id={dom_id}
                   data-message-seq={message.seq}
+                  data-message-navigation-target={
+                    to_string(message.id == @message_navigation_target_id)
+                  }
                   class={[
                     "group relative flex gap-3 rounded-2xl px-3 py-2 transition duration-200",
-                    "hover:bg-base-200/60"
+                    "hover:bg-base-200/60",
+                    message.id == @message_navigation_target_id &&
+                      "message-target-highlight ring-2 ring-primary/35"
                   ]}
                 >
                   <div class={[
@@ -288,7 +464,7 @@ defmodule DiscordCloneWeb.DirectConversationLive do
                       }
                       id={"#{dom_id}-reply-preview"}
                       type="button"
-                      phx-click="begin_direct_reply"
+                      phx-click="navigate_direct_message"
                       phx-value-message-id={message.reply_to_message_id}
                       class="mb-1.5 flex max-w-full items-center gap-2 border-l-2 border-primary/35 pl-2 text-left text-xs text-base-content/55"
                     >
@@ -371,6 +547,19 @@ defmodule DiscordCloneWeb.DirectConversationLive do
                 </article>
               </div>
 
+              <div
+                :if={typing_participants(@typing_user_ids, @other_participant) != []}
+                id="direct-typing-indicator"
+                class="border-t border-base-300/50 px-5 py-2 text-xs text-base-content/55"
+              >
+                <span
+                  :for={participant <- typing_participants(@typing_user_ids, @other_participant)}
+                  data-typing-user-id={participant.id}
+                >
+                  {participant.username} is typing...
+                </span>
+              </div>
+
               <div :if={@writable?} class="border-t border-base-300/70 bg-base-100 p-4 sm:p-5">
                 <div
                   :if={!is_nil(@reply_target)}
@@ -395,6 +584,8 @@ defmodule DiscordCloneWeb.DirectConversationLive do
                   for={@message_form}
                   id="direct-message-form"
                   phx-submit="send_direct_message"
+                  phx-change="message_typing"
+                  phx-hook="MessageComposer"
                   class="flex items-end gap-3"
                 >
                   <.input
@@ -449,25 +640,265 @@ defmodule DiscordCloneWeb.DirectConversationLive do
     end
   end
 
-  defp reload_messages(socket) do
-    case Chat.list_direct_messages(
+  defp open_message_window(socket, direct_conversation_id, %{"message_id" => message_id}) do
+    if connected?(socket) do
+      navigate_to_message_window(socket, direct_conversation_id, message_id)
+    else
+      Chat.load_latest_direct_message_window(socket.assigns.current_scope, direct_conversation_id)
+    end
+  end
+
+  defp open_message_window(socket, direct_conversation_id, _params) do
+    Chat.load_latest_direct_message_window(socket.assigns.current_scope, direct_conversation_id)
+  end
+
+  defp navigate_to_message_window(socket, message_id) do
+    navigate_to_message_window(socket, socket.assigns.direct_conversation.id, message_id)
+  end
+
+  defp navigate_to_message_window(socket, direct_conversation_id, message_id) do
+    case Chat.navigate_to_direct_message(
+           socket.assigns.current_scope,
+           direct_conversation_id,
+           message_id
+         ) do
+      {:ok, %{target: target} = window} ->
+        token = System.unique_integer([:positive, :monotonic])
+
+        {:ok,
+         window
+         |> Map.put(:target, %{id: target.id, token: token})
+         |> Map.put(:scroll_target, %{kind: :sequence, seq: target.seq, token: token})}
+
+      error ->
+        error
+    end
+  end
+
+  defp monitor_runtime(socket, direct_conversation_id) do
+    if connected?(socket) do
+      case Chat.ensure_direct_conversation_runtime(
+             socket.assigns.current_scope,
+             direct_conversation_id
+           ) do
+        {:ok, pid} -> {:ok, Process.monitor(pid)}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp list_typing_user_ids(socket, direct_conversation_id) do
+    if connected?(socket) do
+      Chat.list_direct_typing_user_ids(socket.assigns.current_scope, direct_conversation_id)
+    else
+      {:ok, []}
+    end
+  end
+
+  defp monitor_current_runtime(%{assigns: %{runtime_monitor_ref: monitor_ref}} = socket)
+       when is_reference(monitor_ref),
+       do: socket
+
+  defp monitor_current_runtime(socket) do
+    case Chat.ensure_direct_conversation_runtime(
            socket.assigns.current_scope,
            socket.assigns.direct_conversation.id
          ) do
-      {:ok, messages} ->
-        {:ok, reaction_summaries} =
-          Chat.list_reaction_summaries(socket.assigns.current_scope, Enum.map(messages, & &1.id))
+      {:ok, pid} -> assign(socket, :runtime_monitor_ref, Process.monitor(pid))
+      {:error, _reason} -> socket
+    end
+  end
+
+  defp replace_message_window(socket, %{messages: messages, meta: meta} = window) do
+    reaction_summaries = reaction_summaries(socket, messages)
+
+    socket
+    |> assign(:direct_messages_empty?, messages == [])
+    |> assign(:direct_messages_by_id, messages_by_id(messages))
+    |> assign(:oldest_message, List.first(messages))
+    |> assign(:latest_message, List.last(messages))
+    |> assign(:message_window_meta, meta)
+    |> assign(:loading_older_messages?, false)
+    |> assign(:loading_newer_messages?, false)
+    |> assign(:reaction_summaries, reaction_summaries)
+    |> assign(:message_navigation_target_id, get_in(window, [:target, :id]))
+    |> assign(:message_scroll_target, window[:scroll_target])
+    |> clear_deleted_reply_target(messages)
+    |> stream(:direct_messages, messages, reset: true)
+  end
+
+  defp merge_message_window(socket, %{messages: messages, meta: loaded_meta}, direction) do
+    all_messages =
+      socket.assigns.direct_messages_by_id
+      |> Map.merge(messages_by_id(messages))
+      |> Map.values()
+      |> Enum.sort_by(& &1.seq)
+
+    trimmed? = length(all_messages) > @rendered_message_limit
+    merged_messages = trim_messages(all_messages, direction)
+
+    meta =
+      merged_window_meta(
+        socket.assigns.message_window_meta,
+        loaded_meta,
+        merged_messages,
+        direction,
+        trimmed?
+      )
+
+    socket
+    |> assign(:direct_messages_empty?, merged_messages == [])
+    |> assign(:direct_messages_by_id, messages_by_id(merged_messages))
+    |> assign(:oldest_message, List.first(merged_messages))
+    |> assign(:latest_message, List.last(merged_messages))
+    |> assign(:message_window_meta, meta)
+    |> assign(:loading_older_messages?, false)
+    |> assign(:loading_newer_messages?, false)
+    |> assign(:reaction_summaries, reaction_summaries(socket, merged_messages))
+    |> stream(:direct_messages, merged_messages, reset: true)
+  end
+
+  defp trim_messages(messages, :older), do: Enum.take(messages, @rendered_message_limit)
+  defp trim_messages(messages, :newer), do: Enum.take(messages, -@rendered_message_limit)
+
+  defp merged_window_meta(current, loaded, messages, direction, trimmed?) do
+    oldest_seq = messages |> List.first() |> message_seq()
+    newest_seq = messages |> List.last() |> message_seq()
+    latest_seq = max(current.latest_seq || 0, loaded.latest_seq || 0)
+
+    %{
+      oldest_seq: oldest_seq,
+      newest_seq: newest_seq,
+      latest_seq: latest_seq,
+      has_older?: loaded.has_older? || (direction == :newer && trimmed?),
+      has_newer?:
+        loaded.has_newer? || (direction == :older && trimmed? && newest_seq < latest_seq),
+      at_latest?: newest_seq == latest_seq,
+      at_or_near_latest?: is_integer(newest_seq) && latest_seq - newest_seq <= 50
+    }
+  end
+
+  defp handle_created_message(socket, message_id) do
+    if socket.assigns.message_window_meta.at_or_near_latest? do
+      case Chat.load_latest_direct_message_window(
+             socket.assigns.current_scope,
+             socket.assigns.direct_conversation.id
+           ) do
+        {:ok, window} -> merge_message_window(socket, window, :newer)
+        {:error, _reason} -> socket
+      end
+    else
+      case Chat.fetch_direct_message(
+             socket.assigns.current_scope,
+             socket.assigns.direct_conversation.id,
+             message_id
+           ) do
+        {:ok, message} ->
+          meta =
+            socket.assigns.message_window_meta
+            |> Map.put(:latest_seq, message.seq)
+            |> Map.put(:has_newer?, true)
+            |> Map.put(:at_latest?, false)
+            |> Map.put(:at_or_near_latest?, false)
+
+          assign(socket, :message_window_meta, meta)
+
+        {:error, _reason} ->
+          socket
+      end
+    end
+  end
+
+  defp refresh_message(socket, message_id) do
+    case Chat.fetch_direct_message(
+           socket.assigns.current_scope,
+           socket.assigns.direct_conversation.id,
+           message_id
+         ) do
+      {:ok, message} ->
+        messages_by_id = Map.put(socket.assigns.direct_messages_by_id, message.id, message)
 
         socket
-        |> assign(:direct_messages_empty?, messages == [])
-        |> assign(:reaction_summaries, reaction_summaries)
-        |> clear_deleted_reply_target(messages)
-        |> stream(:direct_messages, messages, reset: true)
+        |> assign(:direct_messages_by_id, messages_by_id)
+        |> recover_deleted_reply_target(message)
+        |> stream_insert(:direct_messages, message)
+        |> refresh_reply_previews(message)
 
       {:error, _reason} ->
         socket
     end
   end
+
+  defp refresh_reply_previews(socket, deleted_message) do
+    if message_deleted?(deleted_message) do
+      socket.assigns.direct_messages_by_id
+      |> Map.values()
+      |> Enum.filter(&(&1.reply_to_message_id == deleted_message.id))
+      |> Enum.reduce(socket, fn reply, socket -> refresh_one_message(socket, reply.id) end)
+    else
+      socket
+    end
+  end
+
+  defp refresh_one_message(socket, message_id) do
+    case Chat.fetch_direct_message(
+           socket.assigns.current_scope,
+           socket.assigns.direct_conversation.id,
+           message_id
+         ) do
+      {:ok, message} ->
+        socket
+        |> assign(
+          :direct_messages_by_id,
+          Map.put(socket.assigns.direct_messages_by_id, message.id, message)
+        )
+        |> stream_insert(:direct_messages, message)
+
+      {:error, _reason} ->
+        socket
+    end
+  end
+
+  defp refresh_reaction_summary(socket, message_id) do
+    case Chat.list_reaction_summaries(socket.assigns.current_scope, [message_id]) do
+      {:ok, summaries} ->
+        socket
+        |> assign(
+          :reaction_summaries,
+          Map.put(
+            socket.assigns.reaction_summaries,
+            message_id,
+            Map.get(summaries, message_id, [])
+          )
+        )
+        |> restream_message(message_id)
+
+      {:error, _reason} ->
+        socket
+    end
+  end
+
+  defp restream_message(socket, message_id) do
+    case Map.fetch(socket.assigns.direct_messages_by_id, message_id) do
+      {:ok, message} -> stream_insert(socket, :direct_messages, message)
+      :error -> socket
+    end
+  end
+
+  defp reaction_summaries(socket, messages) do
+    message_ids = Enum.map(messages, & &1.id)
+
+    case Chat.list_reaction_summaries(socket.assigns.current_scope, message_ids) do
+      {:ok, summaries} -> summaries
+      {:error, _reason} -> %{}
+    end
+  end
+
+  defp messages_by_id(messages), do: Map.new(messages, &{&1.id, &1})
+  defp message_seq(nil), do: nil
+  defp message_seq(message), do: message.seq
 
   defp message_form do
     %{}
@@ -497,10 +928,31 @@ defmodule DiscordCloneWeb.DirectConversationLive do
     {:ok, destinations} = Chat.list_direct_conversation_destinations(socket.assigns.current_scope)
     writable? = destination_writable?(destinations, socket.assigns.direct_conversation.id)
 
+    socket =
+      socket
+      |> assign(:writable?, writable?)
+      |> then(fn socket ->
+        if writable? do
+          socket
+        else
+          _result =
+            Chat.direct_user_stopped_typing(
+              socket.assigns.current_scope,
+              socket.assigns.direct_conversation.id
+            )
+
+          socket
+          |> assign(:reply_target, nil)
+          |> assign(:typing_user_ids, MapSet.new())
+        end
+      end)
+
     socket
-    |> assign(:writable?, writable?)
-    |> then(fn socket -> if writable?, do: socket, else: assign(socket, :reply_target, nil) end)
-    |> reload_messages()
+    |> stream(
+      :direct_messages,
+      socket.assigns.direct_messages_by_id |> Map.values() |> Enum.sort_by(& &1.seq),
+      reset: true
+    )
   end
 
   defp destination_writable?(destinations, direct_conversation_id) do
@@ -522,6 +974,52 @@ defmodule DiscordCloneWeb.DirectConversationLive do
       |> assign(:reply_target, nil)
       |> put_flash(:error, "That reply target was deleted.")
     end
+  end
+
+  defp recover_deleted_reply_target(%{assigns: %{reply_target: %{id: id}}} = socket, %{id: id}) do
+    socket
+    |> assign(:reply_target, nil)
+    |> put_flash(:error, "That reply target was deleted.")
+  end
+
+  defp recover_deleted_reply_target(socket, _message), do: socket
+
+  defp start_typing(%{assigns: %{writable?: false}} = socket), do: {:noreply, socket}
+
+  defp start_typing(socket) do
+    case Chat.direct_user_started_typing(
+           socket.assigns.current_scope,
+           socket.assigns.direct_conversation.id
+         ) do
+      :ok ->
+        {:noreply, monitor_current_runtime(socket)}
+
+      {:error, :not_friends} ->
+        {:noreply, refresh_writable_capability(socket)}
+
+      {:error, _reason} ->
+        {:noreply, direct_conversation_unavailable(socket)}
+    end
+  end
+
+  defp stop_typing(socket) do
+    case Chat.direct_user_stopped_typing(
+           socket.assigns.current_scope,
+           socket.assigns.direct_conversation.id
+         ) do
+      :ok -> {:noreply, socket}
+      {:error, _reason} -> {:noreply, direct_conversation_unavailable(socket)}
+    end
+  end
+
+  defp direct_conversation_unavailable(socket) do
+    socket
+    |> put_flash(:error, "Direct Conversation not found.")
+    |> push_navigate(to: ~p"/friends")
+  end
+
+  defp typing_participants(typing_user_ids, other_participant) do
+    if MapSet.member?(typing_user_ids, other_participant.id), do: [other_participant], else: []
   end
 
   defp reaction_summaries_for(summaries, message_id), do: Map.get(summaries, message_id, [])

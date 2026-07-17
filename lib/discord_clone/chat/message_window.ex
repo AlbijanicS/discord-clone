@@ -12,7 +12,7 @@ defmodule DiscordClone.Chat.MessageWindow do
 
   import Ecto.Query
 
-  alias DiscordClone.Chat.Message
+  alias DiscordClone.Chat.{Conversation, Message}
   alias DiscordClone.Repo
   alias DiscordClone.Workspaces.Channel
 
@@ -24,12 +24,19 @@ defmodule DiscordClone.Chat.MessageWindow do
   message.
   """
   def load_for_channel(%Channel{} = channel, from_seq, to_seq) do
+    load_for_conversation(channel.conversation, from_seq, to_seq)
+  end
+
+  @doc """
+  Loads a bounded Message window for either Conversation kind.
+  """
+  def load_for_conversation(%Conversation{} = conversation, from_seq, to_seq) do
     messages =
-      channel.id
+      conversation.id
       |> messages_between_sequences(from_seq, to_seq)
       |> Repo.all()
 
-    message_window(messages, channel.conversation.last_message_seq)
+    message_window(messages, conversation.last_message_seq)
   end
 
   @doc """
@@ -37,14 +44,22 @@ defmodule DiscordClone.Chat.MessageWindow do
   and a larger run after it — clamped to the channel's message range.
   """
   def load_around_channel(%Channel{} = channel, target_seq) do
-    from_seq = max(1, target_seq - 15)
-    to_seq = min(channel.conversation.last_message_seq, target_seq + 35)
-    load_for_channel(channel, from_seq, to_seq)
+    load_around_conversation(channel.conversation, target_seq)
   end
 
-  defp messages_between_sequences(channel_id, from_seq, to_seq) do
+  @doc """
+  Loads a bounded Message window centered on a target sequence for either
+  Conversation kind.
+  """
+  def load_around_conversation(%Conversation{} = conversation, target_seq) do
+    from_seq = max(1, target_seq - 15)
+    to_seq = min(conversation.last_message_seq, target_seq + 35)
+    load_for_conversation(conversation, from_seq, to_seq)
+  end
+
+  defp messages_between_sequences(conversation_id, from_seq, to_seq) do
     Message
-    |> where([message], message.channel_id == ^channel_id)
+    |> where([message], message.channel_id == ^conversation_id)
     |> where([message], message.seq >= ^from_seq and message.seq <= ^to_seq)
     |> order_by([message], asc: message.seq)
     |> preload(^Message.display_preloads())

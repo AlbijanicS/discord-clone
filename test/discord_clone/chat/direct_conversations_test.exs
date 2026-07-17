@@ -268,6 +268,202 @@ defmodule DiscordClone.Chat.DirectConversationsTest do
     end
   end
 
+  describe "Direct Conversation message windows" do
+    test "loads bounded latest, older, newer, and around-target windows for participants" do
+      scope = user_scope_fixture()
+
+      {_friend, _friend_scope, direct_conversation, _friendship} =
+        direct_conversation_with(scope, "window_friend")
+
+      messages =
+        for index <- 1..75 do
+          assert {:ok, message} =
+                   Chat.send_direct_message(scope, direct_conversation.id, %{
+                     content: "bounded message #{index}"
+                   })
+
+          message
+        end
+
+      assert {:ok, latest} =
+               Chat.load_latest_direct_message_window(scope, direct_conversation.id)
+
+      assert Enum.map(latest.messages, & &1.seq) == Enum.to_list(26..75)
+
+      assert latest.meta == %{
+               oldest_seq: 26,
+               newest_seq: 75,
+               latest_seq: 75,
+               has_older?: true,
+               has_newer?: false,
+               at_latest?: true,
+               at_or_near_latest?: true
+             }
+
+      assert {:ok, older} =
+               Chat.load_older_direct_message_window(scope, direct_conversation.id, 26)
+
+      assert Enum.map(older.messages, & &1.seq) == Enum.to_list(1..25)
+      refute older.meta.has_older?
+      assert older.meta.has_newer?
+
+      assert {:ok, newer} =
+               Chat.load_newer_direct_message_window(scope, direct_conversation.id, 25)
+
+      assert Enum.map(newer.messages, & &1.seq) == Enum.to_list(26..75)
+      assert newer.meta.at_latest?
+
+      target = Enum.at(messages, 39)
+
+      assert {:ok, around} =
+               Chat.navigate_to_direct_message(scope, direct_conversation.id, target.id)
+
+      assert around.target.id == target.id
+      assert Enum.map(around.messages, & &1.seq) == Enum.to_list(25..75)
+    end
+
+    test "redacts deleted content in windows and does not disclose targets to outsiders" do
+      owner_scope = user_scope_fixture()
+
+      {_friend, _friend_scope, direct_conversation, _friendship} =
+        direct_conversation_with(owner_scope, "private_window_friend")
+
+      assert {:ok, deleted} =
+               Chat.send_direct_message(owner_scope, direct_conversation.id, %{content: "secret"})
+
+      assert {:ok, _deleted} = Chat.delete_message(owner_scope, deleted.id)
+
+      assert {:ok, window} =
+               Chat.load_latest_direct_message_window(owner_scope, direct_conversation.id)
+
+      assert [%{content: nil}] = window.messages
+
+      outsider_scope = user_scope_fixture(user_fixture(username: "private_window_outsider"))
+
+      assert {:error, :not_found} =
+               Chat.navigate_to_direct_message(
+                 outsider_scope,
+                 direct_conversation.id,
+                 deleted.id
+               )
+
+      assert {:error, :not_found} =
+               Chat.navigate_to_direct_message(
+                 outsider_scope,
+                 Ecto.UUID.generate(),
+                 Ecto.UUID.generate()
+               )
+    end
+  end
+
+  describe "Direct Conversation typing and runtime recovery" do
+    test "current Friends type ephemerally while former Friends and outsiders cannot" do
+      scope = user_scope_fixture()
+
+      {friend, friend_scope, direct_conversation, friendship} =
+        direct_conversation_with(scope, "typing_friend")
+
+      assert :ok = Chat.subscribe_to_direct_messages(friend_scope, direct_conversation.id)
+      assert :ok = Chat.direct_user_started_typing(scope, direct_conversation.id)
+
+      assert_receive {:typing_started, %{conversation_id: conversation_id, user_id: user_id}}
+
+      assert conversation_id == direct_conversation.id
+      assert user_id == scope.user.id
+
+      assert {:ok, [^user_id]} =
+               Chat.list_direct_typing_user_ids(friend_scope, direct_conversation.id)
+
+      assert :ok = Friendships.remove_friend(friend_scope, friendship.id)
+
+      assert {:error, :not_friends} =
+               Chat.direct_user_started_typing(scope, direct_conversation.id)
+
+      assert :ok = Chat.direct_user_stopped_typing(scope, direct_conversation.id)
+      assert {:ok, []} = Chat.list_direct_typing_user_ids(friend_scope, direct_conversation.id)
+
+      outsider_scope = user_scope_fixture(user_fixture(username: "typing_outsider"))
+
+      assert {:error, :not_found} =
+               Chat.direct_user_started_typing(outsider_scope, direct_conversation.id)
+
+      assert friend.id == friend_scope.user.id
+    end
+
+    test "typing expires automatically without persistence" do
+      scope = user_scope_fixture()
+
+      {_friend, friend_scope, direct_conversation, _friendship} =
+        direct_conversation_with(scope, "typing_expiry_friend")
+
+      previous = Application.get_env(:discord_clone, :conversation_runtime_typing_timeout_ms)
+      Application.put_env(:discord_clone, :conversation_runtime_typing_timeout_ms, 0)
+
+      on_exit(fn ->
+        if is_nil(previous) do
+          Application.delete_env(:discord_clone, :conversation_runtime_typing_timeout_ms)
+        else
+          Application.put_env(:discord_clone, :conversation_runtime_typing_timeout_ms, previous)
+        end
+      end)
+
+      assert :ok = Chat.subscribe_to_direct_messages(friend_scope, direct_conversation.id)
+      assert :ok = Chat.direct_user_started_typing(scope, direct_conversation.id)
+
+      assert_receive {:typing_started, %{user_id: user_id}}
+      assert_receive {:typing_stopped, %{user_id: ^user_id}}
+      assert {:ok, []} = Chat.list_direct_typing_user_ids(friend_scope, direct_conversation.id)
+    end
+
+    test "restarts after idle shutdown and reloads bounded durable Direct Messages" do
+      scope = user_scope_fixture()
+
+      {_friend, _friend_scope, direct_conversation, _friendship} =
+        direct_conversation_with(scope, "recovery_friend")
+
+      assert {:ok, message} =
+               Chat.send_direct_message(scope, direct_conversation.id, %{content: "durable"})
+
+      previous = Application.get_env(:discord_clone, :conversation_runtime_inactivity_timeout_ms)
+      Application.put_env(:discord_clone, :conversation_runtime_inactivity_timeout_ms, 0)
+
+      on_exit(fn ->
+        if is_nil(previous) do
+          Application.delete_env(:discord_clone, :conversation_runtime_inactivity_timeout_ms)
+        else
+          Application.put_env(
+            :discord_clone,
+            :conversation_runtime_inactivity_timeout_ms,
+            previous
+          )
+        end
+      end)
+
+      assert {:ok, first_pid} =
+               Chat.ensure_direct_conversation_runtime(scope, direct_conversation.id)
+
+      ref = Process.monitor(first_pid)
+      assert_receive {:DOWN, ^ref, :process, ^first_pid, :normal}
+
+      Application.put_env(
+        :discord_clone,
+        :conversation_runtime_inactivity_timeout_ms,
+        :timer.minutes(15)
+      )
+
+      assert {:ok, [reloaded]} =
+               Chat.list_recent_direct_messages(scope, direct_conversation.id)
+
+      assert reloaded.id == message.id
+      assert reloaded.content == "durable"
+
+      assert {:ok, second_pid} =
+               Chat.ensure_direct_conversation_runtime(scope, direct_conversation.id)
+
+      assert second_pid != first_pid
+    end
+  end
+
   describe "Direct Conversation persistence invariants" do
     test "rejects a bare Direct Conversation base and a subtype with the wrong kind" do
       assert_raise Postgrex.Error, ~r/conversations_require_matching_subtype/, fn ->

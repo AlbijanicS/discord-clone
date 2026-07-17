@@ -350,6 +350,203 @@ defmodule DiscordClone.Chat do
   def fetch_direct_message(_scope, _direct_conversation_id, _message_id),
     do: {:error, :unauthenticated}
 
+  @doc "Loads the newest bounded Message window for a Direct Conversation participant."
+  @spec load_latest_direct_message_window(term(), term()) :: window_result()
+  def load_latest_direct_message_window(
+        %Scope{user: %User{id: user_id}},
+        direct_conversation_id
+      ) do
+    with %DirectConversation{} = direct_conversation <-
+           get_participant_direct_conversation(user_id, direct_conversation_id) do
+      conversation = Repo.preload(direct_conversation, :conversation).conversation
+      latest_seq = conversation.last_message_seq
+      from_seq = max(1, latest_seq - @message_page_size + 1)
+
+      {:ok,
+       conversation
+       |> MessageWindow.load_for_conversation(from_seq, latest_seq)
+       |> redact_direct_message_window()}
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def load_latest_direct_message_window(_scope, _direct_conversation_id),
+    do: {:error, :unauthenticated}
+
+  @doc "Loads the bounded Direct Message window immediately before a sequence."
+  @spec load_older_direct_message_window(term(), term(), term()) :: window_result()
+  def load_older_direct_message_window(
+        %Scope{user: %User{id: user_id}},
+        direct_conversation_id,
+        before_seq
+      )
+      when is_integer(before_seq) do
+    with %DirectConversation{} = direct_conversation <-
+           get_participant_direct_conversation(user_id, direct_conversation_id) do
+      conversation = Repo.preload(direct_conversation, :conversation).conversation
+      to_seq = min(conversation.last_message_seq, before_seq - 1)
+      from_seq = max(1, to_seq - @message_page_size + 1)
+
+      {:ok,
+       conversation
+       |> MessageWindow.load_for_conversation(from_seq, to_seq)
+       |> redact_direct_message_window()}
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def load_older_direct_message_window(%Scope{user: %User{}}, _conversation_id, _before_seq),
+    do: {:error, :invalid_sequence}
+
+  def load_older_direct_message_window(_scope, _conversation_id, _before_seq),
+    do: {:error, :unauthenticated}
+
+  @doc "Loads the bounded Direct Message window immediately after a sequence."
+  @spec load_newer_direct_message_window(term(), term(), term()) :: window_result()
+  def load_newer_direct_message_window(
+        %Scope{user: %User{id: user_id}},
+        direct_conversation_id,
+        after_seq
+      )
+      when is_integer(after_seq) do
+    with %DirectConversation{} = direct_conversation <-
+           get_participant_direct_conversation(user_id, direct_conversation_id) do
+      conversation = Repo.preload(direct_conversation, :conversation).conversation
+      from_seq = max(1, after_seq + 1)
+      to_seq = min(conversation.last_message_seq, from_seq + @message_page_size - 1)
+
+      {:ok,
+       conversation
+       |> MessageWindow.load_for_conversation(from_seq, to_seq)
+       |> redact_direct_message_window()}
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def load_newer_direct_message_window(%Scope{user: %User{}}, _conversation_id, _after_seq),
+    do: {:error, :invalid_sequence}
+
+  def load_newer_direct_message_window(_scope, _conversation_id, _after_seq),
+    do: {:error, :unauthenticated}
+
+  @doc "Loads a bounded Direct Message window containing an authorized live target."
+  @spec navigate_to_direct_message(term(), term(), term()) :: window_result()
+  def navigate_to_direct_message(
+        %Scope{user: %User{id: user_id}},
+        direct_conversation_id,
+        message_id
+      ) do
+    with %DirectConversation{} = direct_conversation <-
+           get_participant_direct_conversation(user_id, direct_conversation_id),
+         %Message{} = target <- get_live_direct_message(direct_conversation.id, message_id) do
+      conversation = Repo.preload(direct_conversation, :conversation).conversation
+
+      window =
+        conversation
+        |> MessageWindow.load_around_conversation(target.seq)
+        |> redact_direct_message_window()
+
+      {:ok, Map.put(window, :target, preload_message_for_display(target))}
+    else
+      _not_found -> {:error, :not_found}
+    end
+  end
+
+  def navigate_to_direct_message(_scope, _direct_conversation_id, _message_id),
+    do: {:error, :unauthenticated}
+
+  @doc false
+  def ensure_direct_conversation_runtime(
+        %Scope{user: %User{id: user_id}},
+        direct_conversation_id
+      ) do
+    with %DirectConversation{id: conversation_id} <-
+           get_participant_direct_conversation(user_id, direct_conversation_id) do
+      Runtime.ensure_conversation(conversation_id)
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def ensure_direct_conversation_runtime(_scope, _direct_conversation_id),
+    do: {:error, :unauthenticated}
+
+  @doc false
+  def list_recent_direct_messages(%Scope{user: %User{id: user_id}}, direct_conversation_id) do
+    with %DirectConversation{id: conversation_id} <-
+           get_participant_direct_conversation(user_id, direct_conversation_id),
+         {:ok, messages} <- Runtime.list_recent_messages(conversation_id) do
+      {:ok, Enum.map(messages, &redact_deleted_direct_message/1)}
+    else
+      nil -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def list_recent_direct_messages(_scope, _direct_conversation_id),
+    do: {:error, :unauthenticated}
+
+  @doc "Lists transient typing Users for a Direct Conversation participant."
+  def list_direct_typing_user_ids(
+        %Scope{user: %User{id: user_id}} = scope,
+        direct_conversation_id
+      ) do
+    with %DirectConversation{} = direct_conversation <-
+           get_participant_direct_conversation(user_id, direct_conversation_id),
+         other_user_id when is_binary(other_user_id) <-
+           DirectConversation.other_user_id(direct_conversation, user_id) do
+      case Friendships.lock_accepted_friendship(scope, other_user_id) do
+        :ok -> Runtime.list_typing_user_ids(direct_conversation.id)
+        {:error, :not_friends} -> {:ok, []}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def list_direct_typing_user_ids(_scope, _direct_conversation_id),
+    do: {:error, :unauthenticated}
+
+  @doc "Starts transient typing for a current Friend in a Direct Conversation."
+  def direct_user_started_typing(
+        %Scope{user: %User{id: user_id}} = scope,
+        direct_conversation_id
+      ) do
+    with %DirectConversation{} = direct_conversation <-
+           get_participant_direct_conversation(user_id, direct_conversation_id),
+         other_user_id when is_binary(other_user_id) <-
+           DirectConversation.other_user_id(direct_conversation, user_id),
+         :ok <- Friendships.lock_accepted_friendship(scope, other_user_id) do
+      Runtime.user_started_typing(direct_conversation.id, user_id)
+    else
+      nil -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def direct_user_started_typing(_scope, _direct_conversation_id),
+    do: {:error, :unauthenticated}
+
+  @doc "Stops transient typing for a Direct Conversation participant."
+  def direct_user_stopped_typing(
+        %Scope{user: %User{id: user_id}},
+        direct_conversation_id
+      ) do
+    with %DirectConversation{id: conversation_id} <-
+           get_participant_direct_conversation(user_id, direct_conversation_id) do
+      Runtime.user_stopped_typing_if_running(conversation_id, user_id)
+    else
+      nil -> {:error, :not_found}
+    end
+  end
+
+  def direct_user_stopped_typing(_scope, _direct_conversation_id),
+    do: {:error, :unauthenticated}
+
   @doc "Subscribes one participant to compact Direct Message change facts."
   @spec subscribe_to_direct_messages(term(), term()) ::
           :ok | {:error, :unauthenticated | :not_found}
@@ -431,6 +628,7 @@ defmodule DiscordClone.Chat do
         {:ok, {message, read_state_changes, recipient_user_id}} ->
           message = preload_message_for_display(message)
           :ok = Runtime.put_recent_message(message)
+          :ok = Runtime.user_stopped_typing(direct_conversation_id, sender_user_id)
           :ok = Unread.broadcast_changes(read_state_changes)
           :ok = broadcast_direct_message_created(message)
           :ok = broadcast_direct_navigation_changed(sender_user_id, %{action: :message_created})
@@ -1894,6 +2092,24 @@ defmodule DiscordClone.Chat do
     do: %{message | content: nil}
 
   defp redact_deleted_reply_target(message), do: message
+
+  defp redact_direct_message_window(%{messages: messages} = window) do
+    Map.put(window, :messages, Enum.map(messages, &redact_deleted_direct_message/1))
+  end
+
+  defp get_live_direct_message(direct_conversation_id, message_id) do
+    UUIDIdentifier.cast_or(message_id, nil, fn message_id ->
+      Repo.one(
+        from message in Message,
+          where:
+            message.id == ^message_id and
+              message.channel_id == ^direct_conversation_id and
+              is_nil(message.deleted_at),
+          lock: "FOR SHARE",
+          limit: 1
+      )
+    end)
+  end
 
   defp get_live_channel_message(channel_id, message_id) do
     UUIDIdentifier.cast_or(message_id, nil, fn message_id ->

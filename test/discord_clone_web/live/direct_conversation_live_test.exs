@@ -5,6 +5,7 @@ defmodule DiscordCloneWeb.DirectConversationLiveTest do
   import Phoenix.LiveViewTest
 
   alias DiscordClone.Chat
+  alias DiscordClone.Chat.Runtime
   alias DiscordClone.Friendships
 
   setup :register_and_log_in_user
@@ -226,6 +227,131 @@ defmodule DiscordCloneWeb.DirectConversationLiveTest do
 
     assert_eventually_lacks_element(first_view, "#direct-message-#{friend_message.id}-reaction-0")
     assert has_element?(second_view, "#direct-message-#{friend_message.id}-delete")
+  end
+
+  test "loads bounded Direct Message history and navigates to an authorized target", %{
+    conn: conn,
+    scope: scope
+  } do
+    {_friend, _friend_scope, direct_conversation, direct_path, _friendship} =
+      direct_conversation_fixture(scope, "live_history")
+
+    messages =
+      for index <- 1..75 do
+        assert {:ok, message} =
+                 Chat.send_direct_message(scope, direct_conversation.id, %{
+                   content: "history #{index}"
+                 })
+
+        message
+      end
+
+    first = List.first(messages)
+    target = Enum.at(messages, 19)
+    latest = List.last(messages)
+
+    {:ok, latest_view, _html} = live(conn, direct_path)
+    refute has_element?(latest_view, "#direct-message-#{first.id}")
+    assert has_element?(latest_view, "#direct-message-#{latest.id}")
+    assert has_element?(latest_view, "#direct-messages[data-has-older-messages='true']")
+
+    render_hook(latest_view, "scroll_anchor_observed", %{"seq" => latest.seq})
+    render_hook(latest_view, "visible_read_observed", %{"ranges" => []})
+
+    assert has_element?(latest_view, "#direct-message-#{latest.id}")
+
+    render_hook(latest_view, "load_older_messages", %{})
+    assert has_element?(latest_view, "#direct-message-#{first.id}")
+    assert has_element?(latest_view, "#direct-messages[data-has-older-messages='false']")
+
+    {:ok, target_view, _html} = live(conn, direct_path <> "?message_id=#{target.id}")
+
+    assert has_element?(
+             target_view,
+             "#direct-message-#{target.id}[data-message-navigation-target='true']"
+           )
+
+    refute has_element?(target_view, "#direct-message-#{latest.id}")
+    assert has_element?(target_view, "#direct-messages[data-has-newer-messages='true']")
+
+    render_hook(target_view, "load_newer_messages", %{})
+    assert has_element?(target_view, "#direct-message-#{latest.id}")
+    assert has_element?(target_view, "#direct-messages[data-has-newer-messages='false']")
+  end
+
+  test "current Friends see typing stop and runtime loss clears ephemeral state", %{
+    conn: conn,
+    scope: scope
+  } do
+    {friend, friend_scope, direct_conversation, direct_path, _friendship} =
+      direct_conversation_fixture(scope, "live_typing")
+
+    friend_conn = build_conn() |> log_in_user(friend)
+    {:ok, sender_view, _html} = live(conn, direct_path)
+    {:ok, recipient_view, _html} = live(friend_conn, direct_path)
+
+    sender_view
+    |> form("#direct-message-form", message: %{content: "typing"})
+    |> render_change()
+
+    assert_eventually_has_element(
+      recipient_view,
+      "#direct-typing-indicator [data-typing-user-id='#{scope.user.id}']"
+    )
+
+    sender_view
+    |> form("#direct-message-form", message: %{content: " "})
+    |> render_change()
+
+    assert_eventually_lacks_element(
+      recipient_view,
+      "#direct-typing-indicator [data-typing-user-id='#{scope.user.id}']"
+    )
+
+    sender_view
+    |> form("#direct-message-form", message: %{content: "typing again"})
+    |> render_change()
+
+    assert_eventually_has_element(
+      recipient_view,
+      "#direct-typing-indicator [data-typing-user-id='#{scope.user.id}']"
+    )
+
+    runtime_pid = Runtime.conversation_pid(direct_conversation.id)
+    runtime_ref = Process.monitor(runtime_pid)
+    Process.exit(runtime_pid, :kill)
+    assert_receive {:DOWN, ^runtime_ref, :process, ^runtime_pid, :killed}
+
+    assert_eventually_lacks_element(
+      recipient_view,
+      "#direct-typing-indicator [data-typing-user-id='#{scope.user.id}']"
+    )
+
+    assert {:ok, []} = Chat.list_direct_typing_user_ids(friend_scope, direct_conversation.id)
+  end
+
+  test "reopens durable recent Direct Messages after runtime loss", %{conn: conn, scope: scope} do
+    {_friend, _friend_scope, direct_conversation, direct_path, _friendship} =
+      direct_conversation_fixture(scope, "live_recovery")
+
+    assert {:ok, message} =
+             Chat.send_direct_message(scope, direct_conversation.id, %{
+               content: "survives restart"
+             })
+
+    assert {:ok, runtime_pid} =
+             Chat.ensure_direct_conversation_runtime(scope, direct_conversation.id)
+
+    runtime_ref = Process.monitor(runtime_pid)
+    Process.exit(runtime_pid, :kill)
+    assert_receive {:DOWN, ^runtime_ref, :process, ^runtime_pid, :killed}
+
+    {:ok, view, _html} = live(conn, direct_path)
+    assert has_element?(view, "#direct-message-#{message.id}", "survives restart")
+
+    restarted_pid = Runtime.conversation_pid(direct_conversation.id)
+    assert is_pid(restarted_pid)
+    assert restarted_pid != runtime_pid
   end
 
   defp assert_eventually_has_message(view, content, attempts \\ 10)

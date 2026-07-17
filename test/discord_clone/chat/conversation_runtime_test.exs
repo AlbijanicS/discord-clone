@@ -3,6 +3,7 @@ defmodule DiscordClone.Chat.ConversationRuntimeTest do
 
   alias DiscordClone.Chat
   alias DiscordClone.Chat.Runtime
+  alias DiscordClone.Friendships
   alias DiscordClone.Workspaces
 
   import DiscordClone.AccountsFixtures
@@ -47,6 +48,45 @@ defmodule DiscordClone.Chat.ConversationRuntimeTest do
 
       assert Runtime.conversation_pid(first_conversation_id) !=
                Runtime.conversation_pid(second_conversation_id)
+    end
+
+    test "isolates Workspace Channel and Direct Conversation runtime state" do
+      scope = user_scope_fixture()
+      friend = user_fixture(username: "runtime_kind_friend")
+      friend_scope = user_scope_fixture(friend)
+
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Mixed conversations"})
+
+      assert {:ok, %{relationship: request}} =
+               Friendships.send_friend_request(scope, %{username: friend.username})
+
+      assert {:ok, _friendship} = Friendships.accept_friend_request(friend_scope, request.id)
+      assert {:ok, direct_conversation} = Chat.open_direct_conversation(scope, friend.id)
+
+      assert {:ok, channel_message} =
+               Chat.send_message(scope, workspace.default_channel_id, %{content: "channel only"})
+
+      assert {:ok, direct_message} =
+               Chat.send_direct_message(scope, direct_conversation.id, %{content: "direct only"})
+
+      assert {:ok, [^channel_message]} =
+               Chat.list_recent_messages(scope, workspace.default_channel_id)
+
+      assert {:ok, [recent_direct_message]} =
+               Chat.list_recent_direct_messages(scope, direct_conversation.id)
+
+      assert recent_direct_message.id == direct_message.id
+
+      assert :ok = Chat.user_started_typing(scope, workspace.default_channel_id)
+
+      assert {:ok, [scope.user.id]} ==
+               Chat.list_typing_user_ids(scope, workspace.default_channel_id)
+
+      assert {:ok, []} ==
+               Chat.list_direct_typing_user_ids(friend_scope, direct_conversation.id)
+
+      assert Runtime.conversation_pid(workspace.default_channel_id) !=
+               Runtime.conversation_pid(direct_conversation.id)
     end
 
     test "starts with a bounded recent message cache for rendering" do
