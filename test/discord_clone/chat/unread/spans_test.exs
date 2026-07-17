@@ -4,9 +4,8 @@ defmodule DiscordClone.Chat.Unread.SpansTest do
   import Ecto.Query
 
   alias DiscordClone.Chat
-  alias DiscordClone.Chat.Message
+  alias DiscordClone.Chat.{Conversation, Message}
   alias DiscordClone.Workspaces
-  alias DiscordClone.Workspaces.Channel
   alias DiscordClone.Workspaces.WorkspaceMembership
 
   import DiscordClone.AccountsFixtures
@@ -106,14 +105,14 @@ defmodule DiscordClone.Chat.Unread.SpansTest do
 
     {:ok, message} =
       Repo.transaction(fn ->
-        channel =
+        conversation =
           Repo.one!(
-            from channel in Channel,
-              where: channel.id == ^channel_id,
+            from conversation in Conversation,
+              where: conversation.id == ^channel_id,
               lock: "FOR UPDATE"
           )
 
-        seq = channel.last_message_seq + 1
+        seq = conversation.last_message_seq + 1
 
         message =
           Repo.insert!(%Message{
@@ -125,7 +124,7 @@ defmodule DiscordClone.Chat.Unread.SpansTest do
             updated_at: inserted_at
           })
 
-        channel
+        conversation
         |> Ecto.Changeset.change(last_message_seq: seq)
         |> Repo.update!()
 

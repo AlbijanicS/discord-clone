@@ -5,11 +5,10 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
 
   import DiscordClone.AccountsFixtures
 
-  @tables ~w(
+  @id_tables ~w(
     users
     users_tokens
     workspaces
-    channels
     workspace_memberships
     workspace_invites
     workspace_moderations
@@ -18,9 +17,9 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
     messages
     message_reactions
     activity_items
-    channel_reads
-    channel_read_states
-    channel_unread_spans
+    conversations
+    conversation_read_states
+    conversation_unread_spans
   )
 
   test "every persisted entity has a database-generated UUID primary key" do
@@ -35,13 +34,26 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
           AND table_name = ANY($1)
         ORDER BY table_name
         """,
-        [@tables]
+        [@id_tables]
       )
 
     assert rows ==
-             @tables
+             @id_tables
              |> Enum.sort()
              |> Enum.map(&[&1, "uuid", "gen_random_uuid()"])
+
+    assert %{rows: [["uuid", nil]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT data_type, column_default
+               FROM information_schema.columns
+               WHERE table_schema = 'public'
+                 AND table_name = 'channels'
+                 AND column_name = 'conversation_id'
+               """,
+               []
+             )
   end
 
   test "every foreign key is UUID-native and preserves its delete action" do
@@ -99,19 +111,20 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
     constraints = Map.new(rows, fn [name, type] -> {name, type} end)
 
     for name <- ~w(
-          channels_last_message_seq_non_negative
+          conversations_kind_supported
+          conversations_last_message_seq_non_negative
           messages_reply_target_not_self
           messages_seq_positive
-          channel_read_states_unread_count_non_negative
-          channel_read_states_unread_summary_consistent
-          channel_read_states_last_viewed_anchor_seq_positive
-          channel_unread_spans_positive_bounds
-          channel_unread_spans_ordered_bounds
+          conversation_read_states_unread_count_non_negative
+          conversation_read_states_unread_summary_consistent
+          conversation_read_states_last_viewed_anchor_seq_positive
+          conversation_unread_spans_positive_bounds
+          conversation_unread_spans_ordered_bounds
         ) do
       assert constraints[name] == "c"
     end
 
-    assert constraints["channel_unread_spans_no_overlap"] == "x"
+    assert constraints["conversation_unread_spans_no_overlap"] == "x"
 
     %{rows: unique_indexes} =
       Ecto.Adapters.SQL.query!(
@@ -137,11 +150,10 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
           workspace_invites_code_index
           workspace_moderations_workspace_id_target_user_id_type_index
           workspace_bans_workspace_id_target_user_id_index
-          messages_channel_id_seq_index
+          messages_conversation_id_seq_index
           message_reactions_message_id_user_id_emoji_index
           activity_items_recipient_user_id_source_message_id_index
-          channel_reads_channel_id_user_id_index
-          channel_read_states_channel_id_user_id_index
+          conversation_read_states_conversation_id_user_id_index
         ) do
       assert MapSet.member?(unique_indexes, name)
     end
@@ -165,12 +177,12 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
     other_user = user_fixture()
     {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Baseline checks"})
 
-    assert_raise Postgrex.Error, ~r/channel_read_states_unread_summary_consistent/, fn ->
+    assert_raise Postgrex.Error, ~r/conversation_read_states_unread_summary_consistent/, fn ->
       Ecto.Adapters.SQL.query!(
         Repo,
         """
-        INSERT INTO channel_read_states (
-          channel_id, user_id, unread_count, inserted_at, updated_at
+        INSERT INTO conversation_read_states (
+          conversation_id, user_id, unread_count, inserted_at, updated_at
         )
         VALUES ($1, $2, 1, now(), now())
         """,
@@ -187,20 +199,20 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
     Ecto.Adapters.SQL.query!(
       Repo,
       """
-      INSERT INTO channel_unread_spans (
-        channel_id, user_id, from_seq, to_seq, inserted_at, updated_at
+      INSERT INTO conversation_unread_spans (
+        conversation_id, user_id, from_seq, to_seq, inserted_at, updated_at
       )
       VALUES ($1, $2, 3, 5, now(), now())
       """,
       [Ecto.UUID.dump!(workspace.default_channel_id), Ecto.UUID.dump!(other_user.id)]
     )
 
-    assert_raise Postgrex.Error, ~r/channel_unread_spans_no_overlap/, fn ->
+    assert_raise Postgrex.Error, ~r/conversation_unread_spans_no_overlap/, fn ->
       Ecto.Adapters.SQL.query!(
         Repo,
         """
-        INSERT INTO channel_unread_spans (
-          channel_id, user_id, from_seq, to_seq, inserted_at, updated_at
+        INSERT INTO conversation_unread_spans (
+          conversation_id, user_id, from_seq, to_seq, inserted_at, updated_at
         )
         VALUES ($1, $2, 5, 8, now(), now())
         """,
@@ -213,20 +225,18 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
     %{
       "activity_items_actor_user_id_fkey" => "nilify_all",
       "activity_items_recipient_user_id_fkey" => "delete_all",
-      "activity_items_source_channel_id_fkey" => "delete_all",
+      "activity_items_source_conversation_id_fkey" => "delete_all",
       "activity_items_source_message_id_fkey" => "delete_all",
       "activity_items_workspace_id_fkey" => "delete_all",
-      "channel_read_states_channel_id_fkey" => "delete_all",
       "channel_read_states_user_id_fkey" => "delete_all",
-      "channel_reads_channel_id_fkey" => "delete_all",
-      "channel_reads_last_read_message_id_fkey" => "nilify_all",
-      "channel_reads_user_id_fkey" => "delete_all",
-      "channel_unread_spans_channel_id_fkey" => "delete_all",
       "channel_unread_spans_user_id_fkey" => "delete_all",
-      "channels_workspace_id_fkey" => "delete_all",
+      "channels_conversation_id_fkey" => "delete_all",
+      "channels_workspace_id_fkey" => "no_action",
+      "conversation_read_states_conversation_id_fkey" => "delete_all",
+      "conversation_unread_spans_conversation_id_fkey" => "delete_all",
       "message_reactions_message_id_fkey" => "delete_all",
       "message_reactions_user_id_fkey" => "delete_all",
-      "messages_channel_id_fkey" => "delete_all",
+      "messages_conversation_id_fkey" => "delete_all",
       "messages_deleted_by_user_id_fkey" => "nilify_all",
       "messages_reply_to_message_id_fkey" => "no_action",
       "messages_user_id_fkey" => "nilify_all",

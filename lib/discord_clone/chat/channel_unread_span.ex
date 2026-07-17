@@ -1,10 +1,6 @@
 defmodule DiscordClone.Chat.ChannelUnreadSpan do
   @moduledoc """
-  Canonical unread range for one User and Channel.
-
-  Each row is inclusive of `from_seq` and `to_seq`; adjacent or overlapping
-  spans are normalized by later Chat workflows, while the database rejects
-  overlapping persisted spans.
+  Channel-facing projection of a Conversation Unread Span.
   """
 
   use Ecto.Schema
@@ -13,11 +9,14 @@ defmodule DiscordClone.Chat.ChannelUnreadSpan do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
-  schema "channel_unread_spans" do
+  schema "conversation_unread_spans" do
     field :from_seq, :integer
     field :to_seq, :integer
 
-    belongs_to :channel, DiscordClone.Workspaces.Channel
+    belongs_to :conversation, DiscordClone.Chat.Conversation,
+      foreign_key: :channel_id,
+      source: :conversation_id
+
     belongs_to :user, DiscordClone.Accounts.User
 
     timestamps(type: :utc_datetime_usec)
@@ -30,12 +29,12 @@ defmodule DiscordClone.Chat.ChannelUnreadSpan do
     |> validate_number(:from_seq, greater_than: 0)
     |> validate_number(:to_seq, greater_than: 0)
     |> validate_bounds()
-    |> foreign_key_constraint(:channel_id)
+    |> foreign_key_constraint(:channel_id, name: :conversation_unread_spans_conversation_id_fkey)
     |> foreign_key_constraint(:user_id)
-    |> check_constraint(:from_seq, name: :channel_unread_spans_positive_bounds)
-    |> check_constraint(:to_seq, name: :channel_unread_spans_ordered_bounds)
+    |> check_constraint(:from_seq, name: :conversation_unread_spans_positive_bounds)
+    |> check_constraint(:to_seq, name: :conversation_unread_spans_ordered_bounds)
     |> exclusion_constraint(:from_seq,
-      name: :channel_unread_spans_no_overlap,
+      name: :conversation_unread_spans_no_overlap,
       message: "overlaps an existing unread span"
     )
   end

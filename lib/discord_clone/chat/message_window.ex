@@ -29,7 +29,7 @@ defmodule DiscordClone.Chat.MessageWindow do
       |> messages_between_sequences(from_seq, to_seq)
       |> Repo.all()
 
-    message_window(messages, channel.last_message_seq)
+    message_window(messages, channel.conversation.last_message_seq)
   end
 
   @doc """
@@ -38,7 +38,7 @@ defmodule DiscordClone.Chat.MessageWindow do
   """
   def load_around_channel(%Channel{} = channel, target_seq) do
     from_seq = max(1, target_seq - 15)
-    to_seq = min(channel.last_message_seq, target_seq + 35)
+    to_seq = min(channel.conversation.last_message_seq, target_seq + 35)
     load_for_channel(channel, from_seq, to_seq)
   end
 

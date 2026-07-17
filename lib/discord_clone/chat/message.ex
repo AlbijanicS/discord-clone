@@ -11,7 +11,10 @@ defmodule DiscordClone.Chat.Message do
     field :seq, :integer
     field :deleted_at, :utc_datetime
 
-    belongs_to :channel, DiscordClone.Workspaces.Channel
+    belongs_to :channel, DiscordClone.Workspaces.Channel,
+      foreign_key: :channel_id,
+      source: :conversation_id
+
     belongs_to :user, DiscordClone.Accounts.User
     belongs_to :deleted_by_user, DiscordClone.Accounts.User
     belongs_to :reply_to_message, __MODULE__
@@ -32,12 +35,12 @@ defmodule DiscordClone.Chat.Message do
     |> update_change(:content, &normalize_content/1)
     |> validate_required([:channel_id, :user_id, :content])
     |> validate_length(:content, min: 1, max: 4_000)
-    |> foreign_key_constraint(:channel_id)
+    |> foreign_key_constraint(:channel_id, name: :messages_conversation_id_fkey)
     |> foreign_key_constraint(:user_id)
     |> foreign_key_constraint(:reply_to_message_id)
     |> check_constraint(:reply_to_message_id, name: :messages_reply_target_not_self)
     |> check_constraint(:seq, name: :messages_seq_positive)
-    |> unique_constraint(:seq, name: :messages_channel_id_seq_index)
+    |> unique_constraint(:seq, name: :messages_conversation_id_seq_index)
   end
 
   def soft_delete_changeset(message, attrs) do

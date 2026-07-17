@@ -17,7 +17,11 @@ defmodule DiscordClone.Activities.ActivityItem do
     belongs_to :recipient_user, DiscordClone.Accounts.User
     belongs_to :actor_user, DiscordClone.Accounts.User
     belongs_to :source_message, DiscordClone.Chat.Message
-    belongs_to :source_channel, DiscordClone.Workspaces.Channel
+
+    belongs_to :source_channel, DiscordClone.Workspaces.Channel,
+      foreign_key: :source_channel_id,
+      source: :source_conversation_id
+
     belongs_to :workspace, DiscordClone.Workspaces.Workspace
 
     timestamps(type: :utc_datetime_usec)
@@ -35,7 +39,9 @@ defmodule DiscordClone.Activities.ActivityItem do
     |> foreign_key_constraint(:recipient_user_id)
     |> foreign_key_constraint(:actor_user_id)
     |> foreign_key_constraint(:source_message_id)
-    |> foreign_key_constraint(:source_channel_id)
+    |> foreign_key_constraint(:source_channel_id,
+      name: :activity_items_source_conversation_id_fkey
+    )
     |> foreign_key_constraint(:workspace_id)
     |> unique_constraint([:recipient_user_id, :source_message_id])
   end

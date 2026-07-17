@@ -12,10 +12,8 @@ defmodule DiscordClone.Chat.Unread do
   alias DiscordClone.Accounts.{Scope, User}
 
   alias DiscordClone.Chat.{
-    ChannelRead,
     ChannelReadState,
     ChannelUnreadSpan,
-    Message,
     MessageWindow,
     Unread.Spans
   }
@@ -28,32 +26,17 @@ defmodule DiscordClone.Chat.Unread do
       read_rows =
         Repo.all(
           from channel in Channel,
-            left_join: latest_message in subquery(latest_message_per_channel_query()),
-            on: latest_message.channel_id == channel.id,
             where: channel.workspace_id == ^workspace_id,
             select: %{
-              channel_id: channel.id,
-              last_read_message_id: latest_message.last_read_message_id
+              channel_id: channel.id
             }
         )
 
-      with :ok <-
-             Enum.reduce_while(read_rows, :ok, fn read_row, :ok ->
-               case upsert_channel_read(
-                      user_id,
-                      read_row.channel_id,
-                      read_row.last_read_message_id
-                    ) do
-                 {:ok, _channel_read} -> {:cont, :ok}
-                 {:error, changeset} -> {:halt, {:error, changeset}}
-               end
-             end) do
-        insert_zero_unread_read_states(read_rows, fn %{channel_id: channel_id} ->
-          {channel_id, user_id}
-        end)
+      insert_zero_unread_read_states(read_rows, fn %{channel_id: channel_id} ->
+        {channel_id, user_id}
+      end)
 
-        :ok
-      end
+      :ok
     end
   end
 
@@ -71,18 +54,10 @@ defmodule DiscordClone.Chat.Unread do
             select: %{
               channel_id: channel.id,
               user_id: membership.user_id,
-              last_read_message_id: nil,
               inserted_at: type(^now, :utc_datetime_usec),
               updated_at: type(^now, :utc_datetime_usec)
             }
         )
-
-      Repo.insert_all(
-        ChannelRead,
-        read_rows,
-        on_conflict: :nothing,
-        conflict_target: [:channel_id, :user_id]
-      )
 
       insert_zero_unread_read_states(read_rows, fn %{channel_id: channel_id, user_id: user_id} ->
         {channel_id, user_id}
@@ -110,14 +85,6 @@ defmodule DiscordClone.Chat.Unread do
           on: channel.id == read_state.channel_id,
           where: channel.workspace_id == ^workspace_id,
           where: read_state.user_id == ^user_id
-      )
-
-      Repo.delete_all(
-        from read in ChannelRead,
-          join: channel in Channel,
-          on: channel.id == read.channel_id,
-          where: channel.workspace_id == ^workspace_id,
-          where: read.user_id == ^user_id
       )
 
       :ok
@@ -295,7 +262,8 @@ defmodule DiscordClone.Chat.Unread do
         from channel in Channel,
           join: membership in WorkspaceMembership,
           on: membership.workspace_id == channel.workspace_id,
-          where: channel.id == ^channel_id and membership.user_id == ^user_id
+          where: channel.id == ^channel_id and membership.user_id == ^user_id,
+          preload: [:conversation]
       )
     end)
   end
@@ -450,7 +418,7 @@ defmodule DiscordClone.Chat.Unread do
       to_seq - from_seq + 1 > 50 ->
         {:error, :range_too_large}
 
-      to_seq > channel.last_message_seq ->
+      to_seq > channel.conversation.last_message_seq ->
         {:error, :invalid_range}
 
       true ->
@@ -469,38 +437,6 @@ defmodule DiscordClone.Chat.Unread do
   end
 
   defp validate_unread_range(_from_seq, _to_seq), do: {:error, :invalid_range}
-
-  defp latest_message_per_channel_query do
-    from message in Message,
-      distinct: message.channel_id,
-      order_by: [asc: message.channel_id, desc: message.seq],
-      select: %{
-        channel_id: message.channel_id,
-        last_read_message_id: message.id
-      }
-  end
-
-  defp upsert_channel_read(user_id, channel_id, last_read_message_id) do
-    case Repo.get_by(ChannelRead, channel_id: channel_id, user_id: user_id) do
-      nil ->
-        %ChannelRead{}
-        |> ChannelRead.changeset(%{
-          channel_id: channel_id,
-          user_id: user_id,
-          last_read_message_id: last_read_message_id
-        })
-        |> Repo.insert()
-
-      %ChannelRead{last_read_message_id: nil} = channel_read
-      when not is_nil(last_read_message_id) ->
-        channel_read
-        |> ChannelRead.changeset(%{last_read_message_id: last_read_message_id})
-        |> Repo.update()
-
-      %ChannelRead{} = channel_read ->
-        {:ok, channel_read}
-    end
-  end
 
   defp channel_read_state_topic(user_id, channel_id),
     do: "chat:user:#{user_id}:channel:#{channel_id}:read_state"

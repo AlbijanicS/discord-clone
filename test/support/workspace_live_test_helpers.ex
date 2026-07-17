@@ -4,10 +4,10 @@ defmodule DiscordCloneWeb.WorkspaceLiveTestHelpers do
   import Phoenix.LiveViewTest
 
   alias DiscordClone.Chat
-  alias DiscordClone.Chat.Message
+  alias DiscordClone.Chat.{Conversation, Message}
   alias DiscordClone.Repo
   alias DiscordClone.Workspaces
-  alias DiscordClone.Workspaces.{Channel, WorkspaceMembership}
+  alias DiscordClone.Workspaces.WorkspaceMembership
 
   def expire_active_timeout!(workspace_id, target_user_id) do
     moderation =
@@ -62,14 +62,14 @@ defmodule DiscordCloneWeb.WorkspaceLiveTestHelpers do
 
     {:ok, message} =
       Repo.transaction(fn ->
-        channel =
+        conversation =
           Repo.one!(
-            from channel in Channel,
-              where: channel.id == ^channel_id,
+            from conversation in Conversation,
+              where: conversation.id == ^channel_id,
               lock: "FOR UPDATE"
           )
 
-        seq = channel.last_message_seq + 1
+        seq = conversation.last_message_seq + 1
 
         message =
           Repo.insert!(%Message{
@@ -81,7 +81,7 @@ defmodule DiscordCloneWeb.WorkspaceLiveTestHelpers do
             updated_at: inserted_at
           })
 
-        channel
+        conversation
         |> Ecto.Changeset.change(last_message_seq: seq)
         |> Repo.update!()
 

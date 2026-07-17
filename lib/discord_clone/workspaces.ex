@@ -18,6 +18,7 @@ defmodule DiscordClone.Workspaces do
   alias DiscordClone.Accounts.{Scope, User}
   alias DiscordClone.Activities.ActivityItem
   alias DiscordClone.Chat
+  alias DiscordClone.Chat.Conversation
   alias DiscordClone.{Repo, UUIDIdentifier}
 
   alias DiscordClone.Workspaces.{
@@ -187,8 +188,12 @@ defmodule DiscordClone.Workspaces do
     |> Multi.insert(:owner_membership, fn %{workspace: workspace} ->
       owner_membership_changeset(workspace, user)
     end)
-    |> Multi.insert(:default_channel, fn %{workspace: workspace} ->
-      default_channel_changeset(workspace)
+    |> Multi.insert(:default_conversation, Conversation.workspace_channel_changeset())
+    |> Multi.insert(:default_channel, fn %{
+                                           workspace: workspace,
+                                           default_conversation: conversation
+                                         } ->
+      default_channel_changeset(workspace, conversation)
     end)
     |> Multi.update(:workspace_with_default_channel, fn %{
                                                           workspace: workspace,
@@ -226,8 +231,11 @@ defmodule DiscordClone.Workspaces do
     })
   end
 
-  defp default_channel_changeset(%Workspace{id: workspace_id}) do
-    Channel.create_changeset(%Channel{}, %{
+  defp default_channel_changeset(
+         %Workspace{id: workspace_id},
+         %Conversation{id: conversation_id}
+       ) do
+    Channel.create_changeset(%Channel{id: conversation_id}, %{
       workspace_id: workspace_id,
       name: @default_channel_name
     })
@@ -841,7 +849,9 @@ defmodule DiscordClone.Workspaces do
          :ok <- authorize_delete_channel(scope, workspace),
          {:ok, channel} <- get_channel(workspace.id, channel_id),
          :ok <- reject_landing_channel_delete(workspace, channel) do
-      Repo.delete(channel)
+      case Repo.delete!(Repo.get!(Conversation, channel.id)) do
+        %Conversation{} -> {:ok, channel}
+      end
     end
   end
 
@@ -892,13 +902,35 @@ defmodule DiscordClone.Workspaces do
   def delete_workspace(%Scope{user: %User{}} = scope, workspace_id) do
     with {:ok, workspace} <- get_workspace(workspace_id),
          :ok <- authorize_delete_workspace(scope, workspace),
-         {:ok, deleted_workspace} <- Repo.delete(workspace) do
+         {:ok, deleted_workspace} <- delete_workspace_with_conversations(workspace) do
       :ok = Chat.stop_workspace_presence(deleted_workspace.id)
       {:ok, deleted_workspace}
     end
   end
 
   def delete_workspace(_scope, _workspace_id), do: {:error, :unauthenticated}
+
+  defp delete_workspace_with_conversations(%Workspace{} = workspace) do
+    Repo.transaction(fn ->
+      Repo.update_all(
+        from(selected_workspace in Workspace, where: selected_workspace.id == ^workspace.id),
+        set: [default_channel_id: nil]
+      )
+
+      conversation_ids =
+        from(channel in Channel,
+          where: channel.workspace_id == ^workspace.id,
+          select: channel.id
+        )
+
+      Repo.delete_all(
+        from conversation in Conversation,
+          where: conversation.id in subquery(conversation_ids)
+      )
+
+      Repo.delete!(workspace)
+    end)
+  end
 
   defp get_attr(attrs, key) do
     string_key = Atom.to_string(key)
@@ -2048,10 +2080,13 @@ defmodule DiscordClone.Workspaces do
 
   defp create_channel_with_reads(%Workspace{} = workspace, attrs) do
     Multi.new()
-    |> Multi.insert(
-      :channel,
-      Channel.create_changeset(%Channel{}, channel_attrs(workspace.id, attrs))
-    )
+    |> Multi.insert(:conversation, Conversation.workspace_channel_changeset())
+    |> Multi.insert(:channel, fn %{conversation: conversation} ->
+      Channel.create_changeset(
+        %Channel{id: conversation.id},
+        channel_attrs(workspace.id, attrs)
+      )
+    end)
     |> Multi.run(:channel_reads, fn _repo, %{channel: channel} ->
       case Chat.initialize_channel_reads_for_workspace_members(channel.id) do
         :ok -> {:ok, :initialized}

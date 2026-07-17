@@ -2,21 +2,23 @@ defmodule DiscordClone.Workspaces.Channel do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:id, :binary_id, autogenerate: true}
+  @primary_key {:id, :binary_id, source: :conversation_id, autogenerate: false}
   @foreign_key_type :binary_id
 
   schema "channels" do
     field :name, :string
-    field :last_message_seq, :integer, default: 0
+
+    belongs_to :conversation, DiscordClone.Chat.Conversation,
+      define_field: false,
+      foreign_key: :id
 
     belongs_to :workspace, DiscordClone.Workspaces.Workspace
 
-    has_many :messages, DiscordClone.Chat.Message
+    has_many :messages, DiscordClone.Chat.Message, foreign_key: :channel_id
 
     has_many :activity_items, DiscordClone.Activities.ActivityItem,
       foreign_key: :source_channel_id
 
-    has_many :channel_reads, DiscordClone.Chat.ChannelRead
     has_many :channel_read_states, DiscordClone.Chat.ChannelReadState
     has_many :channel_unread_spans, DiscordClone.Chat.ChannelUnreadSpan
 
@@ -38,6 +40,7 @@ defmodule DiscordClone.Workspaces.Channel do
         "must start with a letter or number and use lowercase letters, numbers, dashes, or underscores"
     )
     |> foreign_key_constraint(:workspace_id)
+    |> foreign_key_constraint(:id)
     |> unique_constraint(:name, name: :channels_workspace_id_name_index)
   end
 

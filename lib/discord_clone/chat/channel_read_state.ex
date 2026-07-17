@@ -1,9 +1,9 @@
 defmodule DiscordClone.Chat.ChannelReadState do
   @moduledoc """
-  Fast per-user Channel unread summary.
+  Channel-facing projection of a Conversation Read State.
 
-  Unread spans are the source of truth; read states cache sidebar and landing
-  fields so callers do not scan Messages or spans for every render.
+  The persisted owner is `conversation_id`; this schema keeps the established
+  Channel workflow field name at the public Chat boundary.
   """
 
   use Ecto.Schema
@@ -12,14 +12,17 @@ defmodule DiscordClone.Chat.ChannelReadState do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
-  schema "channel_read_states" do
+  schema "conversation_read_states" do
     field :unread_count, :integer, default: 0
     field :first_unread_seq, :integer
     field :last_unread_seq, :integer
     field :last_viewed_anchor_seq, :integer
     field :last_opened_at, :utc_datetime
 
-    belongs_to :channel, DiscordClone.Workspaces.Channel
+    belongs_to :conversation, DiscordClone.Chat.Conversation,
+      foreign_key: :channel_id,
+      source: :conversation_id
+
     belongs_to :user, DiscordClone.Accounts.User
 
     timestamps(type: :utc_datetime_usec)
@@ -42,14 +45,20 @@ defmodule DiscordClone.Chat.ChannelReadState do
     |> validate_number(:last_unread_seq, greater_than: 0)
     |> validate_number(:last_viewed_anchor_seq, greater_than: 0)
     |> validate_summary_bounds()
-    |> foreign_key_constraint(:channel_id)
+    |> foreign_key_constraint(:channel_id, name: :conversation_read_states_conversation_id_fkey)
     |> foreign_key_constraint(:user_id)
-    |> check_constraint(:unread_count, name: :channel_read_states_unread_count_non_negative)
-    |> check_constraint(:first_unread_seq, name: :channel_read_states_unread_summary_consistent)
-    |> check_constraint(:last_viewed_anchor_seq,
-      name: :channel_read_states_last_viewed_anchor_seq_positive
+    |> check_constraint(:unread_count,
+      name: :conversation_read_states_unread_count_non_negative
     )
-    |> unique_constraint(:channel_id, name: :channel_read_states_channel_id_user_id_index)
+    |> check_constraint(:first_unread_seq,
+      name: :conversation_read_states_unread_summary_consistent
+    )
+    |> check_constraint(:last_viewed_anchor_seq,
+      name: :conversation_read_states_last_viewed_anchor_seq_positive
+    )
+    |> unique_constraint(:channel_id,
+      name: :conversation_read_states_conversation_id_user_id_index
+    )
   end
 
   defp validate_summary_bounds(changeset) do

@@ -156,14 +156,14 @@ defmodule DiscordClone.Chat.ActivityTest do
       Ecto.Adapters.SQL.query!(
         Repo,
         """
-        ALTER TABLE channel_read_states
-        ADD CONSTRAINT channel_read_states_test_reject_unread
+        ALTER TABLE conversation_read_states
+        ADD CONSTRAINT conversation_read_states_test_reject_unread
         CHECK (unread_count = 0)
         """,
         []
       )
 
-      assert_raise Ecto.ConstraintError, ~r/channel_read_states_test_reject_unread/, fn ->
+      assert_raise Ecto.ConstraintError, ~r/conversation_read_states_test_reject_unread/, fn ->
         Chat.send_message(author_scope, workspace.default_channel_id, %{
           content: "hello @unread_failure_target"
         })
@@ -175,7 +175,7 @@ defmodule DiscordClone.Chat.ActivityTest do
 
       Ecto.Adapters.SQL.query!(
         Repo,
-        "ALTER TABLE channel_read_states DROP CONSTRAINT channel_read_states_test_reject_unread",
+        "ALTER TABLE conversation_read_states DROP CONSTRAINT conversation_read_states_test_reject_unread",
         []
       )
 
@@ -543,7 +543,7 @@ defmodule DiscordClone.Chat.ActivityTest do
             recipient_user_id,
             actor_user_id,
             source_message_id,
-            source_channel_id,
+            source_conversation_id,
             workspace_id,
             kind,
             inserted_at,

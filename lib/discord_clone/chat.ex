@@ -14,6 +14,7 @@ defmodule DiscordClone.Chat do
 
   alias DiscordClone.Chat.{
     ChannelReadState,
+    Conversation,
     Emoji,
     Message,
     MentionParser,
@@ -467,17 +468,21 @@ defmodule DiscordClone.Chat do
          :ok <- mark_channel_read(scope, channel_id),
          {:ok, _read_state} <- Unread.ensure_channel_read_state!(user_id, channel_id) do
       channel =
-        Repo.get!(Channel, channel.id)
+        Channel
+        |> Repo.get!(channel.id)
+        |> Repo.preload(:conversation)
 
       Unread.get_channel_read_state!(user_id, channel_id)
-      |> Unread.change_read_state(%{last_viewed_anchor_seq: channel.last_message_seq})
+      |> Unread.change_read_state(%{
+        last_viewed_anchor_seq: channel.conversation.last_message_seq
+      })
       |> Repo.update!()
 
       {:ok,
        MessageWindow.load_for_channel(
          channel,
-         max(1, channel.last_message_seq - @message_page_size + 1),
-         channel.last_message_seq
+         max(1, channel.conversation.last_message_seq - @message_page_size + 1),
+         channel.conversation.last_message_seq
        )}
     else
       nil -> {:error, :not_found}
@@ -662,7 +667,7 @@ defmodule DiscordClone.Chat do
   @spec load_latest_message_window(term(), Ecto.UUID.t()) :: window_result()
   def load_latest_message_window(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
-      latest_seq = channel.last_message_seq
+      latest_seq = channel.conversation.last_message_seq
       oldest_requested_seq = max(1, latest_seq - @message_page_size + 1)
       {:ok, MessageWindow.load_for_channel(channel, oldest_requested_seq, latest_seq)}
     else
@@ -731,7 +736,7 @@ defmodule DiscordClone.Chat do
   def load_older_message_window(%Scope{user: %User{id: user_id}}, channel_id, before_seq)
       when is_integer(before_seq) do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
-      to_seq = min(channel.last_message_seq, before_seq - 1)
+      to_seq = min(channel.conversation.last_message_seq, before_seq - 1)
       from_seq = max(1, to_seq - @message_page_size + 1)
       {:ok, MessageWindow.load_for_channel(channel, from_seq, to_seq)}
     else
@@ -755,7 +760,7 @@ defmodule DiscordClone.Chat do
       when is_integer(after_seq) do
     with %Channel{} = channel <- get_member_channel(channel_id, user_id) do
       from_seq = max(1, after_seq + 1)
-      to_seq = min(channel.last_message_seq, from_seq + @message_page_size - 1)
+      to_seq = min(channel.conversation.last_message_seq, from_seq + @message_page_size - 1)
       {:ok, MessageWindow.load_for_channel(channel, from_seq, to_seq)}
     else
       nil -> {:error, :not_found}
@@ -880,8 +885,8 @@ defmodule DiscordClone.Chat do
          reply_to_message_id
        ) do
     Repo.transaction(fn ->
-      locked_channel = lock_channel_for_update!(channel_id)
-      next_seq = locked_channel.last_message_seq + 1
+      locked_conversation = lock_conversation_for_update!(channel_id)
+      next_seq = locked_conversation.last_message_seq + 1
 
       with {:ok, reply_to_message_id} <-
              validate_reply_target(changeset, channel_id, next_seq, reply_to_message_id),
@@ -894,7 +899,7 @@ defmodule DiscordClone.Chat do
              |> Ecto.Changeset.put_change(:mention_recognition, mention_recognition)
              |> Repo.insert(),
            {:ok, _channel} <-
-             locked_channel
+             locked_conversation
              |> Ecto.Changeset.change(last_message_seq: next_seq)
              |> Repo.update() do
         activity_recipient_ids = insert_mention_activity!(message, channel, user_id)
@@ -1135,7 +1140,8 @@ defmodule DiscordClone.Chat do
             membership.workspace_id == channel.workspace_id and
               membership.user_id == ^user_id,
           where: channel.id == ^channel_id,
-          limit: 1
+          limit: 1,
+          preload: [:conversation]
       )
     end)
   end
@@ -1310,16 +1316,16 @@ defmodule DiscordClone.Chat do
     end)
   end
 
-  defp lock_channel_for_update!(channel_id) do
+  defp lock_conversation_for_update!(conversation_id) do
     Repo.one!(
-      from channel in Channel,
-        where: channel.id == ^channel_id,
+      from conversation in Conversation,
+        where: conversation.id == ^conversation_id,
         lock: "FOR UPDATE"
     )
   end
 
   defp validate_channel_anchor(%Channel{} = channel, anchor_seq) when is_integer(anchor_seq) do
-    if anchor_seq >= 1 and anchor_seq <= channel.last_message_seq do
+    if anchor_seq >= 1 and anchor_seq <= channel.conversation.last_message_seq do
       :ok
     else
       {:error, :invalid_sequence}
