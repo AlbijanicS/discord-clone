@@ -3,7 +3,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.MemberActions do
 
   import Phoenix.LiveView, only: [put_flash: 3]
 
-  alias DiscordClone.Workspaces
+  alias DiscordClone.{Friendships, Workspaces}
 
   @member_actions [
     "promote_to_admin",
@@ -15,6 +15,23 @@ defmodule DiscordCloneWeb.WorkspaceLive.MemberActions do
   ]
 
   def run(socket, params, workspace_id, refresh)
+
+  def run(
+        socket,
+        %{"action" => "send_friend_request", "user_id" => target_user_id},
+        workspace_id,
+        refresh
+      ) do
+    socket.assigns.current_scope
+    |> Friendships.send_friend_request_to_workspace_member(workspace_id, target_user_id)
+    |> handle_result(
+      socket,
+      refresh,
+      %{workspace_id: workspace_id, target_user_id: target_user_id},
+      success: "Friend Request sent.",
+      error: "Friend Request could not be sent."
+    )
+  end
 
   def run(socket, %{"action" => action, "user_id" => user_id} = params, workspace_id, refresh)
       when action in @member_actions do

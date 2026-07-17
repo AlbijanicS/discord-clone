@@ -31,4 +31,10 @@ defmodule DiscordClone.Friendships.Relationship do
     |> check_constraint(:accepted_at, name: :friend_relationships_acceptance_consistent)
     |> unique_constraint([:user_low_id, :user_high_id])
   end
+
+  def accept_changeset(relationship) do
+    relationship
+    |> change(status: :accepted, accepted_at: DateTime.utc_now())
+    |> check_constraint(:accepted_at, name: :friend_relationships_acceptance_consistent)
+  end
 end

@@ -68,4 +68,132 @@ defmodule DiscordCloneWeb.FriendsLiveTest do
 
     assert {:error, {:redirect, %{to: "/users/log-in"}}} = live(conn, ~p"/friends")
   end
+
+  test "accepts, declines, cancels, and removes relationships with stable stream identities", %{
+    conn: conn,
+    user: user
+  } do
+    accepted_sender = user_fixture(username: "accepted_sender")
+    declined_sender = user_fixture(username: "declined_sender")
+    cancelled_target = user_fixture(username: "cancelled_target")
+
+    assert {:ok, %{relationship: accepted_request}} =
+             Friendships.send_friend_request(user_scope_fixture(accepted_sender), %{
+               username: user.username
+             })
+
+    assert {:ok, %{relationship: declined_request}} =
+             Friendships.send_friend_request(user_scope_fixture(declined_sender), %{
+               username: user.username
+             })
+
+    assert {:ok, %{relationship: cancelled_request}} =
+             Friendships.send_friend_request(user_scope_fixture(user), %{
+               username: cancelled_target.username
+             })
+
+    {:ok, view, _html} = live(conn, ~p"/friends")
+
+    assert has_element?(view, "#incoming-request-#{accepted_request.id}")
+
+    view
+    |> element("#accept-friend-request-#{accepted_request.id}")
+    |> render_click()
+
+    refute has_element?(view, "#incoming-request-#{accepted_request.id}")
+    assert has_element?(view, "#friendship-#{accepted_request.id}")
+
+    view
+    |> element("#decline-friend-request-#{declined_request.id}")
+    |> render_click()
+
+    refute has_element?(view, "#incoming-request-#{declined_request.id}")
+
+    view
+    |> element("#cancel-friend-request-#{cancelled_request.id}")
+    |> render_click()
+
+    refute has_element?(view, "#outgoing-request-#{cancelled_request.id}")
+
+    view
+    |> element("#remove-friend-#{accepted_request.id}")
+    |> render_click()
+
+    refute has_element?(view, "#friendship-#{accepted_request.id}")
+  end
+
+  test "restores a removed Friendship and refreshes crossed requests in every open session", %{
+    conn: conn,
+    user: user
+  } do
+    other_user = user_fixture(username: "crossed_live_user")
+    other_conn = build_conn() |> log_in_user(other_user)
+
+    {:ok, first_view, _html} = live(conn, ~p"/friends")
+    {:ok, second_view, _html} = live(other_conn, ~p"/friends")
+
+    first_view
+    |> form("#friend-request-form", friend_request: %{username: other_user.username})
+    |> render_submit()
+
+    assert has_element?(first_view, "#outgoing-requests [id^='outgoing-request-']")
+    assert has_element?(second_view, "#incoming-requests [id^='incoming-request-']")
+
+    second_view
+    |> form("#friend-request-form", friend_request: %{username: user.username})
+    |> render_submit()
+
+    assert has_element?(first_view, "#friends-list [id^='friendship-']")
+    assert has_element?(second_view, "#friends-list [id^='friendship-']")
+    refute has_element?(first_view, "#outgoing-requests [id^='outgoing-request-']")
+    refute has_element?(second_view, "#incoming-requests [id^='incoming-request-']")
+
+    [friendship_id] =
+      first_view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> then(& &1["#friends-list > article"])
+      |> LazyHTML.attribute("id")
+
+    assert friendship_id =~ "friendship-"
+
+    first_view
+    |> element("#remove-friend-#{String.replace_prefix(friendship_id, "friendship-", "")}")
+    |> render_click()
+
+    refute has_element?(first_view, "##{friendship_id}")
+    refute has_element?(second_view, "##{friendship_id}")
+
+    first_view
+    |> form("#friend-request-form", friend_request: %{username: other_user.username})
+    |> render_submit()
+
+    second_view
+    |> element(
+      "#incoming-requests [id^='incoming-request-'] button[id^='accept-friend-request-']"
+    )
+    |> render_click()
+
+    assert has_element?(first_view, "#friends-list [id^='friendship-']")
+    assert has_element?(second_view, "#friends-list [id^='friendship-']")
+  end
+
+  test "private Friendship events refresh all open sessions for the affected User", %{
+    conn: conn,
+    user: user
+  } do
+    sender = user_fixture(username: "multi_session_sender")
+    second_conn = build_conn() |> log_in_user(user)
+
+    {:ok, first_view, _html} = live(conn, ~p"/friends")
+    {:ok, second_view, _html} = live(second_conn, ~p"/friends")
+
+    assert {:ok, %{relationship: request}} =
+             Friendships.send_friend_request(user_scope_fixture(sender), %{
+               username: user.username
+             })
+
+    assert has_element?(first_view, "#incoming-request-#{request.id}")
+    assert has_element?(second_view, "#incoming-request-#{request.id}")
+  end
 end

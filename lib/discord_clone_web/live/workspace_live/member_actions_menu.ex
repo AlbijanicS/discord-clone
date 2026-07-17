@@ -156,11 +156,19 @@ defmodule DiscordCloneWeb.WorkspaceLive.MemberActionsMenu do
   defp member_action_label(:remove_timeout), do: "Remove timeout"
   defp member_action_label(:kick), do: "Kick"
   defp member_action_label(:ban), do: "Ban"
+  defp member_action_label(:send_friend_request), do: "Send Friend Request"
 
   defp member_action_destructive?(action), do: action in [:kick, :ban]
 
   defp member_action_click(action)
-       when action in [:promote_to_admin, :demote_to_member, :mute, :unmute, :remove_timeout],
+       when action in [
+              :promote_to_admin,
+              :demote_to_member,
+              :mute,
+              :unmute,
+              :remove_timeout,
+              :send_friend_request
+            ],
        do: "member_action"
 
   defp member_action_click(_action), do: nil

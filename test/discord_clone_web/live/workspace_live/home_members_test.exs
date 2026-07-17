@@ -5,6 +5,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMembersTest do
   import DiscordCloneWeb.WorkspaceLiveTestHelpers
 
   alias DiscordClone.Workspaces
+  alias DiscordClone.Friendships
   alias DiscordClone.Chat
   alias DiscordClone.Chat.Message
   alias DiscordClone.Chat.Runtime
@@ -13,6 +14,36 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMembersTest do
 
   describe "channel members, moderation, and presence" do
     setup :register_and_log_in_user
+
+    test "a Workspace Member sends a Friend Request to a known member without retyping", %{
+      conn: conn,
+      scope: member_scope
+    } do
+      owner_scope =
+        %{username: "known_workspace_member"}
+        |> DiscordClone.AccountsFixtures.user_fixture()
+        |> DiscordClone.AccountsFixtures.user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Foundry"})
+      add_workspace_member!(workspace, member_scope)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(
+               view,
+               "#workspace-member-#{owner_scope.user.id}-send-friend-request"
+             )
+
+      view
+      |> element("#workspace-member-#{owner_scope.user.id}-send-friend-request")
+      |> render_click()
+
+      assert {:ok, [%{user: requested_user}]} =
+               Friendships.list_outgoing_requests(member_scope)
+
+      assert requested_user.id == owner_scope.user.id
+    end
 
     test "starts a channel runtime after connected channel entry", %{
       conn: conn,
@@ -189,7 +220,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMembersTest do
       refute has_element?(view, "#workspace-members-offline-section")
     end
 
-    test "shows member row actions to owners and hides them from regular members", %{
+    test "shows moderation actions to owners and Friend Request actions to regular members", %{
       conn: owner_conn,
       scope: owner_scope
     } do
@@ -232,7 +263,15 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMembersTest do
         )
 
       assert has_element?(member_view, "#workspace-member-#{owner_scope.user.id}")
-      refute has_element?(member_view, "#workspace-member-#{owner_scope.user.id}-actions")
+      assert has_element?(member_view, "#workspace-member-#{owner_scope.user.id}-actions")
+
+      assert has_element?(
+               member_view,
+               "#workspace-member-#{owner_scope.user.id}-send-friend-request"
+             )
+
+      refute has_element?(member_view, "#workspace-member-#{owner_scope.user.id}-mute")
+      refute has_element?(member_view, "#workspace-member-#{owner_scope.user.id}-kick")
       refute has_element?(member_view, "#workspace-member-#{member_scope.user.id}-actions")
     end
 
@@ -260,7 +299,15 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMembersTest do
       {:ok, view, _html} =
         live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
 
-      refute has_element?(view, "#workspace-member-#{owner_scope.user.id}-actions")
+      assert has_element?(view, "#workspace-member-#{owner_scope.user.id}-actions")
+
+      assert has_element?(
+               view,
+               "#workspace-member-#{owner_scope.user.id}-send-friend-request"
+             )
+
+      refute has_element?(view, "#workspace-member-#{owner_scope.user.id}-mute")
+      refute has_element?(view, "#workspace-member-#{owner_scope.user.id}-kick")
       refute has_element?(view, "#workspace-member-#{admin_scope.user.id}-actions")
 
       assert has_element?(view, "#workspace-member-#{peer_admin_scope.user.id}-actions")

@@ -156,15 +156,11 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
     end
   end
 
-  def handle_event("member_action", %{"action" => action, "user_id" => _user_id} = params, socket)
-      when action in [
-             "promote_to_admin",
-             "demote_to_member",
-             "mute",
-             "unmute",
-             "timeout",
-             "remove_timeout"
-           ] do
+  def handle_event(
+        "member_action",
+        %{"action" => _action, "user_id" => _user_id} = params,
+        socket
+      ) do
     workspace_id = socket.assigns.selected_workspace.id
 
     MemberActions.run(socket, params, workspace_id, &refresh_member_action/2)

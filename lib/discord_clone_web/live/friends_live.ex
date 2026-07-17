@@ -15,6 +15,12 @@ defmodule DiscordCloneWeb.FriendsLive do
     {:ok, outgoing_requests} =
       Friendships.list_outgoing_requests(socket.assigns.current_scope)
 
+    {:ok, friends} = Friendships.list_friends(socket.assigns.current_scope)
+
+    if connected?(socket) do
+      :ok = Friendships.subscribe(socket.assigns.current_scope)
+    end
+
     {:ok,
      socket
      |> assign(:form, to_form(@empty_form, as: :friend_request))
@@ -26,7 +32,41 @@ defmodule DiscordCloneWeb.FriendsLive do
      |> stream_configure(:outgoing_requests,
        dom_id: &"outgoing-request-#{&1.relationship.id}"
      )
-     |> stream(:outgoing_requests, outgoing_requests)}
+     |> stream(:outgoing_requests, outgoing_requests)
+     |> stream_configure(:friends, dom_id: &"friendship-#{&1.relationship.id}")
+     |> stream(:friends, friends)}
+  end
+
+  def handle_event("accept_friend_request", %{"relationship_id" => relationship_id}, socket) do
+    handle_mutation(
+      Friendships.accept_friend_request(socket.assigns.current_scope, relationship_id),
+      socket,
+      "Friend Request accepted."
+    )
+  end
+
+  def handle_event("decline_friend_request", %{"relationship_id" => relationship_id}, socket) do
+    handle_mutation(
+      Friendships.decline_friend_request(socket.assigns.current_scope, relationship_id),
+      socket,
+      "Friend Request declined."
+    )
+  end
+
+  def handle_event("cancel_friend_request", %{"relationship_id" => relationship_id}, socket) do
+    handle_mutation(
+      Friendships.cancel_friend_request(socket.assigns.current_scope, relationship_id),
+      socket,
+      "Friend Request cancelled."
+    )
+  end
+
+  def handle_event("remove_friend", %{"relationship_id" => relationship_id}, socket) do
+    handle_mutation(
+      Friendships.remove_friend(socket.assigns.current_scope, relationship_id),
+      socket,
+      "Friendship removed."
+    )
   end
 
   @impl true
@@ -60,6 +100,11 @@ defmodule DiscordCloneWeb.FriendsLive do
         {:noreply,
          assign(socket, :request_outcome, {:error, "Friend Request could not be sent."})}
     end
+  end
+
+  @impl true
+  def handle_info({:friendships_changed, _payload}, socket) do
+    {:noreply, refresh_relationship_streams(socket)}
   end
 
   @impl true
@@ -142,7 +187,7 @@ defmodule DiscordCloneWeb.FriendsLive do
           </section>
 
           <div class={["mt-7 grid gap-6 lg:grid-cols-2"]}>
-            <.request_panel
+            <.relationship_panel
               id="incoming-requests"
               title="Incoming"
               subtitle="Friend Requests waiting for you"
@@ -151,7 +196,7 @@ defmodule DiscordCloneWeb.FriendsLive do
               stream={@streams.incoming_requests}
               direction={:incoming}
             />
-            <.request_panel
+            <.relationship_panel
               id="outgoing-requests"
               title="Outgoing"
               subtitle="Friend Requests you have sent"
@@ -159,6 +204,18 @@ defmodule DiscordCloneWeb.FriendsLive do
               icon="hero-paper-airplane"
               stream={@streams.outgoing_requests}
               direction={:outgoing}
+            />
+          </div>
+
+          <div class={["mt-7"]}>
+            <.relationship_panel
+              id="friends-list"
+              title="Friends"
+              subtitle="Your mutual Friendships"
+              empty="No friends yet"
+              icon="hero-user-group"
+              stream={@streams.friends}
+              direction={:friends}
             />
           </div>
         </div>
@@ -175,7 +232,7 @@ defmodule DiscordCloneWeb.FriendsLive do
   attr :stream, :any, required: true
   attr :direction, :atom, required: true
 
-  defp request_panel(assigns) do
+  defp relationship_panel(assigns) do
     ~H"""
     <section class={["overflow-hidden rounded-3xl border border-base-300 bg-base-100 shadow-sm"]}>
       <header class={["flex items-center gap-3 border-b border-base-300 px-5 py-4"]}>
@@ -199,36 +256,130 @@ defmodule DiscordCloneWeb.FriendsLive do
           {@empty}
         </div>
         <article
-          :for={{dom_id, request} <- @stream}
+          :for={{dom_id, relationship_entry} <- @stream}
           id={dom_id}
           class={["group flex items-center gap-3 px-5 py-4 transition hover:bg-base-200/50"]}
         >
           <div class={[
             "flex size-10 items-center justify-center rounded-full bg-primary/10 font-bold text-primary"
           ]}>
-            {request.user.username |> String.first() |> String.upcase()}
+            {relationship_entry.user.username |> String.first() |> String.upcase()}
           </div>
           <div class={["min-w-0 flex-1"]}>
             <p class={["truncate text-sm font-semibold text-base-content"]}>
-              @{request.user.username}
+              @{relationship_entry.user.username}
             </p>
             <p class={["text-xs text-base-content/45"]}>
-              {if @direction == :incoming, do: "Wants to be friends", else: "Request pending"}
+              {relationship_label(@direction)}
             </p>
           </div>
-          <span class={["size-2 rounded-full bg-warning ring-4 ring-warning/10"]} />
+          <span class={[
+            "size-2 rounded-full ring-4",
+            @direction == :friends && "bg-success ring-success/10",
+            @direction != :friends && "bg-warning ring-warning/10"
+          ]} />
+          <div :if={@direction == :incoming} class={["flex shrink-0 items-center gap-2"]}>
+            <button
+              id={"decline-friend-request-#{relationship_entry.relationship.id}"}
+              type="button"
+              phx-click="decline_friend_request"
+              phx-value-relationship_id={relationship_entry.relationship.id}
+              class={[
+                "rounded-lg px-3 py-2 text-xs font-semibold text-base-content/60 transition",
+                "hover:bg-base-300 hover:text-base-content"
+              ]}
+            >
+              Decline
+            </button>
+            <button
+              id={"accept-friend-request-#{relationship_entry.relationship.id}"}
+              type="button"
+              phx-click="accept_friend_request"
+              phx-value-relationship_id={relationship_entry.relationship.id}
+              class={[
+                "rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-content",
+                "transition hover:-translate-y-0.5 hover:shadow-sm"
+              ]}
+            >
+              Accept
+            </button>
+          </div>
+          <button
+            :if={@direction == :outgoing}
+            id={"cancel-friend-request-#{relationship_entry.relationship.id}"}
+            type="button"
+            phx-click="cancel_friend_request"
+            phx-value-relationship_id={relationship_entry.relationship.id}
+            class={[
+              "shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-base-content/60",
+              "transition hover:bg-base-300 hover:text-base-content"
+            ]}
+          >
+            Cancel
+          </button>
+          <button
+            :if={@direction == :friends}
+            id={"remove-friend-#{relationship_entry.relationship.id}"}
+            type="button"
+            phx-click="remove_friend"
+            phx-value-relationship_id={relationship_entry.relationship.id}
+            data-confirm={"Remove @#{relationship_entry.user.username} from your friends?"}
+            class={[
+              "shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-error/75",
+              "transition hover:bg-error/10 hover:text-error"
+            ]}
+          >
+            Remove
+          </button>
         </article>
       </div>
     </section>
     """
   end
 
-  defp refresh_request_streams(socket) do
+  defp refresh_request_streams(socket), do: refresh_relationship_streams(socket)
+
+  defp refresh_relationship_streams(socket) do
     {:ok, incoming_requests} = Friendships.list_incoming_requests(socket.assigns.current_scope)
     {:ok, outgoing_requests} = Friendships.list_outgoing_requests(socket.assigns.current_scope)
+    {:ok, friends} = Friendships.list_friends(socket.assigns.current_scope)
 
     socket
     |> stream(:incoming_requests, incoming_requests, reset: true)
     |> stream(:outgoing_requests, outgoing_requests, reset: true)
+    |> stream(:friends, friends, reset: true)
   end
+
+  defp handle_mutation(result, socket, success_message) do
+    case result do
+      :ok ->
+        {:noreply,
+         socket
+         |> assign(:request_outcome, {:success, success_message})
+         |> refresh_relationship_streams()}
+
+      {:ok, _relationship} ->
+        {:noreply,
+         socket
+         |> assign(:request_outcome, {:success, success_message})
+         |> refresh_relationship_streams()}
+
+      {:error, reason} when reason in [:not_found, :stale_state] ->
+        {:noreply,
+         socket
+         |> assign(
+           :request_outcome,
+           {:error, "That relationship changed. The lists were refreshed."}
+         )
+         |> refresh_relationship_streams()}
+
+      {:error, _reason} ->
+        {:noreply,
+         assign(socket, :request_outcome, {:error, "That relationship action is not allowed."})}
+    end
+  end
+
+  defp relationship_label(:incoming), do: "Wants to be friends"
+  defp relationship_label(:outgoing), do: "Request pending"
+  defp relationship_label(:friends), do: "Friendship active"
 end

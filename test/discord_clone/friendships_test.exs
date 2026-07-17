@@ -4,6 +4,9 @@ defmodule DiscordClone.FriendshipsTest do
   import DiscordClone.AccountsFixtures
 
   alias DiscordClone.Friendships
+  alias DiscordClone.Repo
+  alias DiscordClone.Workspaces
+  alias DiscordClone.Workspaces.WorkspaceMembership
 
   describe "send_friend_request/2" do
     test "resolves only a canonical exact global username" do
@@ -86,6 +89,60 @@ defmodule DiscordClone.FriendshipsTest do
     end
   end
 
+  describe "send_friend_request_to_workspace_member/3" do
+    test "uses the known member while re-authorizing both Workspace Memberships" do
+      requester = user_fixture(username: "member_action_requester")
+      requester_scope = user_scope_fixture(requester)
+      target = user_fixture(username: "member_action_target")
+      outsider = user_fixture(username: "member_action_outsider")
+      nonmember_target = user_fixture(username: "not_a_member_target")
+
+      {:ok, workspace} = Workspaces.create_workspace(requester_scope, %{name: "Friends Foundry"})
+
+      %WorkspaceMembership{}
+      |> WorkspaceMembership.changeset(%{
+        workspace_id: workspace.id,
+        user_id: target.id,
+        role: "member"
+      })
+      |> Repo.insert!()
+
+      assert {:ok, %{relationship: request, user: resolved_target}} =
+               Friendships.send_friend_request_to_workspace_member(
+                 requester_scope,
+                 workspace.id,
+                 target.id
+               )
+
+      assert request.status == :pending
+      assert resolved_target.id == target.id
+
+      assert {:error, :unauthenticated} =
+               Friendships.send_friend_request_to_workspace_member(nil, workspace.id, target.id)
+
+      assert {:error, :unauthorized} =
+               Friendships.send_friend_request_to_workspace_member(
+                 user_scope_fixture(outsider),
+                 workspace.id,
+                 target.id
+               )
+
+      assert {:error, :not_found} =
+               Friendships.send_friend_request_to_workspace_member(
+                 requester_scope,
+                 workspace.id,
+                 nonmember_target.id
+               )
+
+      assert {:error, :self_request} =
+               Friendships.send_friend_request_to_workspace_member(
+                 requester_scope,
+                 workspace.id,
+                 requester.id
+               )
+    end
+  end
+
   describe "pending request lists" do
     test "separates stable incoming and outgoing lists without workspace membership" do
       user = user_fixture(username: "list_owner")
@@ -134,6 +191,215 @@ defmodule DiscordClone.FriendshipsTest do
 
       assert {:error, :unauthenticated} = Friendships.list_incoming_requests(nil)
       assert {:error, :unauthenticated} = Friendships.list_outgoing_requests(nil)
+    end
+  end
+
+  describe "Friend Request and Friendship lifecycle" do
+    setup do
+      requester = user_fixture(username: "lifecycle_requester")
+      recipient = user_fixture(username: "lifecycle_recipient")
+
+      %{
+        requester: requester,
+        requester_scope: user_scope_fixture(requester),
+        recipient: recipient,
+        recipient_scope: user_scope_fixture(recipient)
+      }
+    end
+
+    test "the recipient accepts a request and both Users list one mutual Friendship", context do
+      assert {:ok, %{relationship: request}} =
+               Friendships.send_friend_request(context.requester_scope, %{
+                 username: context.recipient.username
+               })
+
+      assert {:ok, friendship} =
+               Friendships.accept_friend_request(context.recipient_scope, request.id)
+
+      assert friendship.id == request.id
+      assert friendship.status == :accepted
+      assert friendship.accepted_at
+
+      assert {:ok, [%{relationship: requester_friendship, user: recipient}]} =
+               Friendships.list_friends(context.requester_scope)
+
+      assert {:ok, [%{relationship: recipient_friendship, user: requester}]} =
+               Friendships.list_friends(context.recipient_scope)
+
+      assert requester_friendship.id == friendship.id
+      assert recipient_friendship.id == friendship.id
+      assert recipient.id == context.recipient.id
+      assert requester.id == context.requester.id
+    end
+
+    test "the recipient declines and the requester cancels pending requests", context do
+      assert {:ok, %{relationship: declined_request}} =
+               Friendships.send_friend_request(context.requester_scope, %{
+                 username: context.recipient.username
+               })
+
+      assert :ok =
+               Friendships.decline_friend_request(
+                 context.recipient_scope,
+                 declined_request.id
+               )
+
+      assert {:error, :not_found} =
+               Friendships.get_relationship(context.requester_scope, declined_request.id)
+
+      assert {:ok, %{relationship: cancelled_request}} =
+               Friendships.send_friend_request(context.requester_scope, %{
+                 username: context.recipient.username
+               })
+
+      assert :ok =
+               Friendships.cancel_friend_request(
+                 context.requester_scope,
+                 cancelled_request.id
+               )
+
+      assert {:ok, []} = Friendships.list_incoming_requests(context.recipient_scope)
+      assert {:ok, []} = Friendships.list_outgoing_requests(context.requester_scope)
+    end
+
+    test "either Friend removes the Friendship and a later accepted request restores it",
+         context do
+      assert {:ok, %{relationship: request}} =
+               Friendships.send_friend_request(context.requester_scope, %{
+                 username: context.recipient.username
+               })
+
+      assert {:ok, friendship} =
+               Friendships.accept_friend_request(context.recipient_scope, request.id)
+
+      assert :ok = Friendships.remove_friend(context.requester_scope, friendship.id)
+      assert {:ok, []} = Friendships.list_friends(context.requester_scope)
+      assert {:ok, []} = Friendships.list_friends(context.recipient_scope)
+
+      assert {:ok, %{relationship: restored_request}} =
+               Friendships.send_friend_request(context.recipient_scope, %{
+                 username: context.requester.username
+               })
+
+      assert {:ok, restored_friendship} =
+               Friendships.accept_friend_request(
+                 context.requester_scope,
+                 restored_request.id
+               )
+
+      refute restored_friendship.id == friendship.id
+      assert {:ok, [_one_friendship]} = Friendships.list_friends(context.requester_scope)
+      assert {:ok, [_one_friendship]} = Friendships.list_friends(context.recipient_scope)
+    end
+
+    test "mutations re-authorize the actor and distinguish invalid state", context do
+      unrelated = user_fixture(username: "lifecycle_unrelated")
+      unrelated_scope = user_scope_fixture(unrelated)
+
+      assert {:ok, %{relationship: request}} =
+               Friendships.send_friend_request(context.requester_scope, %{
+                 username: context.recipient.username
+               })
+
+      assert {:error, :unauthenticated} =
+               Friendships.accept_friend_request(nil, request.id)
+
+      assert {:error, :not_found} =
+               Friendships.accept_friend_request(unrelated_scope, request.id)
+
+      assert {:error, :unauthorized} =
+               Friendships.accept_friend_request(context.requester_scope, request.id)
+
+      assert {:error, :unauthorized} =
+               Friendships.cancel_friend_request(context.recipient_scope, request.id)
+
+      assert {:error, :stale_state} =
+               Friendships.remove_friend(context.requester_scope, request.id)
+
+      assert {:ok, friendship} =
+               Friendships.accept_friend_request(context.recipient_scope, request.id)
+
+      assert {:error, :stale_state} =
+               Friendships.accept_friend_request(context.recipient_scope, friendship.id)
+
+      assert {:error, :stale_state} =
+               Friendships.decline_friend_request(context.recipient_scope, friendship.id)
+
+      assert {:error, :stale_state} =
+               Friendships.cancel_friend_request(context.requester_scope, friendship.id)
+    end
+
+    test "committed changes broadcast only on the affected Users' private topics", context do
+      unrelated = user_fixture(username: "lifecycle_event_unrelated")
+
+      assert :ok = Friendships.subscribe(context.requester_scope)
+      assert :ok = Friendships.subscribe(context.recipient_scope)
+      assert :ok = Friendships.subscribe(user_scope_fixture(unrelated))
+
+      assert {:ok, %{relationship: request}} =
+               Friendships.send_friend_request(context.requester_scope, %{
+                 username: context.recipient.username
+               })
+
+      assert_receive {:friendships_changed, %{action: :requested, relationship_id: request_id}}
+      assert request_id == request.id
+
+      assert_receive {:friendships_changed, %{action: :requested, relationship_id: request_id}}
+      assert request_id == request.id
+      refute_receive {:friendships_changed, _payload}
+
+      assert {:ok, %{relationship: repeated_request}} =
+               Friendships.send_friend_request(context.requester_scope, %{
+                 username: context.recipient.username
+               })
+
+      assert repeated_request.id == request.id
+      refute_receive {:friendships_changed, _payload}
+
+      assert {:ok, friendship} =
+               Friendships.accept_friend_request(context.recipient_scope, request.id)
+
+      assert_receive {:friendships_changed,
+                      %{action: :accepted, relationship_id: relationship_id}}
+
+      assert relationship_id == friendship.id
+
+      assert_receive {:friendships_changed,
+                      %{action: :accepted, relationship_id: relationship_id}}
+
+      assert relationship_id == friendship.id
+
+      assert {:ok, %{relationship: repeated_friendship}} =
+               Friendships.send_friend_request(context.requester_scope, %{
+                 username: context.recipient.username
+               })
+
+      assert repeated_friendship.id == friendship.id
+      refute_receive {:friendships_changed, _payload}
+    end
+
+    test "simultaneous reverse requests retain one accepted row", context do
+      calls = [
+        {context.requester_scope, context.recipient.username},
+        {context.recipient_scope, context.requester.username},
+        {context.requester_scope, context.recipient.username},
+        {context.recipient_scope, context.requester.username}
+      ]
+
+      results =
+        calls
+        |> Task.async_stream(
+          fn {scope, username} ->
+            Friendships.send_friend_request(scope, %{username: username})
+          end,
+          ordered: false,
+          max_concurrency: 4,
+          timeout: :infinity
+        )
+        |> Enum.map(fn {:ok, {:ok, %{relationship: relationship}}} -> relationship end)
+
+      assert Enum.uniq_by(results, & &1.id) |> length() == 1
+      assert {:ok, [_one_friendship]} = Friendships.list_friends(context.requester_scope)
     end
   end
 end

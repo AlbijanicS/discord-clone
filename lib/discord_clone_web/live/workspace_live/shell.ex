@@ -898,7 +898,14 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   end
 
   defp member_actions(current_scope, workspace, member) do
-    Workspaces.available_member_actions(current_scope, workspace, member)
+    friendship_actions =
+      if current_scope.user.id == member.user_id do
+        []
+      else
+        [:send_friend_request]
+      end
+
+    friendship_actions ++ Workspaces.available_member_actions(current_scope, workspace, member)
   end
 
   defp audit_event_title(%{event_type: "member_role_promoted"}), do: "Member promoted"

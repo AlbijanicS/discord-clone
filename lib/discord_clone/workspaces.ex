@@ -110,6 +110,30 @@ defmodule DiscordClone.Workspaces do
 
   def list_members(_scope, _workspace_id), do: {:error, :unauthenticated}
 
+  @doc "Returns a known Workspace Member's User after re-authorizing the scoped User."
+  @spec fetch_member_user(term(), term(), term()) :: context_result(User.t())
+  def fetch_member_user(%Scope{} = scope, workspace_id, target_user_id) do
+    with {:ok, %Workspace{id: workspace_id}} <- fetch_workspace(scope, workspace_id),
+         {:ok, target_user_id} <- Ecto.UUID.cast(target_user_id),
+         %WorkspaceMembership{user: %User{} = user} <-
+           Repo.one(
+             from membership in WorkspaceMembership,
+               where:
+                 membership.workspace_id == ^workspace_id and
+                   membership.user_id == ^target_user_id,
+               preload: [:user]
+           ) do
+      {:ok, user}
+    else
+      nil -> {:error, :not_found}
+      :error -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def fetch_member_user(_scope, _workspace_id, _target_user_id),
+    do: {:error, :unauthenticated}
+
   def fetch_channel(%Scope{} = scope, workspace_id, channel_id) do
     with {:ok, %Workspace{id: workspace_id}} <- fetch_workspace(scope, workspace_id),
          {:ok, %Channel{} = channel} <- get_channel(workspace_id, channel_id) do
