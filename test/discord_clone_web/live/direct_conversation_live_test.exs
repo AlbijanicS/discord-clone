@@ -300,6 +300,131 @@ defmodule DiscordCloneWeb.DirectConversationLiveTest do
     assert has_element?(second_view, "#direct-message-#{friend_message.id}-delete")
   end
 
+  test "open sessions preserve drafts and restore live capabilities in the same Conversation", %{
+    conn: conn,
+    scope: scope
+  } do
+    {friend, friend_scope, direct_conversation, direct_path, friendship} =
+      direct_conversation_fixture(scope, "capability")
+
+    assert {:ok, existing_message} =
+             Chat.send_direct_message(scope, direct_conversation.id, %{content: "kept history"})
+
+    friend_conn = build_conn() |> log_in_user(friend)
+    {:ok, first_view, _html} = live(conn, direct_path)
+    {:ok, second_view, _html} = live(friend_conn, direct_path)
+
+    first_view
+    |> form("#direct-message-form", message: %{content: "unsent draft"})
+    |> render_change()
+
+    second_view
+    |> form("#direct-message-form", message: %{content: "typing before removal"})
+    |> render_change()
+
+    assert_eventually_has_element(first_view, "#direct-typing-indicator")
+    assert :ok = Friendships.remove_friend(friend_scope, friendship.id)
+
+    assert_eventually_has_element(first_view, "#direct-conversation-read-only")
+    assert_eventually_has_element(second_view, "#direct-conversation-read-only")
+    assert has_element?(first_view, "#direct-message-#{existing_message.id}", "kept history")
+    refute has_element?(first_view, "#direct-typing-indicator")
+    refute has_element?(first_view, "#direct-conversation-presence-#{friend.id}")
+
+    assert {:ok, []} = Chat.list_direct_typing_user_ids(scope, direct_conversation.id)
+
+    assert has_element?(first_view, "#direct-conversation-send-friend-request")
+
+    first_view
+    |> element("#direct-conversation-send-friend-request")
+    |> render_click()
+
+    assert_eventually_has_element(first_view, "#direct-conversation-friend-request-pending")
+    assert_eventually_has_element(second_view, "#direct-conversation-send-friend-request")
+
+    second_view
+    |> element("#direct-conversation-send-friend-request")
+    |> render_click()
+
+    assert_eventually_has_element(first_view, "#direct-message-form")
+    assert_eventually_has_element(second_view, "#direct-message-form")
+
+    assert has_element?(
+             first_view,
+             "#direct-message-form input[name='message[content]'][value='unsent draft']"
+           )
+
+    assert has_element?(
+             first_view,
+             "#direct-conversation-presence-#{friend.id}[data-presence-state='online']"
+           )
+
+    assert has_element?(
+             first_view,
+             "#direct-conversation-entry-#{direct_conversation.id}[data-writable='true']"
+           )
+
+    assert {:ok, same_conversation} = Chat.find_direct_conversation(scope, friend.id)
+    assert same_conversation.id == direct_conversation.id
+  end
+
+  test "former Friends reject forged mutations but retain authorized ownership cleanup", %{
+    conn: conn,
+    scope: scope
+  } do
+    {_friend, friend_scope, direct_conversation, direct_path, friendship} =
+      direct_conversation_fixture(scope, "stale_capability")
+
+    assert {:ok, own_message} =
+             Chat.send_direct_message(scope, direct_conversation.id, %{content: "owned cleanup"})
+
+    assert {:ok, friend_message} =
+             Chat.send_direct_message(friend_scope, direct_conversation.id, %{
+               content: "forged target"
+             })
+
+    assert {:ok, _reaction} = Chat.toggle_reaction(scope, friend_message.id, "👍")
+
+    {:ok, view, _html} = live(conn, direct_path)
+    assert :ok = Friendships.remove_friend(friend_scope, friendship.id)
+    assert_eventually_has_element(view, "#direct-conversation-read-only")
+
+    render_submit(view, "send_direct_message", %{
+      "message" => %{"content" => "must not persist"}
+    })
+
+    render_click(view, "begin_direct_reply", %{"message-id" => friend_message.id})
+
+    render_click(view, "toggle_direct_reaction", %{
+      "message-id" => friend_message.id,
+      "emoji" => "🎉"
+    })
+
+    render_change(view, "message_typing", %{
+      "message" => %{"content" => "must not type"}
+    })
+
+    assert {:ok, messages} = Chat.list_direct_messages(scope, direct_conversation.id)
+    refute Enum.any?(messages, &(&1.content == "must not persist"))
+    refute has_element?(view, "#direct-message-reply-target")
+    assert {:ok, []} = Chat.list_direct_typing_user_ids(scope, direct_conversation.id)
+
+    assert {:ok, summaries} = Chat.list_reaction_summaries(scope, [friend_message.id])
+    refute Enum.any?(summaries[friend_message.id], &(&1.emoji == "🎉"))
+
+    view
+    |> element("#direct-message-#{friend_message.id}-reaction-0")
+    |> render_click()
+
+    assert_eventually_lacks_element(view, "#direct-message-#{friend_message.id}-reaction-0")
+
+    view
+    |> element("#direct-message-#{own_message.id}-delete")
+    |> render_click()
+
+    assert_eventually_has_element(view, "#direct-message-#{own_message.id}-deleted")
+  end
+
   test "loads bounded Direct Message history and navigates to an authorized target", %{
     conn: conn,
     scope: scope

@@ -38,6 +38,14 @@ defmodule DiscordCloneWeb.DirectConversationLive do
        |> assign(:reply_target, nil)
        |> assign(:reaction_summaries, reaction_summaries)
        |> assign(:writable?, writable?)
+       |> assign(
+         :friendship_recovery_state,
+         friendship_recovery_state(
+           socket.assigns.current_scope,
+           destination.other_participant.id,
+           writable?
+         )
+       )
        |> assign(:friend_presence_status, presence_status)
        |> assign(:direct_messages_empty?, messages == [])
        |> assign(:direct_messages_by_id, messages_by_id(messages))
@@ -167,6 +175,8 @@ defmodule DiscordCloneWeb.DirectConversationLive do
   end
 
   def handle_event("message_typing", %{"message" => %{"content" => content}}, socket) do
+    socket = assign(socket, :message_form, to_form(%{"content" => content}, as: :message))
+
     if String.trim(content) == "" do
       stop_typing(socket)
     else
@@ -175,6 +185,31 @@ defmodule DiscordCloneWeb.DirectConversationLive do
   end
 
   def handle_event("message_typing", _params, socket), do: start_typing(socket)
+
+  def handle_event("send_friend_request", _params, %{assigns: %{writable?: true}} = socket) do
+    {:noreply, socket}
+  end
+
+  def handle_event("send_friend_request", _params, socket) do
+    case Friendships.send_friend_request(socket.assigns.current_scope, %{
+           username: socket.assigns.other_participant.username
+         }) do
+      {:ok, %{relationship: %{status: :accepted}}} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Friendship restored. You can send Direct Messages again.")
+         |> refresh_writable_capability()}
+
+      {:ok, %{relationship: %{status: :pending}}} ->
+        {:noreply,
+         socket
+         |> assign(:friendship_recovery_state, :outgoing)
+         |> put_flash(:info, "Friend Request sent.")}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Friend Request could not be sent.")}
+    end
+  end
 
   def handle_event("send_direct_message", %{"message" => message_params}, socket) do
     message_params = put_reply_target(message_params, socket.assigns.reply_target)
@@ -664,9 +699,46 @@ defmodule DiscordCloneWeb.DirectConversationLive do
               <div
                 :if={!@writable?}
                 id="direct-conversation-read-only"
-                class="border-t border-base-300/70 bg-base-200/55 px-5 py-4 text-center text-sm text-base-content/55"
+                class="border-t border-base-300/70 bg-base-200/55 px-5 py-5"
               >
-                This Direct Conversation is read-only because you are no longer Friends.
+                <div class="mx-auto flex max-w-xl flex-col items-center gap-3 text-center sm:flex-row sm:text-left">
+                  <span class="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-warning/10 text-warning">
+                    <.icon name="hero-lock-closed" class="size-5" />
+                  </span>
+                  <div class="min-w-0 flex-1">
+                    <p class="text-sm font-semibold text-base-content">
+                      This conversation is read-only
+                    </p>
+                    <p class="mt-0.5 text-xs leading-5 text-base-content/55">
+                      You are no longer Friends. Your history and unsent draft are preserved.
+                    </p>
+                  </div>
+                  <button
+                    :if={@friendship_recovery_state in [:available, :incoming]}
+                    id="direct-conversation-send-friend-request"
+                    type="button"
+                    phx-click="send_friend_request"
+                    phx-disable-with="Sending…"
+                    class={[
+                      "inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl",
+                      "bg-primary px-4 text-xs font-semibold text-primary-content shadow-sm",
+                      "transition hover:-translate-y-0.5 hover:bg-primary/90 focus-visible:outline-none",
+                      "focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+                    ]}
+                  >
+                    <.icon name="hero-user-plus" class="size-4" />
+                    {if @friendship_recovery_state == :incoming,
+                      do: "Accept Friend Request",
+                      else: "Send Friend Request"}
+                  </button>
+                  <p
+                    :if={@friendship_recovery_state == :outgoing}
+                    id="direct-conversation-friend-request-pending"
+                    class="shrink-0 rounded-xl bg-base-300 px-3 py-2 text-xs font-semibold text-base-content/60"
+                  >
+                    Friend Request pending
+                  </p>
+                </div>
               </div>
             </section>
           </div>
@@ -1031,6 +1103,14 @@ defmodule DiscordCloneWeb.DirectConversationLive do
       socket
       |> assign(:writable?, writable?)
       |> assign(
+        :friendship_recovery_state,
+        friendship_recovery_state(
+          socket.assigns.current_scope,
+          socket.assigns.other_participant.id,
+          writable?
+        )
+      )
+      |> assign(
         :friend_presence_status,
         friend_presence_status(socket, socket.assigns.other_participant.id, writable?)
       )
@@ -1062,6 +1142,19 @@ defmodule DiscordCloneWeb.DirectConversationLive do
     Enum.any?(destinations, fn destination ->
       destination.direct_conversation.id == direct_conversation_id && destination.writable?
     end)
+  end
+
+  defp friendship_recovery_state(_scope, _other_user_id, true), do: :friends
+
+  defp friendship_recovery_state(scope, other_user_id, false) do
+    {:ok, incoming_requests} = Friendships.list_incoming_requests(scope)
+    {:ok, outgoing_requests} = Friendships.list_outgoing_requests(scope)
+
+    cond do
+      Enum.any?(incoming_requests, &(&1.user.id == other_user_id)) -> :incoming
+      Enum.any?(outgoing_requests, &(&1.user.id == other_user_id)) -> :outgoing
+      true -> :available
+    end
   end
 
   defp friend_presence_status(socket, friend_user_id, true) do
