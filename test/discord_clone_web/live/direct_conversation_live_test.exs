@@ -311,58 +311,103 @@ defmodule DiscordCloneWeb.DirectConversationLiveTest do
              Chat.send_direct_message(scope, direct_conversation.id, %{content: "kept history"})
 
     friend_conn = build_conn() |> log_in_user(friend)
-    {:ok, first_view, _html} = live(conn, direct_path)
-    {:ok, second_view, _html} = live(friend_conn, direct_path)
+    {:ok, current_user_view, _html} = live(conn, direct_path)
+    {:ok, friend_view, _html} = live(friend_conn, direct_path)
 
-    first_view
+    current_user_view
     |> form("#direct-message-form", message: %{content: "unsent draft"})
     |> render_change()
 
-    second_view
+    friend_view
     |> form("#direct-message-form", message: %{content: "typing before removal"})
     |> render_change()
 
-    assert_eventually_has_element(first_view, "#direct-typing-indicator")
+    assert_eventually_has_element(current_user_view, "#direct-typing-indicator")
     assert :ok = Friendships.remove_friend(friend_scope, friendship.id)
 
-    assert_eventually_has_element(first_view, "#direct-conversation-read-only")
-    assert_eventually_has_element(second_view, "#direct-conversation-read-only")
-    assert has_element?(first_view, "#direct-message-#{existing_message.id}", "kept history")
-    refute has_element?(first_view, "#direct-typing-indicator")
-    refute has_element?(first_view, "#direct-conversation-presence-#{friend.id}")
+    assert_eventually_has_element(current_user_view, "#direct-conversation-read-only")
+    assert_eventually_has_element(friend_view, "#direct-conversation-read-only")
+
+    assert has_element?(
+             current_user_view,
+             "#direct-message-#{existing_message.id}",
+             "kept history"
+           )
+
+    refute has_element?(current_user_view, "#direct-typing-indicator")
+    refute has_element?(current_user_view, "#direct-conversation-presence-#{friend.id}")
 
     assert {:ok, []} = Chat.list_direct_typing_user_ids(scope, direct_conversation.id)
 
-    assert has_element?(first_view, "#direct-conversation-send-friend-request")
+    assert has_element?(current_user_view, "#direct-conversation-send-friend-request")
 
-    first_view
+    current_user_view
     |> element("#direct-conversation-send-friend-request")
     |> render_click()
 
-    assert_eventually_has_element(first_view, "#direct-conversation-friend-request-pending")
-    assert_eventually_has_element(second_view, "#direct-conversation-send-friend-request")
+    assert_eventually_has_element(
+      current_user_view,
+      "#direct-conversation-friend-request-pending"
+    )
 
-    second_view
+    assert_eventually_has_element(friend_view, "#direct-conversation-send-friend-request")
+
+    friend_view
     |> element("#direct-conversation-send-friend-request")
     |> render_click()
 
-    assert_eventually_has_element(first_view, "#direct-message-form")
-    assert_eventually_has_element(second_view, "#direct-message-form")
+    assert_eventually_has_element(current_user_view, "#direct-message-form")
+    assert_eventually_has_element(friend_view, "#direct-message-form")
 
     assert has_element?(
-             first_view,
+             current_user_view,
              "#direct-message-form input[name='message[content]'][value='unsent draft']"
            )
 
     assert has_element?(
-             first_view,
+             current_user_view,
              "#direct-conversation-presence-#{friend.id}[data-presence-state='online']"
            )
 
     assert has_element?(
-             first_view,
+             current_user_view,
              "#direct-conversation-entry-#{direct_conversation.id}[data-writable='true']"
            )
+
+    current_user_view
+    |> form("#direct-message-form", message: %{content: "unsent draft"})
+    |> render_submit()
+
+    assert_eventually_has_message(friend_view, "unsent draft")
+
+    current_user_view
+    |> element("#direct-message-#{existing_message.id}-reply")
+    |> render_click()
+
+    current_user_view
+    |> form("#direct-message-form", message: %{content: "reply restored"})
+    |> render_submit()
+
+    assert_eventually_has_message(friend_view, "reply restored")
+
+    current_user_view
+    |> element("#direct-message-#{existing_message.id}-reaction-option-0")
+    |> render_click()
+
+    assert_eventually_has_element(
+      friend_view,
+      "#direct-message-#{existing_message.id}-reaction-0"
+    )
+
+    friend_view
+    |> form("#direct-message-form", message: %{content: "typing restored"})
+    |> render_change()
+
+    assert_eventually_has_element(current_user_view, "#direct-typing-indicator")
+
+    assert {:ok, messages} = Chat.list_direct_messages(scope, direct_conversation.id)
+    restored_reply = Enum.find(messages, &(&1.content == "reply restored"))
+    assert restored_reply.reply_to_message_id == existing_message.id
 
     assert {:ok, same_conversation} = Chat.find_direct_conversation(scope, friend.id)
     assert same_conversation.id == direct_conversation.id

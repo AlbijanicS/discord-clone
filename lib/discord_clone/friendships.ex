@@ -141,6 +141,33 @@ defmodule DiscordClone.Friendships do
 
   def list_outgoing_requests(_scope), do: {:error, :unauthenticated}
 
+  @type relationship_state :: :none | :incoming_request | :outgoing_request | :friends
+
+  @doc "Returns the scoped User's current relationship state with another User."
+  @spec relationship_state(term(), term()) ::
+          {:ok, relationship_state()} | {:error, :unauthenticated | :not_found}
+  def relationship_state(%Scope{user: %User{id: user_id}}, other_user_id) do
+    with {:ok, other_user_id} <- Ecto.UUID.cast(other_user_id),
+         true <- other_user_id != user_id do
+      {user_low_id, user_high_id} = canonical_pair(user_id, other_user_id)
+
+      relationship =
+        Repo.one(
+          from relationship in Relationship,
+            where:
+              relationship.user_low_id == ^user_low_id and
+                relationship.user_high_id == ^user_high_id,
+            select: {relationship.status, relationship.requested_by_user_id}
+        )
+
+      {:ok, scoped_relationship_state(relationship, user_id)}
+    else
+      _invalid_or_self -> {:error, :not_found}
+    end
+  end
+
+  def relationship_state(_scope, _other_user_id), do: {:error, :unauthenticated}
+
   @doc "Lists accepted mutual Friendships for the scoped User."
   @spec list_friends(term()) ::
           {:ok, [%{relationship: Relationship.t(), user: User.t()}]}
@@ -261,6 +288,11 @@ defmodule DiscordClone.Friendships do
   defp canonical_pair(first_id, second_id) do
     if first_id < second_id, do: {first_id, second_id}, else: {second_id, first_id}
   end
+
+  defp scoped_relationship_state(nil, _user_id), do: :none
+  defp scoped_relationship_state({:accepted, _requester_id}, _user_id), do: :friends
+  defp scoped_relationship_state({:pending, user_id}, user_id), do: :outgoing_request
+  defp scoped_relationship_state({:pending, _requester_id}, _user_id), do: :incoming_request
 
   defp persist_friend_request(requester, target) do
     pair = canonical_pair(requester.id, target.id)

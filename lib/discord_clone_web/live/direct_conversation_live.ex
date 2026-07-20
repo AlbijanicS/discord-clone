@@ -38,14 +38,7 @@ defmodule DiscordCloneWeb.DirectConversationLive do
        |> assign(:reply_target, nil)
        |> assign(:reaction_summaries, reaction_summaries)
        |> assign(:writable?, writable?)
-       |> assign(
-         :friendship_recovery_state,
-         friendship_recovery_state(
-           socket.assigns.current_scope,
-           destination.other_participant.id,
-           writable?
-         )
-       )
+       |> assign_friendship_recovery_state(writable?)
        |> assign(:friend_presence_status, presence_status)
        |> assign(:direct_messages_empty?, messages == [])
        |> assign(:direct_messages_by_id, messages_by_id(messages))
@@ -203,7 +196,7 @@ defmodule DiscordCloneWeb.DirectConversationLive do
       {:ok, %{relationship: %{status: :pending}}} ->
         {:noreply,
          socket
-         |> assign(:friendship_recovery_state, :outgoing)
+         |> assign(:friendship_recovery_state, :outgoing_request)
          |> put_flash(:info, "Friend Request sent.")}
 
       {:error, _reason} ->
@@ -714,7 +707,7 @@ defmodule DiscordCloneWeb.DirectConversationLive do
                     </p>
                   </div>
                   <button
-                    :if={@friendship_recovery_state in [:available, :incoming]}
+                    :if={@friendship_recovery_state in [:none, :incoming_request]}
                     id="direct-conversation-send-friend-request"
                     type="button"
                     phx-click="send_friend_request"
@@ -727,12 +720,12 @@ defmodule DiscordCloneWeb.DirectConversationLive do
                     ]}
                   >
                     <.icon name="hero-user-plus" class="size-4" />
-                    {if @friendship_recovery_state == :incoming,
+                    {if @friendship_recovery_state == :incoming_request,
                       do: "Accept Friend Request",
                       else: "Send Friend Request"}
                   </button>
                   <p
-                    :if={@friendship_recovery_state == :outgoing}
+                    :if={@friendship_recovery_state == :outgoing_request}
                     id="direct-conversation-friend-request-pending"
                     class="shrink-0 rounded-xl bg-base-300 px-3 py-2 text-xs font-semibold text-base-content/60"
                   >
@@ -1102,14 +1095,7 @@ defmodule DiscordCloneWeb.DirectConversationLive do
     socket =
       socket
       |> assign(:writable?, writable?)
-      |> assign(
-        :friendship_recovery_state,
-        friendship_recovery_state(
-          socket.assigns.current_scope,
-          socket.assigns.other_participant.id,
-          writable?
-        )
-      )
+      |> assign_friendship_recovery_state(writable?)
       |> assign(
         :friend_presence_status,
         friend_presence_status(socket, socket.assigns.other_participant.id, writable?)
@@ -1144,17 +1130,18 @@ defmodule DiscordCloneWeb.DirectConversationLive do
     end)
   end
 
-  defp friendship_recovery_state(_scope, _other_user_id, true), do: :friends
+  defp assign_friendship_recovery_state(socket, true) do
+    assign(socket, :friendship_recovery_state, :friends)
+  end
 
-  defp friendship_recovery_state(scope, other_user_id, false) do
-    {:ok, incoming_requests} = Friendships.list_incoming_requests(scope)
-    {:ok, outgoing_requests} = Friendships.list_outgoing_requests(scope)
+  defp assign_friendship_recovery_state(socket, false) do
+    {:ok, relationship_state} =
+      Friendships.relationship_state(
+        socket.assigns.current_scope,
+        socket.assigns.other_participant.id
+      )
 
-    cond do
-      Enum.any?(incoming_requests, &(&1.user.id == other_user_id)) -> :incoming
-      Enum.any?(outgoing_requests, &(&1.user.id == other_user_id)) -> :outgoing
-      true -> :available
-    end
+    assign(socket, :friendship_recovery_state, relationship_state)
   end
 
   defp friend_presence_status(socket, friend_user_id, true) do

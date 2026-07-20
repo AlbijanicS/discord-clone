@@ -245,6 +245,38 @@ defmodule DiscordClone.FriendshipsTest do
     end
   end
 
+  describe "relationship_state/2" do
+    test "reports the scoped direction through the full Friendship lifecycle" do
+      requester = user_fixture(username: "state_requester")
+      recipient = user_fixture(username: "state_recipient")
+      requester_scope = user_scope_fixture(requester)
+      recipient_scope = user_scope_fixture(recipient)
+
+      assert {:ok, :none} = Friendships.relationship_state(requester_scope, recipient.id)
+      assert {:ok, :none} = Friendships.relationship_state(recipient_scope, requester.id)
+
+      assert {:ok, %{relationship: request}} =
+               Friendships.send_friend_request(requester_scope, %{username: recipient.username})
+
+      assert {:ok, :outgoing_request} =
+               Friendships.relationship_state(requester_scope, recipient.id)
+
+      assert {:ok, :incoming_request} =
+               Friendships.relationship_state(recipient_scope, requester.id)
+
+      assert {:ok, friendship} =
+               Friendships.accept_friend_request(recipient_scope, request.id)
+
+      assert {:ok, :friends} = Friendships.relationship_state(requester_scope, recipient.id)
+      assert {:ok, :friends} = Friendships.relationship_state(recipient_scope, requester.id)
+
+      assert :ok = Friendships.remove_friend(requester_scope, friendship.id)
+      assert {:ok, :none} = Friendships.relationship_state(requester_scope, recipient.id)
+      assert {:error, :not_found} = Friendships.relationship_state(requester_scope, "invalid")
+      assert {:error, :unauthenticated} = Friendships.relationship_state(nil, recipient.id)
+    end
+  end
+
   describe "Friend Request and Friendship lifecycle" do
     setup do
       requester = user_fixture(username: "lifecycle_requester")
