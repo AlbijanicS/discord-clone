@@ -69,7 +69,7 @@ defmodule DiscordCloneWeb.FriendsLiveTest do
     assert {:error, {:redirect, %{to: "/users/log-in"}}} = live(conn, ~p"/friends")
   end
 
-  test "accepts, declines, cancels, and removes relationships with stable stream identities", %{
+  test "accepts, declines, and cancels relationships with stable stream identities", %{
     conn: conn,
     user: user
   } do
@@ -114,15 +114,9 @@ defmodule DiscordCloneWeb.FriendsLiveTest do
     |> render_click()
 
     refute has_element?(view, "#outgoing-request-#{cancelled_request.id}")
-
-    view
-    |> element("#remove-friend-#{accepted_request.id}")
-    |> render_click()
-
-    refute has_element?(view, "#friendship-#{accepted_request.id}")
   end
 
-  test "restores a removed Friendship and refreshes crossed requests in every open session", %{
+  test "refreshes crossed Friend Requests in every open session", %{
     conn: conn,
     user: user
   } do
@@ -147,35 +141,6 @@ defmodule DiscordCloneWeb.FriendsLiveTest do
     assert has_element?(second_view, "#friends-list [id^='friendship-']")
     refute has_element?(first_view, "#outgoing-requests [id^='outgoing-request-']")
     refute has_element?(second_view, "#incoming-requests [id^='incoming-request-']")
-
-    [friendship_id] =
-      first_view
-      |> render()
-      |> LazyHTML.from_fragment()
-      |> then(& &1["#friends-list > article"])
-      |> LazyHTML.attribute("id")
-
-    assert friendship_id =~ "friendship-"
-
-    first_view
-    |> element("#remove-friend-#{String.replace_prefix(friendship_id, "friendship-", "")}")
-    |> render_click()
-
-    refute has_element?(first_view, "##{friendship_id}")
-    refute has_element?(second_view, "##{friendship_id}")
-
-    first_view
-    |> form("#friend-request-form", friend_request: %{username: other_user.username})
-    |> render_submit()
-
-    second_view
-    |> element(
-      "#incoming-requests [id^='incoming-request-'] button[id^='accept-friend-request-']"
-    )
-    |> render_click()
-
-    assert has_element?(first_view, "#friends-list [id^='friendship-']")
-    assert has_element?(second_view, "#friends-list [id^='friendship-']")
   end
 
   test "private Friendship events refresh all open sessions for the affected User", %{

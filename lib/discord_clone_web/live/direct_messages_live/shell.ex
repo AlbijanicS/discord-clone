@@ -13,6 +13,7 @@ defmodule DiscordCloneWeb.DirectMessagesLive.Shell do
   attr :show_workspace_form?, :boolean, default: false
   attr :unread_activity_count, :integer, default: 0
   attr :activity_preview_stream, :any, default: []
+  attr :current_scope, :any, default: nil
   attr :current_action, :atom, default: :conversation
   attr :selected_conversation_id, :string, default: nil
 
@@ -144,6 +145,37 @@ defmodule DiscordCloneWeb.DirectMessagesLive.Shell do
             </.link>
           </div>
         </div>
+
+        <div
+          :if={@current_scope && @current_scope.user}
+          id="direct-messages-current-user"
+          class="bg-base-300/70 p-3 shadow-[inset_0_1px_0_rgb(255_255_255/0.04)]"
+        >
+          <div class="flex items-center gap-3">
+            <div class="flex size-9 shrink-0 items-center justify-center rounded bg-primary text-sm font-semibold text-primary-content">
+              {user_initial(@current_scope.user)}
+            </div>
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-sm font-semibold">{@current_scope.user.username}</p>
+              <p class="truncate text-xs text-base-content/50">{@current_scope.user.email}</p>
+            </div>
+            <.link
+              href={~p"/users/settings"}
+              class="btn btn-square btn-xs btn-ghost"
+              aria-label="Settings"
+            >
+              <.icon name="hero-cog-6-tooth" class="size-4" />
+            </.link>
+            <.link
+              href={~p"/users/log-out"}
+              method="delete"
+              class="btn btn-square btn-xs btn-ghost"
+              aria-label="Log out"
+            >
+              <.icon name="hero-arrow-right-on-rectangle" class="size-4" />
+            </.link>
+          </div>
+        </div>
       </aside>
 
       <main id="direct-messages-main" class="min-h-0 min-w-0 overflow-hidden bg-base-100">
@@ -173,6 +205,10 @@ defmodule DiscordCloneWeb.DirectMessagesLive.Shell do
       "fixed inset-0 grid min-h-screen grid-cols-1 grid-rows-[auto_minmax(12rem,36vh)_minmax(0,1fr)] overflow-hidden bg-base-100 lg:grid-cols-[5rem_20rem_minmax(0,1fr)] lg:grid-rows-1"
 
   defp participant_initial(user) do
+    user.username |> String.first() |> String.upcase()
+  end
+
+  defp user_initial(user) do
     user.username |> String.first() |> String.upcase()
   end
 

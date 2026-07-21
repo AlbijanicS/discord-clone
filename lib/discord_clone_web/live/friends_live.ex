@@ -169,6 +169,7 @@ defmodule DiscordCloneWeb.FriendsLive do
         show_workspace_form?={@show_workspace_form?}
         unread_activity_count={@unread_activity_count}
         activity_preview_stream={@streams.activity_preview_items}
+        current_scope={@current_scope}
         current_action={friends_action(@live_action)}
       >
         <:member_panel>
@@ -393,19 +394,6 @@ defmodule DiscordCloneWeb.FriendsLive do
             >
               <.icon name="hero-chat-bubble-left-right" class="size-4" /> Message
             </button>
-            <button
-              id={"remove-friend-#{relationship_entry.relationship.id}"}
-              type="button"
-              phx-click="remove_friend"
-              phx-value-relationship_id={relationship_entry.relationship.id}
-              data-confirm={"Remove @#{relationship_entry.user.username} from your friends?"}
-              class={[
-                "rounded-lg px-3 py-2 text-xs font-semibold text-error/75",
-                "transition hover:bg-error/10 hover:text-error"
-              ]}
-            >
-              Remove
-            </button>
           </div>
         </article>
       </div>
@@ -468,7 +456,7 @@ defmodule DiscordCloneWeb.FriendsLive do
               {relationship_label(:friends, relationship_entry, @online_user_ids)}
             </p>
           </div>
-          <div class="hidden shrink-0 items-center gap-1 group-hover:flex group-focus-within:flex">
+          <div class="flex shrink-0 items-center gap-1">
             <button
               id={"message-friend-#{relationship_entry.user.id}"}
               type="button"
@@ -479,7 +467,6 @@ defmodule DiscordCloneWeb.FriendsLive do
             >
               <.icon name="hero-chat-bubble-left-right" class="size-4" />
             </button>
-
           </div>
         </article>
       </div>

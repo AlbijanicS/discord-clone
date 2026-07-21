@@ -388,6 +388,7 @@ defmodule DiscordCloneWeb.DirectConversationLive do
         show_workspace_form?={@show_workspace_form?}
         unread_activity_count={@unread_activity_count}
         activity_preview_stream={@streams.activity_preview_items}
+        current_scope={@current_scope}
         selected_conversation_id={@direct_conversation.id}
       >
         <main

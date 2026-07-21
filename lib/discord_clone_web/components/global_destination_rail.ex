@@ -163,27 +163,10 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
 
         <div class="mb-3 h-px w-8 shrink-0 bg-base-content/15" aria-hidden="true"></div>
 
-        <button
-          :if={@workspace_form && !@show_workspace_form?}
-          id="workspace-create-toggle"
-          type="button"
-          class={[
-            "mb-3 inline-flex size-9 shrink-0 items-center justify-center rounded-xl",
-            "text-base-content/60 transition duration-150 hover:scale-105 hover:bg-base-100",
-            "hover:text-base-content focus-visible:outline-none focus-visible:ring-2",
-            "focus-visible:ring-primary/60"
-          ]}
-          phx-click="show_workspace_form"
-          aria-label="Create workspace"
-          title="Create workspace"
-        >
-          <.icon name="hero-plus" class="size-4" />
-        </button>
-
         <div
           id="workspaces"
           phx-update="stream"
-          class="flex min-h-0 w-full justify-center gap-2 overflow-x-auto lg:flex-col lg:items-center lg:overflow-y-auto"
+          class="flex min-h-0 w-full flex-1 justify-start gap-2 overflow-x-auto lg:flex-col lg:items-center lg:overflow-y-auto"
         >
           <div id="workspace-empty-state" class="hidden only:block text-sm text-base-content/60">
             Create a workspace to start.
@@ -212,12 +195,29 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
           </.link>
         </div>
 
+        <button
+          :if={@workspace_form && !@show_workspace_form?}
+          id="workspace-create-toggle"
+          type="button"
+          class={[
+            "mt-3 inline-flex size-9 shrink-0 items-center justify-center rounded-xl",
+            "text-base-content/60 transition duration-150 hover:scale-105 hover:bg-base-100",
+            "hover:text-base-content focus-visible:outline-none focus-visible:ring-2",
+            "focus-visible:ring-primary/60"
+          ]}
+          phx-click="show_workspace_form"
+          aria-label="Create workspace"
+          title="Create workspace"
+        >
+          <.icon name="hero-plus" class="size-4" />
+        </button>
+
         <.form
           :if={@workspace_form && @show_workspace_form?}
           for={@workspace_form}
           id="workspace-create-form"
           phx-submit="create_workspace"
-          class="mt-4 space-y-2"
+          class="mt-3 space-y-2"
         >
           <.input
             field={@workspace_form[:name]}
