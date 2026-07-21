@@ -47,6 +47,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
         workspace_form={@workspace_form}
         show_workspace_form?={@show_workspace_form?}
         direct_message_unread_count={@direct_message_unread_count}
+        unread_activity_count={@unread_activity_count}
+        activity_preview_stream={@activity_preview_stream}
       />
 
       <aside
@@ -334,125 +336,6 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
             <div class="min-w-0 flex-1">
               <p class="truncate text-sm font-semibold">{@current_scope.user.username}</p>
               <p class="truncate text-xs text-base-content/50">{@current_scope.user.email}</p>
-            </div>
-            <div id="activity-preview-anchor" class="group relative shrink-0">
-              <.link
-                id="global-activity-bell"
-                navigate={~p"/activity"}
-                class={[
-                  "relative flex size-8 items-center justify-center rounded text-slate-400 transition",
-                  "hover:bg-slate-800 hover:text-slate-100 focus-visible:bg-slate-800",
-                  "focus-visible:text-slate-100 focus-visible:outline-none focus-visible:ring-2",
-                  "focus-visible:ring-primary/60"
-                ]}
-                aria-label={activity_unread_label(@unread_activity_count)}
-                aria-haspopup="dialog"
-                aria-controls="activity-preview-popover"
-              >
-                <.icon name="hero-bell" class="size-4" />
-                <span
-                  :if={@unread_activity_count > 0}
-                  id="global-activity-unread-count"
-                  class={[
-                    "absolute -right-1.5 -top-1.5 flex min-w-4 items-center justify-center rounded-full",
-                    "bg-indigo-500 px-1 text-[0.625rem] font-bold leading-4 text-white shadow-sm ring-2 ring-slate-800"
-                  ]}
-                >
-                  {@unread_activity_count}
-                </span>
-              </.link>
-
-              <section
-                id="activity-preview-popover"
-                role="dialog"
-                aria-label="Recent activity"
-                class={[
-                  "invisible pointer-events-none absolute bottom-0 left-[calc(100%+0.75rem)] z-50",
-                  "w-96 max-w-[calc(100vw-24rem)] translate-x-1 rounded-2xl border border-base-300",
-                  "bg-base-100 text-base-content opacity-0 shadow-2xl ring-1 ring-black/10",
-                  "transition duration-150 ease-out before:absolute before:inset-y-0 before:-left-3 before:w-3",
-                  "group-hover:visible group-hover:pointer-events-auto group-hover:translate-x-0 group-hover:opacity-100",
-                  "group-focus-within:visible group-focus-within:pointer-events-auto",
-                  "group-focus-within:translate-x-0 group-focus-within:opacity-100"
-                ]}
-              >
-                <header class="flex items-center justify-between gap-4 border-b border-base-300 px-4 py-3.5">
-                  <div class="min-w-0">
-                    <h2 class="text-sm font-bold tracking-tight">Activity</h2>
-                    <p class="mt-0.5 text-xs text-base-content/50">
-                      {@unread_activity_count} unread in your private feed
-                    </p>
-                  </div>
-                  <.link
-                    id="activity-preview-view-all"
-                    navigate={~p"/activity"}
-                    class="shrink-0 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-primary transition hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-                  >
-                    View all activity
-                  </.link>
-                </header>
-
-                <div
-                  id="activity-preview-feed"
-                  phx-update="stream"
-                  class="max-h-[28rem] overflow-y-auto overscroll-contain p-2"
-                >
-                  <div
-                    id="activity-preview-empty-state"
-                    class="hidden only:flex min-h-36 flex-col items-center justify-center rounded-xl px-5 text-center"
-                  >
-                    <div class="flex size-9 items-center justify-center rounded-full bg-success/10 text-success ring-1 ring-success/20">
-                      <.icon name="hero-check" class="size-4" />
-                    </div>
-                    <p class="mt-3 text-sm font-semibold">You're all caught up</p>
-                    <p class="mt-1 text-xs leading-5 text-base-content/50">
-                      New mentions and Friend updates will show up here.
-                    </p>
-                  </div>
-
-                  <article
-                    :for={{dom_id, activity_item} <- @activity_preview_stream}
-                    id={dom_id}
-                    data-read-state={if(activity_item.read_at, do: "read", else: "unread")}
-                    class="relative rounded-xl transition hover:bg-base-200/80 focus-within:bg-base-200/80"
-                  >
-                    <button
-                      id={"#{dom_id}-open"}
-                      type="button"
-                      phx-click="open_activity_preview_item"
-                      phx-value-activity-item-id={activity_item.id}
-                      aria-label={activity_open_label(activity_item)}
-                      class="flex w-full gap-3 rounded-xl px-3 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                    >
-                      <div class="relative flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-sm font-bold text-primary ring-1 ring-primary/15">
-                        {activity_actor_initial(activity_item)}
-                        <span
-                          :if={is_nil(activity_item.read_at)}
-                          class="absolute -right-1 -top-1 size-2.5 rounded-full bg-primary ring-2 ring-base-100"
-                          aria-label="Unread"
-                        >
-                        </span>
-                      </div>
-                      <div class="min-w-0 flex-1">
-                        <div class="flex items-start justify-between gap-3">
-                          <p class="min-w-0 truncate text-sm font-semibold">
-                            {activity_actor_name(activity_item)}
-                          </p>
-                          <time class="shrink-0 text-[0.6875rem] font-medium text-base-content/40">
-                            {activity_preview_time(activity_item.inserted_at)}
-                          </time>
-                        </div>
-                        <p class="mt-0.5 truncate text-xs font-medium text-base-content/55">
-                          {activity_context(activity_item)}
-                        </p>
-                        <p class="mt-1.5 line-clamp-2 break-words text-xs leading-5 text-base-content/75">
-                          {activity_preview(activity_item)}
-                        </p>
-                      </div>
-                    </button>
-                  </article>
-                </div>
-              </section>
             </div>
             <.link
               href={~p"/users/settings"}
@@ -898,46 +781,6 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
 
   defp audit_event_time(%DateTime{} = datetime),
     do: Calendar.strftime(datetime, "%b %-d, %Y %H:%M")
-
-  defp activity_unread_label(1), do: "1 unread activity"
-  defp activity_unread_label(count), do: "#{count} unread activities"
-
-  defp activity_actor_name(%{actor_user: %{username: username}}), do: username
-  defp activity_actor_name(_activity_item), do: "Former member"
-
-  defp activity_actor_initial(activity_item) do
-    activity_item
-    |> activity_actor_name()
-    |> String.first()
-    |> String.upcase()
-  end
-
-  defp activity_kind_label("user_mention"), do: "Mentioned you"
-  defp activity_kind_label("everyone_mention"), do: "Mentioned everyone"
-  defp activity_kind_label("friend_request_received"), do: "Sent you a Friend Request"
-  defp activity_kind_label("friend_request_accepted"), do: "Accepted your Friend Request"
-  defp activity_kind_label("direct_message"), do: "Sent you a Direct Message"
-  defp activity_kind_label(_kind), do: "New activity"
-
-  defp activity_context(
-         %{workspace: %{name: workspace_name}, source_channel: %{name: name}} = item
-       ) do
-    "#{activity_kind_label(item.kind)} in #{workspace_name} / ##{name}"
-  end
-
-  defp activity_context(item), do: activity_kind_label(item.kind)
-
-  defp activity_preview(%{source_message: %{content: content}}), do: content
-  defp activity_preview(%{kind: "friend_request_received"}), do: "Review your incoming requests."
-  defp activity_preview(%{kind: "friend_request_accepted"}), do: "Your Friendship is now active."
-  defp activity_preview(_activity_item), do: "Open this activity for details."
-
-  defp activity_open_label(%{source_channel: %{name: name}}), do: "Open activity in ##{name}"
-  defp activity_open_label(%{kind: "direct_message"}), do: "Open Direct Message activity"
-  defp activity_open_label(_activity_item), do: "Open Friend relationship activity"
-
-  defp activity_preview_time(%DateTime{} = datetime),
-    do: Calendar.strftime(datetime, "%b %-d, %H:%M")
 
   defp workspace_shell_class(true),
     do:

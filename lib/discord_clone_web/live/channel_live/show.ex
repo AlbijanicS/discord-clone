@@ -550,6 +550,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
               phx-change="message_typing"
               phx-submit="send_message"
               phx-hook="MessageComposer"
+              data-mentions-enabled="true"
               aria-disabled={current_member_participation_blocked?(@current_member_moderation_state)}
               class="flex items-end"
             >

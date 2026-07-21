@@ -5,6 +5,7 @@ defmodule DiscordCloneWeb.FriendsLive do
 
   alias DiscordClone.{Chat, Friendships, Presence, Workspaces}
   alias DiscordCloneWeb.DirectMessagesLive.Shell, as: DirectMessagesShell
+  alias DiscordCloneWeb.WorkspaceLive.WorkspaceManagementEvents
 
   @empty_form %{"username" => ""}
 
@@ -30,6 +31,11 @@ defmodule DiscordCloneWeb.FriendsLive do
      socket
      |> assign(:form, to_form(@empty_form, as: :friend_request))
      |> assign(:request_outcome, nil)
+     |> assign(
+       :workspace_form,
+       WorkspaceManagementEvents.workspace_form(socket.assigns.current_scope)
+     )
+     |> assign(:show_workspace_form?, false)
      |> assign(:online_friend_ids, MapSet.new(online_friend_ids))
      |> stream(:workspaces, workspaces)
      |> stream_configure(:incoming_requests,
@@ -86,6 +92,15 @@ defmodule DiscordCloneWeb.FriendsLive do
          assign(socket, :request_outcome, {:error, "Direct Conversation could not be opened."})}
     end
   end
+
+  def handle_event("show_workspace_form", _params, socket),
+    do: WorkspaceManagementEvents.show_workspace_form(socket)
+
+  def handle_event("cancel_workspace_form", _params, socket),
+    do: WorkspaceManagementEvents.cancel_workspace_form(socket)
+
+  def handle_event("create_workspace", %{"workspace" => workspace_params}, socket),
+    do: WorkspaceManagementEvents.create_workspace(socket, %{"workspace" => workspace_params})
 
   @impl true
   def handle_event("send_friend_request", %{"friend_request" => params}, socket) do
@@ -150,8 +165,19 @@ defmodule DiscordCloneWeb.FriendsLive do
         conversation_stream={@streams.direct_conversation_destinations}
         incoming_request_count={@incoming_friend_request_count}
         direct_message_unread_count={@direct_message_unread_count}
+        workspace_form={@workspace_form}
+        show_workspace_form?={@show_workspace_form?}
+        unread_activity_count={@unread_activity_count}
+        activity_preview_stream={@streams.activity_preview_items}
         current_action={friends_action(@live_action)}
       >
+        <:member_panel>
+          <.friend_members_panel
+            stream={@streams.friends}
+            online_user_ids={@online_friend_ids}
+          />
+        </:member_panel>
+
         <main id="friends-home" class={["min-h-full bg-base-200/45 px-5 py-10 sm:px-8"]}>
           <div class={["mx-auto w-full max-w-5xl"]}>
             <header class={["mb-8 flex flex-col gap-3"]}>
@@ -159,12 +185,6 @@ defmodule DiscordCloneWeb.FriendsLive do
                 <.icon name="hero-user-group" class="size-5" />
                 <span class={["text-xs font-bold uppercase tracking-[0.2em]"]}>Friends</span>
               </div>
-              <h1 class={["text-3xl font-bold tracking-tight text-base-content sm:text-4xl"]}>
-                Find your people, precisely.
-              </h1>
-              <p class={["max-w-2xl text-sm leading-6 text-base-content/60"]}>
-                Send a private Friend Request with an exact global username. There is no public directory.
-              </p>
             </header>
 
             <section class={["rounded-3xl border border-base-300 bg-base-100 p-5 shadow-sm sm:p-7"]}>
@@ -246,19 +266,6 @@ defmodule DiscordCloneWeb.FriendsLive do
                 icon="hero-paper-airplane"
                 stream={@streams.outgoing_requests}
                 direction={:outgoing}
-              />
-            </div>
-
-            <div class={["mt-7"]}>
-              <.relationship_panel
-                id="friends-list"
-                title="Friends"
-                subtitle="Your mutual Friendships"
-                empty="No friends yet"
-                icon="hero-user-group"
-                stream={@streams.friends}
-                direction={:friends}
-                online_user_ids={@online_friend_ids}
               />
             </div>
           </div>
@@ -403,6 +410,80 @@ defmodule DiscordCloneWeb.FriendsLive do
         </article>
       </div>
     </section>
+    """
+  end
+
+  attr :stream, :any, required: true
+  attr :online_user_ids, :any, required: true
+
+  defp friend_members_panel(assigns) do
+    ~H"""
+    <aside
+      id="friends-members-sidebar"
+      aria-label="Friends"
+      class="hidden min-h-0 bg-base-200/80 shadow-[inset_1px_0_0_rgb(255_255_255/0.04)] xl:flex xl:flex-col"
+    >
+      <div class="px-4 py-4 shadow-[0_1px_0_rgb(255_255_255/0.04)]">
+        <p class="text-xs font-semibold uppercase tracking-wide text-base-content/50">Friends</p>
+      </div>
+      <div id="friends-list" phx-update="stream" class="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
+        <div
+          id="friends-list-empty-state"
+          class="hidden only:flex min-h-32 flex-col items-center justify-center rounded-xl px-4 text-center text-xs leading-5 text-base-content/45"
+        >
+          <.icon name="hero-user-group" class="mb-2 size-6" /> No friends yet
+        </div>
+        <article
+          :for={{dom_id, relationship_entry} <- @stream}
+          id={dom_id}
+          data-presence-state={presence_state(:friends, relationship_entry, @online_user_ids)}
+          class="group flex items-center gap-3 rounded px-2 py-2 text-sm transition hover:bg-base-300/80"
+        >
+          <div class={[
+            "flex size-8 shrink-0 items-center justify-center rounded text-xs font-semibold",
+            presence_state(:friends, relationship_entry, @online_user_ids) == "online" &&
+              "bg-primary/15 text-primary",
+            presence_state(:friends, relationship_entry, @online_user_ids) == "offline" &&
+              "bg-base-300 text-base-content/70"
+          ]}>
+            {relationship_entry.user.username |> String.first() |> String.upcase()}
+          </div>
+          <div class="min-w-0 flex-1">
+            <p class="truncate font-medium">{relationship_entry.user.username}</p>
+            <p class={[
+              "flex items-center gap-1.5 text-xs",
+              presence_state(:friends, relationship_entry, @online_user_ids) == "online" &&
+                "text-primary",
+              presence_state(:friends, relationship_entry, @online_user_ids) == "offline" &&
+                "text-base-content/45"
+            ]}>
+              <span class={[
+                "size-2 rounded-full",
+                presence_state(:friends, relationship_entry, @online_user_ids) == "online" &&
+                  "bg-primary",
+                presence_state(:friends, relationship_entry, @online_user_ids) == "offline" &&
+                  "bg-base-content/30"
+              ]}>
+              </span>
+              {relationship_label(:friends, relationship_entry, @online_user_ids)}
+            </p>
+          </div>
+          <div class="hidden shrink-0 items-center gap-1 group-hover:flex group-focus-within:flex">
+            <button
+              id={"message-friend-#{relationship_entry.user.id}"}
+              type="button"
+              phx-click="message_friend"
+              phx-value-user_id={relationship_entry.user.id}
+              class="btn btn-square btn-xs btn-ghost"
+              aria-label={"Message #{relationship_entry.user.username}"}
+            >
+              <.icon name="hero-chat-bubble-left-right" class="size-4" />
+            </button>
+
+          </div>
+        </article>
+      </div>
+    </aside>
     """
   end
 

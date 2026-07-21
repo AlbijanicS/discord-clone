@@ -2,6 +2,7 @@ const MessageComposer = {
   mounted() {
     this.lastTypingPushAt = 0
     this.typingThrottleMs = 3000
+    this.mentionsEnabled = this.el.dataset.mentionsEnabled !== "false"
     this.input = this.el.querySelector("input, textarea")
 
     this.pushMentionQuery = () => {
@@ -18,7 +19,9 @@ const MessageComposer = {
     }
 
     this.handleInput = () => {
-      this.pushMentionQuery()
+      if (this.mentionsEnabled) {
+        this.pushMentionQuery()
+      }
 
       if (!this.input || this.input.value.trim() === "") {
         return

@@ -436,6 +436,8 @@ defmodule DiscordCloneWeb.ActivityLive do
     view in [
       __MODULE__,
       DiscordCloneWeb.ChannelLive.Show,
+      DiscordCloneWeb.DirectConversationLive,
+      DiscordCloneWeb.FriendsLive,
       DiscordCloneWeb.WorkspaceLive.AuditLog,
       DiscordCloneWeb.WorkspaceLive.Entry,
       DiscordCloneWeb.WorkspaceLive.Home,

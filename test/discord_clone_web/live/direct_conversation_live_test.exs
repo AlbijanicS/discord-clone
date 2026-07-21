@@ -144,6 +144,68 @@ defmodule DiscordCloneWeb.DirectConversationLiveTest do
     assert user.id == message.user_id
   end
 
+  test "blank Direct Message submissions are ignored without composer errors", %{
+    conn: conn,
+    scope: scope
+  } do
+    {_friend, _friend_scope, direct_conversation, direct_path, _friendship} =
+      direct_conversation_fixture(scope, "live_blank_message")
+
+    {:ok, view, _html} = live(conn, direct_path)
+
+    view
+    |> form("#direct-message-form", message: %{content: "   "})
+    |> render_submit()
+
+    assert {:ok, []} = Chat.list_direct_messages(scope, direct_conversation.id)
+    refute has_element?(view, "#direct-message-form", "can't be blank")
+  end
+
+  test "the shared composer mention query does not disconnect a Direct Conversation", %{
+    conn: conn,
+    scope: scope
+  } do
+    {_friend, _friend_scope, _direct_conversation, direct_path, _friendship} =
+      direct_conversation_fixture(scope, "mention_query")
+
+    {:ok, view, _html} = live(conn, direct_path)
+
+    render_hook(view, "mention_query", %{"before_cursor" => "", "after_cursor" => ""})
+
+    assert has_element?(view, "#direct-message-form")
+  end
+
+  test "Direct Messages use the Workspace conversation surface and compact message rhythm", %{
+    conn: conn,
+    scope: scope
+  } do
+    {_friend, _friend_scope, direct_conversation, direct_path, _friendship} =
+      direct_conversation_fixture(scope, "workspace_look")
+
+    assert {:ok, first_message} =
+             Chat.send_direct_message(scope, direct_conversation.id, %{content: "first line"})
+
+    assert {:ok, second_message} =
+             Chat.send_direct_message(scope, direct_conversation.id, %{content: "second line"})
+
+    {:ok, view, _html} = live(conn, direct_path)
+
+    assert has_element?(view, "#direct-message-surface")
+    assert has_element?(view, "#direct-conversation-header")
+    assert has_element?(view, "#direct-message-composer-panel")
+    assert has_element?(view, "#direct-message-composer-shell")
+
+    assert has_element?(
+             view,
+             "#direct-message-#{first_message.id}[data-message-row='full']"
+           )
+
+    assert has_element?(
+             view,
+             "#direct-message-#{second_message.id}[data-message-row='compact']"
+           )
+  end
+
   test "genuine visibility synchronizes Direct Message and Activity badges across sessions", %{
     conn: conn,
     user: user,

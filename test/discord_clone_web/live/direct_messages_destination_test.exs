@@ -29,6 +29,10 @@ defmodule DiscordCloneWeb.DirectMessagesDestinationTest do
     {:ok, direct_view, _html} = live(conn, ~p"/direct-messages")
 
     assert has_element?(direct_view, "#global-destination-rail")
+    assert has_element?(direct_view, "#global-activity-bell[href='/activity']")
+    assert has_element?(direct_view, "#workspace-create-toggle[title='Create workspace']")
+    assert has_element?(direct_view, "#friends-members-sidebar[aria-label='Friends']")
+    assert has_element?(direct_view, "#friends-list[phx-update='stream']")
     assert has_element?(direct_view, "#direct-messages-sidebar")
     assert has_element?(direct_view, "#direct-messages-friends-link[aria-current='page']")
     assert has_element?(direct_view, "#direct-conversations[phx-update='stream']")

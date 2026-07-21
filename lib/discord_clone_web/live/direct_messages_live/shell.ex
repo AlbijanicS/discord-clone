@@ -9,25 +9,34 @@ defmodule DiscordCloneWeb.DirectMessagesLive.Shell do
   attr :conversation_stream, :any, required: true
   attr :incoming_request_count, :integer, default: 0
   attr :direct_message_unread_count, :integer, default: 0
+  attr :workspace_form, :any, default: nil
+  attr :show_workspace_form?, :boolean, default: false
+  attr :unread_activity_count, :integer, default: 0
+  attr :activity_preview_stream, :any, default: []
   attr :current_action, :atom, default: :conversation
   attr :selected_conversation_id, :string, default: nil
 
+  slot :member_panel
   slot :inner_block, required: true
 
   def app(assigns) do
     ~H"""
-    <div class="fixed inset-0 grid min-h-screen grid-cols-1 grid-rows-[auto_minmax(10rem,35vh)_minmax(0,1fr)] overflow-hidden bg-base-100 lg:grid-cols-[5rem_18rem_minmax(0,1fr)] lg:grid-rows-1">
+    <div class={direct_messages_shell_class(@member_panel != [])}>
       <GlobalDestinationRail.rail
         workspace_stream={@workspace_stream}
+        workspace_form={@workspace_form}
+        show_workspace_form?={@show_workspace_form?}
         direct_message_unread_count={@direct_message_unread_count}
+        unread_activity_count={@unread_activity_count}
+        activity_preview_stream={@activity_preview_stream}
       />
 
       <aside
         id="direct-messages-sidebar"
         aria-label="Direct Messages navigation"
-        class="flex min-h-0 flex-col border-b border-base-300/60 bg-base-200 lg:border-b-0 lg:border-r"
+        class="flex min-h-0 flex-col border-b border-base-300/60 bg-base-200/70 lg:border-b-0 lg:border-r"
       >
-        <nav class="space-y-1 border-b border-base-300/70 p-3" aria-label="Friends">
+        <nav class="space-y-1 border-b border-base-300/70 p-4" aria-label="Friends">
           <.link
             id="direct-messages-friends-link"
             navigate={~p"/direct-messages"}
@@ -62,18 +71,18 @@ defmodule DiscordCloneWeb.DirectMessagesLive.Shell do
           </.link>
         </nav>
 
-        <div class="flex min-h-0 flex-1 flex-col px-3 pb-3 pt-4">
-          <div class="mb-2 flex items-center justify-between px-2">
-            <h2 class="text-[0.6875rem] font-bold uppercase tracking-[0.16em] text-base-content/45">
+        <div class="flex min-h-0 flex-1 flex-col px-4 pb-4 pt-5">
+          <div class="mb-3 flex items-center justify-between px-2">
+            <h2 class="text-xs font-bold uppercase tracking-[0.16em] text-base-content/50">
               Direct Conversations
             </h2>
-            <.icon name="hero-chat-bubble-left-right" class="size-4 text-base-content/35" />
+            <.icon name="hero-chat-bubble-left-right" class="size-4 text-base-content/40" />
           </div>
 
           <div
             id="direct-conversations"
             phx-update="stream"
-            class="min-h-0 flex-1 space-y-1 overflow-y-auto"
+            class="min-h-0 flex-1 space-y-1.5 overflow-y-auto"
           >
             <div
               id="direct-conversations-empty"
@@ -93,7 +102,7 @@ defmodule DiscordCloneWeb.DirectMessagesLive.Shell do
                 if(@selected_conversation_id == destination.direct_conversation.id, do: "page")
               }
               class={[
-                "group flex items-center gap-3 rounded-xl px-2.5 py-2 transition duration-150",
+                "group flex items-center gap-3 rounded-xl px-3 py-2.5 transition duration-150",
                 "phx-click-loading:pointer-events-none phx-click-loading:animate-pulse",
                 @selected_conversation_id == destination.direct_conversation.id &&
                   "bg-base-300 text-base-content",
@@ -102,7 +111,7 @@ defmodule DiscordCloneWeb.DirectMessagesLive.Shell do
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
               ]}
             >
-              <span class="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-bold text-primary ring-1 ring-primary/15">
+              <span class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-sm font-bold text-primary ring-1 ring-primary/15">
                 {participant_initial(destination.other_participant)}
               </span>
               <span class="min-w-0 flex-1">
@@ -137,9 +146,11 @@ defmodule DiscordCloneWeb.DirectMessagesLive.Shell do
         </div>
       </aside>
 
-      <main id="direct-messages-main" class="min-h-0 min-w-0 overflow-y-auto bg-base-100">
+      <main id="direct-messages-main" class="min-h-0 min-w-0 overflow-hidden bg-base-100">
         {render_slot(@inner_block)}
       </main>
+
+      {render_slot(@member_panel)}
     </div>
     """
   end
@@ -152,6 +163,14 @@ defmodule DiscordCloneWeb.DirectMessagesLive.Shell do
       !selected? && "text-base-content/65 hover:bg-base-300/75 hover:text-base-content"
     ]
   end
+
+  defp direct_messages_shell_class(true),
+    do:
+      "fixed inset-0 grid min-h-screen grid-cols-1 grid-rows-[auto_minmax(12rem,36vh)_minmax(0,1fr)] overflow-hidden bg-base-100 lg:grid-cols-[5rem_20rem_minmax(0,1fr)] lg:grid-rows-1 xl:grid-cols-[5rem_20rem_minmax(0,1fr)_16rem]"
+
+  defp direct_messages_shell_class(false),
+    do:
+      "fixed inset-0 grid min-h-screen grid-cols-1 grid-rows-[auto_minmax(12rem,36vh)_minmax(0,1fr)] overflow-hidden bg-base-100 lg:grid-cols-[5rem_20rem_minmax(0,1fr)] lg:grid-rows-1"
 
   defp participant_initial(user) do
     user.username |> String.first() |> String.upcase()

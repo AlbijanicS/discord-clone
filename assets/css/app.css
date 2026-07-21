@@ -123,15 +123,18 @@
 
 /* This file is for your main application CSS */
 
-#message-composer-shell .fieldset {
+#message-composer-shell .fieldset,
+#direct-message-composer-shell .fieldset {
   margin-bottom: 0;
   min-width: 0;
 }
 
-#message-composer-shell label {
+#message-composer-shell label,
+#direct-message-composer-shell label {
   display: block;
 }
 
-#message-composer-shell input {
+#message-composer-shell input,
+#direct-message-composer-shell input {
   box-shadow: none;
 }
