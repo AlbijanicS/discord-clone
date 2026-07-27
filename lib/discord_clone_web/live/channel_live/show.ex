@@ -37,6 +37,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
            Workspaces.fetch_channel(socket.assigns.current_scope, workspace_id, channel_id),
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
          {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id),
+         {:ok, voice_channels} <-
+           Workspaces.list_voice_channels(socket.assigns.current_scope, workspace_id),
          {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id),
          {:ok, current_member_moderation_state} <-
            current_member_moderation_state(socket, workspace.id),
@@ -66,6 +68,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:show_workspace_form?, false)
         |> assign(:channel_form, channel_form(workspace.id))
         |> assign(:show_channel_form?, false)
+        |> assign(:voice_channel_form, voice_channel_form(workspace.id))
+        |> assign(:show_voice_channel_form?, false)
+        |> assign(:voice_channel_action_menu_id, nil)
+        |> assign(:renaming_voice_channel_id, nil)
+        |> assign(:voice_channel_rename_form, nil)
         |> assign(:message_form, message_form())
         |> assign(:mention_context, nil)
         |> assign(:mention_suggestion_count, 0)
@@ -112,6 +119,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> stream_configure(:mention_suggestions, dom_id: &mention_option_id/1)
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
+        |> stream(:voice_channels, voice_channels)
         |> stream(:messages, message_rows)
         |> stream(:mention_suggestions, [])
         |> Presence.prepare_workspace(workspace.id, members)
@@ -133,6 +141,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       <Shell.app
         workspace_stream={@streams.workspaces}
         channel_stream={@streams.channels}
+        voice_channel_stream={@streams.voice_channels}
         selected_workspace={@selected_workspace}
         selected_channel={@selected_channel}
         member_stream={@streams.workspace_members}
@@ -146,6 +155,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         channel_action_menu_id={@channel_action_menu_id}
         renaming_channel_id={@renaming_channel_id}
         channel_rename_form={@channel_rename_form}
+        voice_channel_form={@voice_channel_form}
+        show_voice_channel_form?={@show_voice_channel_form?}
+        voice_channel_action_menu_id={@voice_channel_action_menu_id}
+        renaming_voice_channel_id={@renaming_voice_channel_id}
+        voice_channel_rename_form={@voice_channel_rename_form}
         context_menu_position={@context_menu_position}
         current_scope={@current_scope}
         unread_activity_count={@unread_activity_count}
@@ -726,6 +740,15 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
        socket,
        workspace_id,
        &refresh_channel_sidebar(&1, workspace_id)
+     )}
+  end
+
+  def handle_info({:workspace_voice_channels_changed, %{workspace_id: workspace_id}}, socket) do
+    {:noreply,
+     WorkspaceEvents.apply_to_selected(
+       socket,
+       workspace_id,
+       &refresh_voice_channel_sidebar(&1, workspace_id)
      )}
   end
 
@@ -1364,6 +1387,140 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          socket
          |> put_flash(:error, "Channel could not be deleted.")
          |> push_navigate(to: ~p"/workspaces")}
+    end
+  end
+
+  def handle_event("show_voice_channel_form", _params, socket) do
+    {:noreply, assign(socket, :show_voice_channel_form?, true)}
+  end
+
+  def handle_event("cancel_voice_channel_form", _params, socket) do
+    workspace_id = socket.assigns.selected_workspace.id
+
+    {:noreply,
+     socket
+     |> assign(:show_voice_channel_form?, false)
+     |> assign(:voice_channel_form, voice_channel_form(workspace_id))}
+  end
+
+  def handle_event(
+        "open_voice_channel_actions",
+        %{"voice_channel_id" => voice_channel_id},
+        socket
+      ) do
+    workspace_id = socket.assigns.selected_workspace.id
+
+    {:noreply,
+     socket
+     |> assign(:voice_channel_action_menu_id, voice_channel_id)
+     |> refresh_voice_channel_sidebar(workspace_id)}
+  end
+
+  def handle_event("close_voice_channel_context_menu", _params, socket) do
+    {:noreply, assign(socket, :voice_channel_action_menu_id, nil)}
+  end
+
+  def handle_event("create_voice_channel", %{"voice_channel" => params}, socket) do
+    workspace_id = socket.assigns.selected_workspace.id
+
+    case Workspaces.create_voice_channel(socket.assigns.current_scope, workspace_id, params) do
+      {:ok, _voice_channel} ->
+        {:noreply,
+         socket
+         |> assign(:show_voice_channel_form?, false)
+         |> assign(:voice_channel_form, voice_channel_form(workspace_id))
+         |> refresh_voice_channel_sidebar(workspace_id)}
+
+      {:error, :invalid_voice_channel, changeset} ->
+        {:noreply,
+         socket
+         |> assign(:show_voice_channel_form?, true)
+         |> assign(:voice_channel_form, to_form(changeset, as: :voice_channel, action: :insert))}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Voice channel could not be created.")}
+    end
+  end
+
+  def handle_event(
+        "begin_voice_channel_rename",
+        %{"voice_channel_id" => voice_channel_id},
+        socket
+      ) do
+    workspace_id = socket.assigns.selected_workspace.id
+
+    case Workspaces.fetch_voice_channel(
+           socket.assigns.current_scope,
+           workspace_id,
+           voice_channel_id
+         ) do
+      {:ok, voice_channel} ->
+        {:noreply,
+         socket
+         |> assign(:voice_channel_action_menu_id, nil)
+         |> assign(:renaming_voice_channel_id, voice_channel.id)
+         |> assign(
+           :voice_channel_rename_form,
+           voice_channel_form(workspace_id, %{name: voice_channel.name})
+         )
+         |> refresh_voice_channel_sidebar(workspace_id)}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Voice channel could not be renamed.")}
+    end
+  end
+
+  def handle_event(
+        "rename_voice_channel",
+        %{"voice_channel_id" => voice_channel_id, "voice_channel" => params},
+        socket
+      ) do
+    workspace_id = socket.assigns.selected_workspace.id
+
+    case Workspaces.rename_voice_channel(
+           socket.assigns.current_scope,
+           workspace_id,
+           voice_channel_id,
+           params
+         ) do
+      {:ok, _voice_channel} ->
+        {:noreply,
+         socket
+         |> assign(:renaming_voice_channel_id, nil)
+         |> assign(:voice_channel_rename_form, nil)
+         |> assign(:voice_channel_action_menu_id, nil)
+         |> refresh_voice_channel_sidebar(workspace_id)}
+
+      {:error, :invalid_voice_channel, changeset} ->
+        {:noreply,
+         socket
+         |> assign(:renaming_voice_channel_id, voice_channel_id)
+         |> assign(
+           :voice_channel_rename_form,
+           to_form(changeset, as: :voice_channel, action: :insert)
+         )}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Voice channel could not be renamed.")}
+    end
+  end
+
+  def handle_event("delete_voice_channel", %{"voice_channel_id" => voice_channel_id}, socket) do
+    workspace_id = socket.assigns.selected_workspace.id
+
+    case Workspaces.delete_voice_channel(
+           socket.assigns.current_scope,
+           workspace_id,
+           voice_channel_id
+         ) do
+      {:ok, _voice_channel} ->
+        {:noreply,
+         socket
+         |> assign(:voice_channel_action_menu_id, nil)
+         |> refresh_voice_channel_sidebar(workspace_id)}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Voice channel could not be deleted.")}
     end
   end
 
@@ -2445,6 +2602,17 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       end
 
     stream(socket, :channels, channels, reset: true)
+  end
+
+  defp refresh_voice_channel_sidebar(socket, workspace_id) do
+    case Workspaces.list_voice_channels(socket.assigns.current_scope, workspace_id) do
+      {:ok, voice_channels} -> stream(socket, :voice_channels, voice_channels, reset: true)
+      {:error, _reason} -> socket
+    end
+  end
+
+  defp voice_channel_form(workspace_id, attrs \\ %{}) do
+    workspace_id |> Workspaces.change_voice_channel(attrs) |> to_form(as: :voice_channel)
   end
 
   defp refresh_workspace_members(socket, workspace_id) do

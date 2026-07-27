@@ -21,6 +21,7 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
     conversations
     conversation_read_states
     conversation_unread_spans
+    voice_channels
   )
 
   test "every persisted entity has a database-generated UUID primary key" do
@@ -153,6 +154,7 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
           users_username_index
           users_tokens_context_token_index
           channels_workspace_id_name_index
+          voice_channels_workspace_id_name_index
           workspace_memberships_workspace_id_user_id_index
           workspace_invites_code_index
           workspace_moderations_workspace_id_target_user_id_type_index
@@ -258,6 +260,7 @@ defmodule DiscordClone.Repo.UUIDBaselineTest do
       "messages_reply_to_message_id_fkey" => "no_action",
       "messages_user_id_fkey" => "nilify_all",
       "users_tokens_user_id_fkey" => "delete_all",
+      "voice_channels_workspace_id_fkey" => "delete_all",
       "workspace_audit_events_actor_user_id_fkey" => "nilify_all",
       "workspace_audit_events_target_user_id_fkey" => "nilify_all",
       "workspace_audit_events_workspace_id_fkey" => "delete_all",

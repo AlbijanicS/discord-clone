@@ -7,6 +7,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
 
   attr :workspace_stream, :any, required: true
   attr :channel_stream, :any, default: nil
+  attr :voice_channel_stream, :any, default: nil
   attr :selected_workspace, :any, default: nil
   attr :selected_channel, :any, default: nil
   attr :member_stream, :any, default: []
@@ -20,6 +21,11 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   attr :channel_action_menu_id, :string, default: nil
   attr :renaming_channel_id, :string, default: nil
   attr :channel_rename_form, :any, default: nil
+  attr :voice_channel_form, :any, default: nil
+  attr :show_voice_channel_form?, :boolean, default: false
+  attr :voice_channel_action_menu_id, :string, default: nil
+  attr :renaming_voice_channel_id, :string, default: nil
+  attr :voice_channel_rename_form, :any, default: nil
   attr :context_menu_position, :map, default: nil
   attr :current_scope, :any, default: nil
   attr :main_state, :atom, default: :no_workspace
@@ -317,6 +323,136 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                 </.button>
               </div>
             </.form>
+
+            <div class="mt-5 border-t border-base-300 pt-4">
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-xs font-semibold uppercase tracking-wide text-base-content/50">
+                  Voice Channels
+                </p>
+                <button
+                  :if={
+                    @voice_channel_form && !@show_voice_channel_form? &&
+                      can_create_voice_channel?(@selected_workspace, @current_scope)
+                  }
+                  id="voice-channel-create-toggle"
+                  type="button"
+                  class="btn btn-square btn-xs btn-ghost transition hover:scale-105"
+                  phx-click="show_voice_channel_form"
+                  aria-label="Create voice channel"
+                >
+                  <.icon name="hero-plus" class="size-3.5" />
+                </button>
+              </div>
+              <div id="voice-channels" phx-update="stream" class="mt-2 space-y-1">
+                <div
+                  id="voice-channel-list-empty-state"
+                  class="hidden only:block text-sm text-base-content/60"
+                >
+                  No voice channels yet.
+                </div>
+                <div :for={{dom_id, voice_channel} <- @voice_channel_stream || []} id={dom_id}>
+                  <div
+                    id={"voice-channel-#{voice_channel.id}"}
+                    class="group relative flex items-center rounded-md text-sm text-base-content/70 transition hover:bg-base-300 hover:text-base-content"
+                  >
+                    <%= if @renaming_voice_channel_id == voice_channel.id && @voice_channel_rename_form do %>
+                      <.form
+                        for={@voice_channel_rename_form}
+                        id={"voice-channel-#{voice_channel.id}-rename-form"}
+                        phx-submit="rename_voice_channel"
+                        phx-value-voice_channel_id={voice_channel.id}
+                        class="min-w-0 flex-1 px-2 py-1"
+                      >
+                        <.input
+                          field={@voice_channel_rename_form[:name]}
+                          type="text"
+                          label="Voice channel name"
+                          autocomplete="off"
+                        />
+                      </.form>
+                    <% else %>
+                      <span class="min-w-0 flex-1 truncate py-2 pl-3 pr-10">
+                        <.icon name="hero-speaker-wave" class="mr-2 inline size-4" />{voice_channel.name}
+                      </span>
+                    <% end %>
+                    <button
+                      :if={
+                        @voice_channel_form &&
+                          (can_rename_voice_channel?(@selected_workspace, @current_scope) ||
+                             can_delete_voice_channel?(@selected_workspace, @current_scope))
+                      }
+                      id={"voice-channel-#{voice_channel.id}-actions"}
+                      type="button"
+                      class="btn btn-square btn-xs btn-ghost absolute right-1 top-1/2 -translate-y-1/2 opacity-70 transition hover:opacity-100"
+                      phx-click="open_voice_channel_actions"
+                      phx-value-voice_channel_id={voice_channel.id}
+                      aria-label={"Open #{voice_channel.name} voice channel actions"}
+                    >
+                      <.icon name="hero-ellipsis-horizontal" class="size-4" />
+                    </button>
+                    <div
+                      :if={@voice_channel_action_menu_id == voice_channel.id}
+                      id={"voice-channel-#{voice_channel.id}-menu"}
+                      class="absolute right-0 top-8 z-30 w-36 rounded border border-base-300 bg-base-100 p-1 shadow-lg"
+                      phx-click-away="close_voice_channel_context_menu"
+                      phx-window-keydown="close_voice_channel_context_menu"
+                      phx-key="escape"
+                    >
+                      <button
+                        :if={can_rename_voice_channel?(@selected_workspace, @current_scope)}
+                        id={"voice-channel-#{voice_channel.id}-rename"}
+                        type="button"
+                        class="block w-full rounded px-3 py-2 text-left text-sm transition hover:bg-base-200"
+                        phx-click="begin_voice_channel_rename"
+                        phx-value-voice_channel_id={voice_channel.id}
+                      >
+                        Rename
+                      </button>
+                      <button
+                        :if={can_delete_voice_channel?(@selected_workspace, @current_scope)}
+                        id={"voice-channel-#{voice_channel.id}-delete"}
+                        type="button"
+                        class="block w-full rounded px-3 py-2 text-left text-sm text-error transition hover:bg-error/10"
+                        phx-click="delete_voice_channel"
+                        phx-value-voice_channel_id={voice_channel.id}
+                        phx-confirm="Delete this voice channel? This cannot be undone."
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <.form
+                :if={
+                  @voice_channel_form && @show_voice_channel_form? &&
+                    can_create_voice_channel?(@selected_workspace, @current_scope)
+                }
+                for={@voice_channel_form}
+                id="voice-channel-create-form"
+                phx-submit="create_voice_channel"
+                class="mt-3 space-y-2"
+              >
+                <.input
+                  field={@voice_channel_form[:name]}
+                  type="text"
+                  label="Voice channel name"
+                  placeholder="lobby"
+                  autocomplete="off"
+                />
+                <div class="grid grid-cols-2 gap-2">
+                  <button
+                    id="voice-channel-create-cancel"
+                    type="button"
+                    class="btn btn-sm btn-ghost"
+                    phx-click="cancel_voice_channel_form"
+                  >
+                    Cancel
+                  </button>
+                  <.button type="submit" class="btn btn-primary btn-sm">Create</.button>
+                </div>
+              </.form>
+            </div>
           <% else %>
             <div class="mb-4">
               <p class="text-sm font-semibold">No workspace selected</p>
@@ -691,6 +827,15 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   defp can_delete_channel?(workspace, current_scope) do
     Workspaces.can_delete_channel?(current_scope, workspace)
   end
+
+  defp can_create_voice_channel?(workspace, current_scope),
+    do: Workspaces.can_create_voice_channel?(current_scope, workspace)
+
+  defp can_rename_voice_channel?(workspace, current_scope),
+    do: Workspaces.can_rename_voice_channel?(current_scope, workspace)
+
+  defp can_delete_voice_channel?(workspace, current_scope),
+    do: Workspaces.can_delete_voice_channel?(current_scope, workspace)
 
   defp can_create_workspace_invite?(workspace, current_scope) do
     Workspaces.can_create_workspace_invite?(current_scope, workspace)

@@ -12,6 +12,64 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
   describe "workspace and channel management" do
     setup :register_and_log_in_user
 
+    test "shows a distinct display-only voice channel section and owner controls", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, voice_channel} =
+        Workspaces.create_voice_channel(scope, workspace.id, %{name: "Lobby"})
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#voice-channels")
+      assert has_element?(view, "#voice-channel-#{voice_channel.id}", "lobby")
+      refute has_element?(view, "a#voice-channel-#{voice_channel.id}")
+      assert has_element?(view, "#voice-channel-create-toggle")
+    end
+
+    test "creates, validates, renames, and deletes a voice channel from the shell", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      view |> element("#voice-channel-create-toggle") |> render_click()
+      assert has_element?(view, "#voice-channel-create-form")
+
+      view
+      |> form("#voice-channel-create-form", voice_channel: %{name: " "})
+      |> render_submit()
+
+      assert has_element?(view, "#voice-channel-create-form", "can't be blank")
+
+      view
+      |> form("#voice-channel-create-form", voice_channel: %{name: "Design Room"})
+      |> render_submit()
+
+      {:ok, [voice_channel]} = Workspaces.list_voice_channels(scope, workspace.id)
+      assert has_element?(view, "#voice-channel-#{voice_channel.id}", "design-room")
+
+      view |> element("#voice-channel-#{voice_channel.id}-actions") |> render_click()
+      view |> element("#voice-channel-#{voice_channel.id}-rename") |> render_click()
+      assert has_element?(view, "#voice-channel-#{voice_channel.id}-rename-form")
+
+      view
+      |> form("#voice-channel-#{voice_channel.id}-rename-form", voice_channel: %{name: "Ops"})
+      |> render_submit()
+
+      assert has_element?(view, "#voice-channel-#{voice_channel.id}", "ops")
+      view |> element("#voice-channel-#{voice_channel.id}-actions") |> render_click()
+      assert has_element?(view, "#voice-channel-#{voice_channel.id}-delete[phx-confirm]")
+      view |> element("#voice-channel-#{voice_channel.id}-delete") |> render_click()
+      refute has_element?(view, "#voice-channel-#{voice_channel.id}")
+    end
+
     test "shows and opens the workspace create action from a selected channel", %{
       conn: conn,
       scope: scope

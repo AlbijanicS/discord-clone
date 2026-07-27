@@ -29,7 +29,8 @@ defmodule DiscordClone.Workspaces do
     WorkspaceBan,
     WorkspaceInvite,
     WorkspaceModeration,
-    WorkspaceMembership
+    WorkspaceMembership,
+    VoiceChannel
   }
 
   @mute_type "mute"
@@ -94,6 +95,14 @@ defmodule DiscordClone.Workspaces do
 
   def list_channels(_scope, _workspace_id), do: {:error, :unauthenticated}
 
+  def list_voice_channels(%Scope{} = scope, workspace_id) do
+    with {:ok, %Workspace{id: workspace_id}} <- fetch_workspace(scope, workspace_id) do
+      {:ok, Repo.all(voice_channels_for_workspace_query(workspace_id))}
+    end
+  end
+
+  def list_voice_channels(_scope, _workspace_id), do: {:error, :unauthenticated}
+
   def list_members(%Scope{} = scope, workspace_id) do
     with {:ok, %Workspace{id: workspace_id}} <- fetch_workspace(scope, workspace_id) do
       members =
@@ -142,6 +151,17 @@ defmodule DiscordClone.Workspaces do
   end
 
   def fetch_channel(_scope, _workspace_id, _channel_id), do: {:error, :unauthenticated}
+
+  def fetch_voice_channel(%Scope{} = scope, workspace_id, voice_channel_id) do
+    with {:ok, %Workspace{id: workspace_id}} <- fetch_workspace(scope, workspace_id),
+         {:ok, %VoiceChannel{} = voice_channel} <-
+           get_voice_channel(workspace_id, voice_channel_id) do
+      {:ok, voice_channel}
+    end
+  end
+
+  def fetch_voice_channel(_scope, _workspace_id, _voice_channel_id),
+    do: {:error, :unauthenticated}
 
   def resolve_landing_channel(%Scope{} = scope, workspace_id) do
     with {:ok, %Workspace{} = workspace} <- fetch_workspace(scope, workspace_id),
@@ -310,6 +330,36 @@ defmodule DiscordClone.Workspaces do
 
   def create_channel(_scope, _workspace_id, _attrs), do: {:error, :unauthenticated}
 
+  def change_voice_channel(workspace_id, attrs \\ %{}) when is_map(attrs) do
+    VoiceChannel.create_changeset(
+      %VoiceChannel{workspace_id: workspace_id},
+      channel_rename_attrs(attrs)
+    )
+  end
+
+  def create_voice_channel(%Scope{user: %User{}} = scope, workspace_id, attrs)
+      when is_map(attrs) do
+    with {:ok, workspace} <- get_workspace(workspace_id),
+         :ok <- authorize_create_voice_channel(scope, workspace) do
+      %VoiceChannel{workspace_id: workspace.id}
+      |> VoiceChannel.create_changeset(channel_rename_attrs(attrs))
+      |> Repo.insert()
+      |> case do
+        {:ok, voice_channel} ->
+          :ok = broadcast_workspace_voice_channels_changed(voice_channel.workspace_id)
+          {:ok, voice_channel}
+
+        {:error, changeset} ->
+          {:error, :invalid_voice_channel, changeset}
+      end
+    end
+  end
+
+  def create_voice_channel(%Scope{user: %User{}}, _workspace_id, _attrs),
+    do: {:error, :invalid_attrs}
+
+  def create_voice_channel(_scope, _workspace_id, _attrs), do: {:error, :unauthenticated}
+
   def change_workspace_invite(attrs \\ %{}) when is_map(attrs) do
     WorkspaceInvite.create_changeset(%WorkspaceInvite{}, invite_form_attrs(attrs))
   end
@@ -359,6 +409,21 @@ defmodule DiscordClone.Workspaces do
     do: has_workspace_role?(scope, workspace, [Roles.owner()])
 
   def can_delete_channel?(_scope, _workspace), do: false
+
+  def can_create_voice_channel?(%Scope{} = scope, %Workspace{} = workspace),
+    do: has_workspace_role?(scope, workspace, [Roles.owner(), Roles.admin()])
+
+  def can_create_voice_channel?(_scope, _workspace), do: false
+
+  def can_rename_voice_channel?(%Scope{} = scope, %Workspace{} = workspace),
+    do: has_workspace_role?(scope, workspace, [Roles.owner(), Roles.admin()])
+
+  def can_rename_voice_channel?(_scope, _workspace), do: false
+
+  def can_delete_voice_channel?(%Scope{} = scope, %Workspace{} = workspace),
+    do: has_workspace_role?(scope, workspace, [Roles.owner()])
+
+  def can_delete_voice_channel?(_scope, _workspace), do: false
 
   def can_create_workspace_invite?(%Scope{} = scope, %Workspace{} = workspace),
     do: has_workspace_role?(scope, workspace, [Roles.owner(), Roles.admin()])
@@ -881,6 +946,44 @@ defmodule DiscordClone.Workspaces do
 
   def delete_channel(_scope, _workspace_id, _channel_id), do: {:error, :unauthenticated}
 
+  def rename_voice_channel(%Scope{user: %User{}} = scope, workspace_id, voice_channel_id, attrs)
+      when is_map(attrs) do
+    with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
+         :ok <- authorize_rename_voice_channel(scope, workspace),
+         {:ok, voice_channel} <- get_voice_channel(workspace.id, voice_channel_id) do
+      voice_channel
+      |> VoiceChannel.rename_changeset(channel_rename_attrs(attrs))
+      |> Repo.update()
+      |> case do
+        {:ok, voice_channel} ->
+          :ok = broadcast_workspace_voice_channels_changed(voice_channel.workspace_id)
+          {:ok, voice_channel}
+
+        {:error, changeset} ->
+          {:error, :invalid_voice_channel, changeset}
+      end
+    end
+  end
+
+  def rename_voice_channel(%Scope{user: %User{}}, _workspace_id, _voice_channel_id, _attrs),
+    do: {:error, :invalid_attrs}
+
+  def rename_voice_channel(_scope, _workspace_id, _voice_channel_id, _attrs),
+    do: {:error, :unauthenticated}
+
+  def delete_voice_channel(%Scope{user: %User{}} = scope, workspace_id, voice_channel_id) do
+    with {:ok, workspace} <- fetch_workspace(scope, workspace_id),
+         :ok <- authorize_delete_voice_channel(scope, workspace),
+         {:ok, voice_channel} <- get_voice_channel(workspace.id, voice_channel_id),
+         {:ok, deleted_voice_channel} <- Repo.delete(voice_channel) do
+      :ok = broadcast_workspace_voice_channels_changed(deleted_voice_channel.workspace_id)
+      {:ok, deleted_voice_channel}
+    end
+  end
+
+  def delete_voice_channel(_scope, _workspace_id, _voice_channel_id),
+    do: {:error, :unauthenticated}
+
   @doc """
   Removes the current member and their workspace-scoped read state atomically.
 
@@ -1026,6 +1129,21 @@ defmodule DiscordClone.Workspaces do
 
     case channel do
       %Channel{} = channel -> {:ok, channel}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp get_voice_channel(workspace_id, voice_channel_id) do
+    voice_channel =
+      UUIDIdentifier.cast_or([workspace_id, voice_channel_id], nil, fn [
+                                                                         workspace_id,
+                                                                         voice_channel_id
+                                                                       ] ->
+        Repo.get_by(VoiceChannel, id: voice_channel_id, workspace_id: workspace_id)
+      end)
+
+    case voice_channel do
+      %VoiceChannel{} = voice_channel -> {:ok, voice_channel}
       nil -> {:error, :not_found}
     end
   end
@@ -1255,6 +1373,12 @@ defmodule DiscordClone.Workspaces do
       order_by: [asc: channel.inserted_at, asc: channel.id]
   end
 
+  defp voice_channels_for_workspace_query(workspace_id) do
+    from voice_channel in VoiceChannel,
+      where: voice_channel.workspace_id == ^workspace_id,
+      order_by: [asc: voice_channel.inserted_at, asc: voice_channel.id]
+  end
+
   defp authorize_view_workspace(%Workspace{id: workspace_id}, %User{id: user_id}) do
     authorize_view_workspace(workspace_id, user_id)
   end
@@ -1283,6 +1407,18 @@ defmodule DiscordClone.Workspaces do
 
   defp authorize_delete_channel(scope, workspace) do
     if can_delete_channel?(scope, workspace), do: :ok, else: {:error, :owner_required}
+  end
+
+  defp authorize_create_voice_channel(scope, workspace) do
+    if can_create_voice_channel?(scope, workspace), do: :ok, else: {:error, :unauthorized}
+  end
+
+  defp authorize_rename_voice_channel(scope, workspace) do
+    if can_rename_voice_channel?(scope, workspace), do: :ok, else: {:error, :unauthorized}
+  end
+
+  defp authorize_delete_voice_channel(scope, workspace) do
+    if can_delete_voice_channel?(scope, workspace), do: :ok, else: {:error, :unauthorized}
   end
 
   defp authorize_create_invite(scope, workspace) do
@@ -2049,6 +2185,14 @@ defmodule DiscordClone.Workspaces do
       DiscordClone.PubSub,
       workspace_events_topic(workspace_id),
       {:workspace_channel_created, %{workspace_id: workspace_id, channel_id: channel_id}}
+    )
+  end
+
+  defp broadcast_workspace_voice_channels_changed(workspace_id) do
+    Phoenix.PubSub.broadcast(
+      DiscordClone.PubSub,
+      workspace_events_topic(workspace_id),
+      {:workspace_voice_channels_changed, %{workspace_id: workspace_id}}
     )
   end
 

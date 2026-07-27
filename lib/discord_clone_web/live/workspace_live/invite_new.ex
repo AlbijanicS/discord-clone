@@ -16,6 +16,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
          :ok <- authorize_invite_screen(socket.assigns.current_scope, workspace),
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
          {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id),
+         {:ok, voice_channels} <-
+           Workspaces.list_voice_channels(socket.assigns.current_scope, workspace_id),
          {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id),
          {:ok, channel_unread_counts} <- load_channel_unread_counts(socket, workspace.id),
          :ok <- subscribe_to_channel_read_states(socket, channels),
@@ -36,6 +38,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
         |> assign(:channel_unread_counts, channel_unread_counts)
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
+        |> stream(:voice_channels, voice_channels)
         |> Presence.prepare_workspace(workspace.id, members)
 
       {:ok, socket}
@@ -61,6 +64,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
       <Shell.app
         workspace_stream={@streams.workspaces}
         channel_stream={@streams.channels}
+        voice_channel_stream={@streams.voice_channels}
         selected_workspace={@selected_workspace}
         workspace_form={@workspace_form}
         show_workspace_form?={@show_workspace_form?}
@@ -100,6 +104,15 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
        socket,
        workspace_id,
        &refresh_channel_sidebar(&1, workspace_id)
+     )}
+  end
+
+  def handle_info({:workspace_voice_channels_changed, %{workspace_id: workspace_id}}, socket) do
+    {:noreply,
+     WorkspaceEvents.apply_to_selected(
+       socket,
+       workspace_id,
+       &refresh_voice_channels(&1, workspace_id)
      )}
   end
 
@@ -302,6 +315,13 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
       end
 
     stream(socket, :channels, channels, reset: true)
+  end
+
+  defp refresh_voice_channels(socket, workspace_id) do
+    case Workspaces.list_voice_channels(socket.assigns.current_scope, workspace_id) do
+      {:ok, voice_channels} -> stream(socket, :voice_channels, voice_channels, reset: true)
+      {:error, _reason} -> socket
+    end
   end
 
   defp authorize_invite_screen(current_scope, workspace) do

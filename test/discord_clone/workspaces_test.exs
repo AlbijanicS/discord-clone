@@ -16,6 +16,7 @@ defmodule DiscordClone.WorkspacesTest do
 
   alias DiscordClone.Workspaces.{
     Channel,
+    VoiceChannel,
     WorkspaceAuditEvent,
     WorkspaceBan,
     WorkspaceInvite,
@@ -25,6 +26,140 @@ defmodule DiscordClone.WorkspacesTest do
 
   import DiscordClone.AccountsFixtures
   import DiscordClone.WorkspacesFixtures
+
+  describe "voice channels" do
+    test "lets a workspace owner create a normalized voice channel without creating a conversation" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Voice Server"})
+
+      assert {:ok, voice_channel} =
+               Workspaces.create_voice_channel(scope, workspace.id, %{name: " Design Room "})
+
+      assert %VoiceChannel{workspace_id: workspace_id, name: "design-room"} = voice_channel
+      assert workspace_id == workspace.id
+      refute Repo.get(Conversation, voice_channel.id)
+    end
+
+    test "lists and fetches voice channels only for workspace members in creation order" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      non_member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Voice Server"})
+      add_workspace_member!(workspace, member_scope)
+      {:ok, first} = Workspaces.create_voice_channel(owner_scope, workspace.id, %{name: "lobby"})
+
+      {:ok, second} =
+        Workspaces.create_voice_channel(owner_scope, workspace.id, %{name: "standup"})
+
+      assert {:ok, voice_channels} = Workspaces.list_voice_channels(member_scope, workspace.id)
+      assert Enum.map(voice_channels, & &1.id) == [first.id, second.id]
+      assert {:ok, ^first} = Workspaces.fetch_voice_channel(member_scope, workspace.id, first.id)
+
+      assert Workspaces.list_voice_channels(non_member_scope, workspace.id) ==
+               {:error, :unauthorized}
+
+      assert Workspaces.fetch_voice_channel(member_scope, workspace.id, second.id) ==
+               {:ok, second}
+    end
+
+    test "allows admins to create and rename, but only owners to delete" do
+      owner_scope = user_scope_fixture()
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Voice Server"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope)
+
+      assert {:ok, voice_channel} =
+               Workspaces.create_voice_channel(admin_scope, workspace.id, %{name: "planning"})
+
+      assert {:ok, %{name: "design-room"}} =
+               Workspaces.rename_voice_channel(admin_scope, workspace.id, voice_channel.id, %{
+                 name: "Design Room"
+               })
+
+      assert Workspaces.create_voice_channel(member_scope, workspace.id, %{name: "member-room"}) ==
+               {:error, :unauthorized}
+
+      assert Workspaces.delete_voice_channel(admin_scope, workspace.id, voice_channel.id) ==
+               {:error, :unauthorized}
+
+      assert {:ok, _} =
+               Workspaces.delete_voice_channel(owner_scope, workspace.id, voice_channel.id)
+    end
+
+    test "enforces the channel naming boundary and has no position field" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Voice Server"})
+
+      assert {:ok, %{name: valid_name}} =
+               Workspaces.create_voice_channel(scope, workspace.id, %{
+                 name: String.duplicate("a", 80)
+               })
+
+      assert String.length(valid_name) == 80
+
+      assert {:error, :invalid_voice_channel, changeset} =
+               Workspaces.create_voice_channel(scope, workspace.id, %{name: "not/valid"})
+
+      assert errors_on(changeset).name != []
+
+      assert {:error, :invalid_voice_channel, changeset} =
+               Workspaces.create_voice_channel(scope, workspace.id, %{
+                 name: String.duplicate("a", 81)
+               })
+
+      assert errors_on(changeset).name != []
+      refute :position in VoiceChannel.__schema__(:fields)
+    end
+
+    test "keeps voice names independent from text channels and returns tagged validation errors" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Voice Server"})
+      assert {:ok, _channel} = Workspaces.create_channel(scope, workspace.id, %{name: "lobby"})
+
+      assert {:ok, _voice_channel} =
+               Workspaces.create_voice_channel(scope, workspace.id, %{name: "lobby"})
+
+      assert {:ok, second_voice_channel} =
+               Workspaces.create_voice_channel(scope, workspace.id, %{name: "standup"})
+
+      assert {:error, :invalid_voice_channel, changeset} =
+               Workspaces.create_voice_channel(scope, workspace.id, %{name: " "})
+
+      assert errors_on(changeset).name == ["can't be blank"]
+
+      assert {:error, :invalid_voice_channel, changeset} =
+               Workspaces.rename_voice_channel(scope, workspace.id, second_voice_channel.id, %{
+                 name: "LOBBY"
+               })
+
+      assert errors_on(changeset).name == ["has already been taken"]
+    end
+
+    test "uses not found and unauthenticated errors for inaccessible voice channel references" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Voice Server"})
+      {:ok, other_workspace} = Workspaces.create_workspace(scope, %{name: "Other Server"})
+
+      {:ok, voice_channel} =
+        Workspaces.create_voice_channel(scope, other_workspace.id, %{name: "lobby"})
+
+      assert Workspaces.fetch_voice_channel(scope, workspace.id, voice_channel.id) ==
+               {:error, :not_found}
+
+      assert Workspaces.rename_voice_channel(scope, workspace.id, voice_channel.id, %{name: "new"}) ==
+               {:error, :not_found}
+
+      assert Workspaces.delete_voice_channel(scope, workspace.id, voice_channel.id) ==
+               {:error, :not_found}
+
+      assert Workspaces.list_voice_channels(nil, workspace.id) == {:error, :unauthenticated}
+
+      assert Workspaces.create_voice_channel(nil, workspace.id, %{name: "lobby"}) ==
+               {:error, :unauthenticated}
+    end
+  end
 
   describe "create_workspace/2" do
     test "creates a workspace with owner membership and a default general channel" do

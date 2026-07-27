@@ -15,6 +15,7 @@ defmodule DiscordClone.Workspaces.Workspace do
     belongs_to :default_channel, DiscordClone.Workspaces.Channel
 
     has_many :channels, DiscordClone.Workspaces.Channel
+    has_many :voice_channels, DiscordClone.Workspaces.VoiceChannel
     has_many :memberships, DiscordClone.Workspaces.WorkspaceMembership
     has_many :invites, DiscordClone.Workspaces.WorkspaceInvite
     has_many :audit_events, DiscordClone.Workspaces.WorkspaceAuditEvent

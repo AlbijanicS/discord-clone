@@ -18,6 +18,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
            Workspaces.list_banned_members(socket.assigns.current_scope, workspace.id),
          {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
          {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace.id),
+         {:ok, voice_channels} <-
+           Workspaces.list_voice_channels(socket.assigns.current_scope, workspace.id),
          {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace.id),
          :ok <- WorkspaceEvents.subscribe(socket, workspace.id) do
       socket =
@@ -35,6 +37,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
         |> assign(:banned_members, banned_members)
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
+        |> stream(:voice_channels, voice_channels)
         |> Presence.prepare_workspace(workspace.id, members)
 
       {:ok, socket}
@@ -60,6 +63,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
       <Shell.app
         workspace_stream={@streams.workspaces}
         channel_stream={@streams.channels}
+        voice_channel_stream={@streams.voice_channels}
         selected_workspace={@selected_workspace}
         member_stream={@streams.workspace_members}
         workspace_form={@workspace_form}
@@ -96,6 +100,15 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
   def handle_info({:workspace_channel_created, %{workspace_id: workspace_id}}, socket) do
     {:noreply,
      WorkspaceEvents.apply_to_selected(socket, workspace_id, &refresh_channels(&1, workspace_id))}
+  end
+
+  def handle_info({:workspace_voice_channels_changed, %{workspace_id: workspace_id}}, socket) do
+    {:noreply,
+     WorkspaceEvents.apply_to_selected(
+       socket,
+       workspace_id,
+       &refresh_voice_channels(&1, workspace_id)
+     )}
   end
 
   def handle_info({:workspace_member_joined, %{workspace_id: workspace_id}}, socket) do
@@ -223,6 +236,13 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
       stream(socket, :channels, channels, reset: true)
     else
       _error -> socket
+    end
+  end
+
+  defp refresh_voice_channels(socket, workspace_id) do
+    case Workspaces.list_voice_channels(socket.assigns.current_scope, workspace_id) do
+      {:ok, voice_channels} -> stream(socket, :voice_channels, voice_channels, reset: true)
+      {:error, _reason} -> socket
     end
   end
 
