@@ -55,6 +55,11 @@ test("a Workspace badge only appears for its active Voice Channel Workspace and 
   assert.equal(hook.el.warning.hidden, false)
   assert.equal(hook.el["aria-label"], "Open Voice Channel issue")
 
+  listener({channelId: "voice-2", channelName: "standup", error: "taken_over", retryable: false, status: "taken_over", workspaceId: "workspace-2"})
+  assert.equal(hook.el.hidden, false)
+  assert.equal(hook.el.microphone.hidden, true)
+  assert.equal(hook.el.warning.hidden, false)
+
   hook.destroyed()
   assert.equal(listener, null)
 })

@@ -194,7 +194,7 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
               class="mt-1 text-xs text-base-content/60"
             >
             </p>
-            <div class="mt-4 flex gap-2">
+            <div data-voice-controls-local-actions class="mt-4 flex gap-2">
               <button
                 id="global-voice-controls-retry"
                 type="button"

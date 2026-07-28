@@ -25,6 +25,7 @@ function mountVoiceControls(state) {
   const mute = {textContent: "", setAttribute(name, value) { this[name] = value }}
   const popover = {hidden: true}
   const retry = {hidden: true}
+  const localActions = {hidden: false}
   globalThis.document = eventTarget()
   globalThis.window = eventTarget()
   const controller = {
@@ -40,10 +41,11 @@ function mountVoiceControls(state) {
     "[data-voice-controls-mute]": mute,
     "[data-voice-controls-popover]": popover,
     "[data-voice-controls-retry]": retry,
+    "[data-voice-controls-local-actions]": localActions,
   }
   const hook = {...createVoiceControls(controller), el: {querySelector: selector => elements[selector]}}
   hook.mounted()
-  return {calls, channel, emit(nextState) { currentState = nextState; listener(nextState) }, hook, mute, popover, retry, status}
+  return {calls, channel, emit(nextState) { currentState = nextState; listener(nextState) }, hook, localActions, mute, popover, retry, status}
 }
 
 test("the rail adapter immediately renders an existing capture and controls it without requesting media again", () => {
@@ -79,5 +81,16 @@ test("the rail renders a browser failure and delegates its explicit retry", () =
   const retryButton = {closest: selector => selector === "[data-voice-controls-retry]" ? retryButton : null}
   document.dispatch("click", {target: retryButton})
   assert.deepEqual(mounted.calls, ["retry"])
+  mounted.hook.destroyed()
+})
+
+test("the rail keeps a Voice Owner Tab takeover discoverable without active controls", () => {
+  const mounted = mountVoiceControls({channelId: "voice-1", channelName: "lobby", error: "taken_over", retryable: false, status: "taken_over", workspaceId: "workspace-1"})
+
+  assert.equal(mounted.channel.textContent, "lobby")
+  assert.equal(mounted.status.textContent, "Voice moved to another tab")
+  assert.equal(mounted.retry.hidden, true)
+  assert.equal(mounted.popover.hidden, false)
+  assert.equal(mounted.localActions.hidden, true)
   mounted.hook.destroyed()
 })

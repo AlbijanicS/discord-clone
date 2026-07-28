@@ -1,10 +1,14 @@
 export function createVoiceController({
   mediaDevices = globalThis.navigator?.mediaDevices,
   secureContext = globalThis.isSecureContext,
+  now = () => Date.now(),
+  tabCoordination = createBroadcastTabCoordination(),
+  tabId = createTabId(),
 } = {}) {
   let activeRequest = 0
   let audioTracks = []
   let currentState = idleState()
+  let currentClaim = null
   const listeners = new Set()
 
   function publish(nextState) {
@@ -22,6 +26,42 @@ export function createVoiceController({
   function clearCapture() {
     stopTracks()
     audioTracks = []
+  }
+
+  function releaseForTakeover() {
+    if (!ownsLocalCapture()) return
+
+    const channel = currentState
+    activeRequest += 1
+    currentClaim = null
+    clearCapture()
+    publish({...channel, error: "taken_over", retryable: false, status: "taken_over"})
+  }
+
+  function ownsLocalCapture() {
+    return ["requesting", "capturing", "muted"].includes(currentState.status)
+  }
+
+  function handleClaim(claim) {
+    if (claim?.tabId === tabId || !ownsLocalCapture() || !claimIsNewer(claim, currentClaim)) return
+
+    releaseForTakeover()
+  }
+
+  function publishClaim(claim) {
+    try {
+      tabCoordination?.publish?.(claim)
+    } catch (_) {
+      // Same-tab capture remains usable when browser-local coordination is unavailable.
+    }
+  }
+
+  function startCapture(channel) {
+    const claim = {tabId, timestamp: now()}
+    currentClaim = claim
+    const capture = requestCapture(channel)
+    publishClaim(claim)
+    return capture
   }
 
   function handleTrackEnded() {
@@ -65,6 +105,12 @@ export function createVoiceController({
       })
   }
 
+  try {
+    tabCoordination?.subscribe?.(handleClaim)
+  } catch (_) {
+    // Browser-local coordination is best effort; capture does not depend on it.
+  }
+
   return {
     state() {
       return currentState
@@ -78,10 +124,10 @@ export function createVoiceController({
 
     join(channel) {
       if (currentState.status === "requesting") return Promise.resolve()
-      if (currentState.channelId === channel.id) return Promise.resolve()
+      if (currentState.channelId === channel.id && ownsLocalCapture()) return Promise.resolve()
 
       this.leave()
-      return requestCapture(normalizeChannel(channel))
+      return startCapture(normalizeChannel(channel))
     },
 
     retry() {
@@ -89,7 +135,7 @@ export function createVoiceController({
 
       const channel = normalizeChannel(currentState)
       this.leave()
-      return requestCapture(channel)
+      return startCapture(channel)
     },
 
     toggleMute() {
@@ -104,13 +150,54 @@ export function createVoiceController({
 
     leave() {
       activeRequest += 1
+      currentClaim = null
       clearCapture()
       publish(idleState())
     },
 
     teardown() {
       this.leave()
+      try {
+        tabCoordination?.close?.()
+      } catch (_) {
+        // Browser teardown must not fail because a coordination channel cannot close.
+      }
     },
+  }
+}
+
+function claimIsNewer(candidate, current) {
+  if (!current || typeof candidate?.timestamp !== "number" || typeof candidate?.tabId !== "string") return false
+  if (candidate.timestamp !== current.timestamp) return candidate.timestamp > current.timestamp
+  return candidate.tabId > current.tabId
+}
+
+function createTabId() {
+  return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`
+}
+
+function createBroadcastTabCoordination() {
+  if (typeof globalThis.BroadcastChannel !== "function") return null
+
+  try {
+    const channel = new globalThis.BroadcastChannel("discord-clone-voice-owner-tab")
+    channel.unref?.()
+
+    return {
+      publish(claim) {
+        channel.postMessage(claim)
+      },
+      subscribe(listener) {
+        const handleMessage = event => listener(event.data)
+        channel.addEventListener("message", handleMessage)
+        return () => channel.removeEventListener("message", handleMessage)
+      },
+      close() {
+        channel.close()
+      },
+    }
+  } catch (_) {
+    return null
   }
 }
 

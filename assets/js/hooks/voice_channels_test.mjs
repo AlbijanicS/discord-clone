@@ -118,6 +118,11 @@ test("the Voice Channel UI renders its controller lifecycle and sends a Voice Ch
   document.dispatch("click", {target: retryButton})
   assert.deepEqual(calls.at(-1), {name: "retry"})
 
+  emit({channelId: "voice-1", channelName: "lobby", error: "taken_over", retryable: false, status: "taken_over", workspaceId: "workspace-1"})
+  assert.equal(status.textContent, "Voice moved to another tab.")
+  assert.equal(controls.hidden, true)
+  assert.equal(retryControls.hidden, true)
+
   emit({channelId: "voice-1", channelName: "lobby", status: "capturing", workspaceId: "workspace-1"})
   assert.equal(status.textContent, "Capturing microphone in lobby.")
   assert.equal(controls.hidden, false)

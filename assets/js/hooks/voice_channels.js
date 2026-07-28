@@ -68,6 +68,7 @@ function statusMessage(state) {
   if (state.status === "insecure_context") return "Microphone capture needs a secure connection. Use HTTPS outside localhost."
   if (state.status === "unsupported") return "This browser does not support microphone capture."
   if (state.status === "externally_ended") return `Microphone capture ended unexpectedly in ${state.channelName}. Retry to reconnect.`
+  if (state.status === "taken_over") return "Voice moved to another tab."
   if (state.status === "unknown_error") return "Microphone capture could not start. Retry to try again."
   return "Voice is not connected."
 }

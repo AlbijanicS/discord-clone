@@ -40,6 +40,7 @@ export function createVoiceControls(controller) {
       const mute = this.el.querySelector("[data-voice-controls-mute]")
       const popover = this.el.querySelector("[data-voice-controls-popover]")
       const retry = this.el.querySelector("[data-voice-controls-retry]")
+      const localActions = this.el.querySelector("[data-voice-controls-local-actions]")
 
       channel.textContent = state.channelName || "Voice Channel"
       status.textContent = railStatusMessage(state)
@@ -47,6 +48,7 @@ export function createVoiceControls(controller) {
       mute.setAttribute("aria-pressed", String(state.status === "muted"))
 
       retry.hidden = !state.retryable
+      localActions.hidden = state.status === "taken_over"
       if (state.error) this.popoverOpen = true
       if (!visible) this.popoverOpen = false
       popover.hidden = !this.popoverOpen
@@ -63,6 +65,7 @@ function railStatusMessage(state) {
   if (state.status === "insecure_context") return "Microphone capture needs HTTPS outside localhost."
   if (state.status === "unsupported") return "This browser does not support microphone capture."
   if (state.status === "externally_ended") return "Microphone capture ended unexpectedly. Retry to reconnect."
+  if (state.status === "taken_over") return "Voice moved to another tab"
   if (state.status === "unknown_error") return "Microphone capture could not start. Retry to try again."
   return "Voice is not connected"
 }

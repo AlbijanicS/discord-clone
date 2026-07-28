@@ -46,6 +46,52 @@ function stream(...tracks) {
   }
 }
 
+function tabNetwork() {
+  const listeners = new Set()
+
+  return {
+    connect() {
+      let listener
+
+      return {
+        publish(claim) {
+          listeners.forEach(nextListener => nextListener(claim))
+        },
+        subscribe(nextListener) {
+          listener = nextListener
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+        close() {
+          if (listener) listeners.delete(listener)
+        },
+      }
+    },
+  }
+}
+
+function queuedTabNetwork() {
+  const listeners = new Set()
+  const claims = []
+
+  return {
+    connect() {
+      return {
+        publish(claim) {
+          claims.push(claim)
+        },
+        subscribe(listener) {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+      }
+    },
+    deliver(order) {
+      order.forEach(index => listeners.forEach(listener => listener(claims[index])))
+    },
+  }
+}
+
 test("a Voice Channel click requests capture, mutes, unmutes, and leaves without another prompt", async () => {
   const capture = deferred()
   let captureRequests = 0
@@ -240,4 +286,136 @@ test("an externally ended track and repeated teardown release all local ownershi
   controller.teardown()
   controller.teardown()
   assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", workspaceId: null})
+})
+
+test("a newer Voice Owner Tab claim releases active capture and explains the takeover", async () => {
+  const network = tabNetwork()
+  const microphoneTrack = track()
+  const first = createVoiceController({
+    mediaDevices: {getUserMedia: () => Promise.resolve(stream(microphoneTrack))},
+    tabCoordination: network.connect(),
+    tabId: "tab-a",
+    now: () => 100,
+  })
+  const second = createVoiceController({
+    mediaDevices: {getUserMedia: () => Promise.resolve(stream(track()))},
+    tabCoordination: network.connect(),
+    tabId: "tab-b",
+    now: () => 101,
+  })
+
+  await first.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+  await second.join({id: "voice-2", name: "standup", workspaceId: "workspace-1"})
+
+  assert.equal(microphoneTrack.stopped, true)
+  assert.deepEqual(first.state(), {
+    channelId: "voice-1",
+    channelName: "lobby",
+    error: "taken_over",
+    retryable: false,
+    status: "taken_over",
+    workspaceId: "workspace-1",
+  })
+  assert.equal(second.state().status, "capturing")
+})
+
+test("a remote claim invalidates a pending request and stops its late stream", async () => {
+  const network = tabNetwork()
+  const capture = deferred()
+  const lateTrack = track()
+  const first = createVoiceController({
+    mediaDevices: {getUserMedia: () => capture.promise},
+    tabCoordination: network.connect(),
+    tabId: "tab-a",
+    now: () => 100,
+  })
+  const second = createVoiceController({
+    mediaDevices: {getUserMedia: () => Promise.resolve(stream(track()))},
+    tabCoordination: network.connect(),
+    tabId: "tab-b",
+    now: () => 101,
+  })
+
+  const join = first.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+  await second.join({id: "voice-2", name: "standup", workspaceId: "workspace-1"})
+  capture.resolve(stream(lateTrack))
+  await join
+
+  assert.equal(first.state().status, "taken_over")
+  assert.equal(lateTrack.stopped, true)
+})
+
+test("claim arbitration uses tab ID for equal timestamps without takeover ping-pong", async () => {
+  const network = tabNetwork()
+  const firstTrack = track()
+  const secondTrack = track()
+  const first = createVoiceController({
+    mediaDevices: {getUserMedia: () => Promise.resolve(stream(firstTrack))},
+    tabCoordination: network.connect(),
+    tabId: "tab-a",
+    now: () => 100,
+  })
+  const second = createVoiceController({
+    mediaDevices: {getUserMedia: () => Promise.resolve(stream(secondTrack))},
+    tabCoordination: network.connect(),
+    tabId: "tab-b",
+    now: () => 100,
+  })
+
+  await first.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+  await second.join({id: "voice-2", name: "standup", workspaceId: "workspace-1"})
+
+  assert.equal(first.state().status, "taken_over")
+  assert.equal(firstTrack.stopped, true)
+  assert.equal(second.state().status, "capturing")
+  assert.equal(secondTrack.stopped, false)
+})
+
+test("simultaneous claims converge on the same tab regardless of delivery order", () => {
+  for (const order of [[0, 1], [1, 0]]) {
+    const network = queuedTabNetwork()
+    const first = createVoiceController({
+      mediaDevices: {getUserMedia: () => new Promise(() => {})},
+      tabCoordination: network.connect(),
+      tabId: "tab-a",
+      now: () => 100,
+    })
+    const second = createVoiceController({
+      mediaDevices: {getUserMedia: () => new Promise(() => {})},
+      tabCoordination: network.connect(),
+      tabId: "tab-b",
+      now: () => 100,
+    })
+
+    first.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+    second.join({id: "voice-2", name: "standup", workspaceId: "workspace-1"})
+    network.deliver(order)
+
+    assert.equal(first.state().status, "taken_over")
+    assert.equal(second.state().status, "requesting")
+  }
+})
+
+test("older claims and unavailable tab coordination leave local capture safe and usable", async () => {
+  const microphoneTrack = track()
+  let deliverClaim
+  const controller = createVoiceController({
+    mediaDevices: {getUserMedia: () => Promise.resolve(stream(microphoneTrack))},
+    tabCoordination: {
+      publish() { throw new Error("blocked") },
+      subscribe(listener) {
+        deliverClaim = listener
+      },
+    },
+    tabId: "tab-b",
+    now: () => 100,
+  })
+
+  await controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+  assert.equal(controller.state().status, "capturing")
+
+  // A stale message delivered by a transport that becomes available later cannot steal capture.
+  deliverClaim({tabId: "tab-a", timestamp: 99})
+  assert.equal(controller.state().status, "capturing")
+  assert.equal(microphoneTrack.stopped, false)
 })
