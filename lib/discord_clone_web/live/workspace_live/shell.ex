@@ -343,82 +343,132 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                   <.icon name="hero-plus" class="size-3.5" />
                 </button>
               </div>
-              <div id="voice-channels" phx-update="stream" class="mt-2 space-y-1">
+              <div id="voice-channel-controls" class="mt-2">
                 <div
-                  id="voice-channel-list-empty-state"
-                  class="hidden only:block text-sm text-base-content/60"
+                  id="voice-channel-local-state"
+                  phx-hook="VoiceChannels"
+                  phx-update="ignore"
                 >
-                  No voice channels yet.
-                </div>
-                <div :for={{dom_id, voice_channel} <- @voice_channel_stream || []} id={dom_id}>
                   <div
-                    id={"voice-channel-#{voice_channel.id}"}
-                    class="group relative flex items-center rounded-md text-sm text-base-content/70 transition hover:bg-base-300 hover:text-base-content"
+                    id="voice-channel-status"
+                    data-voice-channel-status
+                    role="status"
+                    aria-live="polite"
+                    class="mb-2 text-xs text-base-content/60"
                   >
-                    <%= if @renaming_voice_channel_id == voice_channel.id && @voice_channel_rename_form do %>
-                      <.form
-                        for={@voice_channel_rename_form}
-                        id={"voice-channel-#{voice_channel.id}-rename-form"}
-                        phx-submit="rename_voice_channel"
-                        phx-value-voice_channel_id={voice_channel.id}
-                        class="min-w-0 flex-1 px-2 py-1"
-                      >
-                        <.input
-                          field={@voice_channel_rename_form[:name]}
-                          type="text"
-                          label="Voice channel name"
-                          autocomplete="off"
-                        />
-                      </.form>
-                    <% else %>
-                      <span class="min-w-0 flex-1 truncate py-2 pl-3 pr-10">
-                        <.icon name="hero-speaker-wave" class="mr-2 inline size-4" />{voice_channel.name}
-                      </span>
-                    <% end %>
+                    Voice is not connected.
+                  </div>
+                  <div
+                    id="voice-channel-local-controls"
+                    data-voice-channel-local-controls
+                    hidden
+                    class="mt-3 flex gap-2"
+                  >
                     <button
-                      :if={
-                        @voice_channel_form &&
-                          (can_rename_voice_channel?(@selected_workspace, @current_scope) ||
-                             can_delete_voice_channel?(@selected_workspace, @current_scope))
-                      }
-                      id={"voice-channel-#{voice_channel.id}-actions"}
+                      id="voice-channel-mute"
                       type="button"
-                      class="btn btn-square btn-xs btn-ghost absolute right-1 top-1/2 -translate-y-1/2 opacity-70 transition hover:opacity-100"
-                      phx-click="open_voice_channel_actions"
-                      phx-value-voice_channel_id={voice_channel.id}
-                      aria-label={"Open #{voice_channel.name} voice channel actions"}
+                      data-voice-channel-mute
+                      aria-pressed="false"
+                      class="btn btn-sm btn-ghost"
                     >
-                      <.icon name="hero-ellipsis-horizontal" class="size-4" />
+                      Mute
                     </button>
-                    <div
-                      :if={@voice_channel_action_menu_id == voice_channel.id}
-                      id={"voice-channel-#{voice_channel.id}-menu"}
-                      class="absolute right-0 top-8 z-30 w-36 rounded border border-base-300 bg-base-100 p-1 shadow-lg"
-                      phx-click-away="close_voice_channel_context_menu"
-                      phx-window-keydown="close_voice_channel_context_menu"
-                      phx-key="escape"
+                    <button
+                      id="voice-channel-leave"
+                      type="button"
+                      data-voice-channel-leave
+                      class="btn btn-sm btn-error"
                     >
+                      Leave Voice
+                    </button>
+                  </div>
+                </div>
+                <div id="voice-channels" phx-update="stream" class="space-y-1">
+                  <div
+                    id="voice-channel-list-empty-state"
+                    class="hidden only:block text-sm text-base-content/60"
+                  >
+                    No voice channels yet.
+                  </div>
+                  <div :for={{dom_id, voice_channel} <- @voice_channel_stream || []} id={dom_id}>
+                    <div
+                      id={"voice-channel-#{voice_channel.id}"}
+                      class="group relative flex items-center rounded-md text-sm text-base-content/70 transition hover:bg-base-300 hover:text-base-content"
+                    >
+                      <%= if @renaming_voice_channel_id == voice_channel.id && @voice_channel_rename_form do %>
+                        <.form
+                          for={@voice_channel_rename_form}
+                          id={"voice-channel-#{voice_channel.id}-rename-form"}
+                          phx-submit="rename_voice_channel"
+                          phx-value-voice_channel_id={voice_channel.id}
+                          class="min-w-0 flex-1 px-2 py-1"
+                        >
+                          <.input
+                            field={@voice_channel_rename_form[:name]}
+                            type="text"
+                            label="Voice channel name"
+                            autocomplete="off"
+                          />
+                        </.form>
+                      <% else %>
+                        <button
+                          id={"voice-channel-#{voice_channel.id}-join"}
+                          type="button"
+                          data-voice-channel-join
+                          data-voice-channel-id={voice_channel.id}
+                          data-voice-channel-name={voice_channel.name}
+                          aria-label={"Join voice channel #{voice_channel.name}"}
+                          aria-pressed="false"
+                          class="min-w-0 flex-1 truncate rounded-md py-2 pl-3 pr-10 text-left transition hover:bg-base-300"
+                        >
+                          <.icon name="hero-speaker-wave" class="mr-2 inline size-4" />{voice_channel.name}
+                        </button>
+                      <% end %>
                       <button
-                        :if={can_rename_voice_channel?(@selected_workspace, @current_scope)}
-                        id={"voice-channel-#{voice_channel.id}-rename"}
+                        :if={
+                          @voice_channel_form &&
+                            (can_rename_voice_channel?(@selected_workspace, @current_scope) ||
+                               can_delete_voice_channel?(@selected_workspace, @current_scope))
+                        }
+                        id={"voice-channel-#{voice_channel.id}-actions"}
                         type="button"
-                        class="block w-full rounded px-3 py-2 text-left text-sm transition hover:bg-base-200"
-                        phx-click="begin_voice_channel_rename"
+                        class="btn btn-square btn-xs btn-ghost absolute right-1 top-1/2 -translate-y-1/2 opacity-70 transition hover:opacity-100"
+                        phx-click="open_voice_channel_actions"
                         phx-value-voice_channel_id={voice_channel.id}
+                        aria-label={"Open #{voice_channel.name} voice channel actions"}
                       >
-                        Rename
+                        <.icon name="hero-ellipsis-horizontal" class="size-4" />
                       </button>
-                      <button
-                        :if={can_delete_voice_channel?(@selected_workspace, @current_scope)}
-                        id={"voice-channel-#{voice_channel.id}-delete"}
-                        type="button"
-                        class="block w-full rounded px-3 py-2 text-left text-sm text-error transition hover:bg-error/10"
-                        phx-click="delete_voice_channel"
-                        phx-value-voice_channel_id={voice_channel.id}
-                        phx-confirm="Delete this voice channel? This cannot be undone."
+                      <div
+                        :if={@voice_channel_action_menu_id == voice_channel.id}
+                        id={"voice-channel-#{voice_channel.id}-menu"}
+                        class="absolute right-0 top-8 z-30 w-36 rounded border border-base-300 bg-base-100 p-1 shadow-lg"
+                        phx-click-away="close_voice_channel_context_menu"
+                        phx-window-keydown="close_voice_channel_context_menu"
+                        phx-key="escape"
                       >
-                        Delete
-                      </button>
+                        <button
+                          :if={can_rename_voice_channel?(@selected_workspace, @current_scope)}
+                          id={"voice-channel-#{voice_channel.id}-rename"}
+                          type="button"
+                          class="block w-full rounded px-3 py-2 text-left text-sm transition hover:bg-base-200"
+                          phx-click="begin_voice_channel_rename"
+                          phx-value-voice_channel_id={voice_channel.id}
+                        >
+                          Rename
+                        </button>
+                        <button
+                          :if={can_delete_voice_channel?(@selected_workspace, @current_scope)}
+                          id={"voice-channel-#{voice_channel.id}-delete"}
+                          type="button"
+                          class="block w-full rounded px-3 py-2 text-left text-sm text-error transition hover:bg-error/10"
+                          phx-click="delete_voice_channel"
+                          phx-value-voice_channel_id={voice_channel.id}
+                          phx-confirm="Delete this voice channel? This cannot be undone."
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>

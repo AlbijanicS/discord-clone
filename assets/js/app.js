@@ -28,12 +28,14 @@ import ChannelMessages from "./hooks/channel_messages"
 import ClipboardCopy from "./hooks/clipboard_copy"
 import MessageActionsMenu from "./hooks/message_actions_menu"
 import MessageComposer from "./hooks/message_composer"
+import VoiceChannels from "./hooks/voice_channels"
 
 const Hooks = {
   ChannelMessages,
   ClipboardCopy,
   MessageActionsMenu,
   MessageComposer,
+  VoiceChannels,
 
   ContextMenu: {
     mounted() {

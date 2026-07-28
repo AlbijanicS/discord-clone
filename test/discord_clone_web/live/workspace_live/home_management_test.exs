@@ -12,7 +12,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
   describe "workspace and channel management" do
     setup :register_and_log_in_user
 
-    test "shows a distinct display-only voice channel section and owner controls", %{
+    test "shows an accessible browser-owned Voice Channel join surface and owner controls", %{
       conn: conn,
       scope: scope
     } do
@@ -25,8 +25,23 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
         live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
 
       assert has_element?(view, "#voice-channels")
+
+      assert has_element?(
+               view,
+               "#voice-channel-local-state[phx-hook='VoiceChannels'][phx-update='ignore']"
+             )
+
+      assert has_element?(view, "#voice-channel-status[role='status'][aria-live='polite']")
       assert has_element?(view, "#voice-channel-#{voice_channel.id}", "lobby")
-      refute has_element?(view, "a#voice-channel-#{voice_channel.id}")
+
+      assert has_element?(
+               view,
+               "#voice-channel-#{voice_channel.id}-join[type='button'][aria-label='Join voice channel lobby'][aria-pressed='false']"
+             )
+
+      assert has_element?(view, "#voice-channel-local-controls[hidden]")
+      assert has_element?(view, "#voice-channel-mute[aria-pressed='false']")
+      assert has_element?(view, "#voice-channel-leave")
       assert has_element?(view, "#voice-channel-create-toggle")
     end
 
