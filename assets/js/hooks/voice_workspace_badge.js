@@ -5,7 +5,7 @@ export function createVoiceWorkspaceBadge(controller) {
     mounted() {
       this.handleClick = () => {
         this.el.setAttribute("aria-expanded", "true")
-        window.dispatchEvent(new Event("voice-controls:open"))
+        window.dispatchEvent(new CustomEvent("voice-controls:open", {detail: {trigger: this.el}}))
       }
       this.el.addEventListener("click", this.handleClick)
       this.unsubscribe = controller.subscribe(state => this.renderState(state))

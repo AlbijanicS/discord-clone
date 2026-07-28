@@ -28,6 +28,21 @@ defmodule DiscordCloneWeb.DirectMessagesDestinationTest do
 
     assert has_element?(
              workspace_view,
+             "#global-voice-controls-status[role='status'][aria-live='polite']"
+           )
+
+    assert has_element?(
+             workspace_view,
+             "#global-voice-controls-announcement[role='status'][aria-live='polite']"
+           )
+
+    assert has_element?(
+             workspace_view,
+             "#global-voice-controls-close[type='button'][data-voice-controls-close][aria-label='Close Voice controls']"
+           )
+
+    assert has_element?(
+             workspace_view,
              "#voice-lifecycle[phx-hook='VoiceLifecycle'][phx-update='ignore'][hidden]"
            )
 

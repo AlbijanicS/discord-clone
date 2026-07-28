@@ -9,7 +9,13 @@ const {createVoiceWorkspaceBadge} = await import(hookModuleUrl)
 test("a Workspace badge only appears for its active Voice Channel Workspace and opens the shared controls", () => {
   let listener
   const events = []
-  globalThis.window = {dispatchEvent(event) { events.push(event.type) }}
+  globalThis.CustomEvent = class extends Event {
+    constructor(type, {detail}) {
+      super(type)
+      this.detail = detail
+    }
+  }
+  globalThis.window = {dispatchEvent(event) { events.push(event) }}
   const controller = {
     subscribe(nextListener) {
       listener = nextListener
@@ -43,7 +49,8 @@ test("a Workspace badge only appears for its active Voice Channel Workspace and 
   assert.equal(hook.el.hidden, false)
 
   hook.handleClick()
-  assert.deepEqual(events, ["voice-controls:open"])
+  assert.equal(events[0].type, "voice-controls:open")
+  assert.equal(events[0].detail.trigger, hook.el)
   assert.equal(hook.el["aria-expanded"], "true")
 
   listener({channelId: null, channelName: null, status: "idle", workspaceId: null})

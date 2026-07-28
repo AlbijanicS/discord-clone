@@ -175,6 +175,14 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
           phx-update="ignore"
           class="relative mb-3 shrink-0"
         >
+          <p
+            id="global-voice-controls-announcement"
+            data-voice-controls-announcement
+            role="status"
+            aria-live="polite"
+            class="sr-only"
+          >
+          </p>
           <section
             id="global-voice-controls-popover"
             data-voice-controls-popover
@@ -188,12 +196,22 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
             </p>
             <p data-voice-controls-channel class="mt-1 truncate text-sm font-bold"></p>
             <p
+              id="global-voice-controls-status"
               data-voice-controls-status
               role="status"
               aria-live="polite"
               class="mt-1 text-xs text-base-content/60"
             >
             </p>
+            <button
+              id="global-voice-controls-close"
+              type="button"
+              data-voice-controls-close
+              aria-label="Close Voice controls"
+              class="absolute right-2 top-2 inline-flex size-8 items-center justify-center rounded-lg text-base-content/60 transition hover:bg-base-200 hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+            >
+              <.icon name="hero-x-mark" class="size-4" />
+            </button>
             <div data-voice-controls-local-actions class="mt-4 flex gap-2">
               <button
                 id="global-voice-controls-retry"
