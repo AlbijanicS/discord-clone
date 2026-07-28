@@ -46,6 +46,20 @@ _Avoid_: Thread, chatroom
 A named conversation space inside a workspace.
 _Avoid_: Room
 
+**Voice Channel**:
+A durable, named audio space inside a Workspace. A Voice Channel is not a
+Conversation and does not contain Messages.
+_Avoid_: Voice Conversation, Voice Room
+
+**Voice Session**:
+An active browser audio connection by one User inside one Voice Channel.
+_Avoid_: Participant, membership
+
+**Voice Owner Tab**:
+The browser tab that owns a User's active Voice Session and continues playing
+voice audio while that tab remains connected.
+_Avoid_: Voice browser, active tab
+
 **Direct Conversation**:
 A private conversation between exactly two Friends that does not belong to a Workspace.
 _Avoid_: DM Channel, private Channel, private chat
@@ -148,6 +162,23 @@ _Avoid_: Unread range
 - A **Workspace** contains one or more **Channels** when created through the
   public workspace workflow
 - A **Channel** and a **Direct Conversation** are each a **Conversation**
+- A **Workspace** may contain **Voice Channels**
+- A **Voice Channel** belongs to one **Workspace**
+- A **Voice Channel** is not a **Conversation**
+- A **Voice Channel** does not contain **Messages**
+- Workspace Owners and Admins may create **Voice Channels**
+- Workspace Owners and Admins may rename **Voice Channels**
+- Workspace Members may view **Voice Channels** in their **Workspace**
+- Only a Workspace Owner may delete a **Voice Channel**
+- A **Voice Channel** name is unique among a Workspace's Voice Channels, but may
+  match a Channel name in that Workspace
+- A **Voice Session** belongs to one **Voice Channel**
+- A **Voice Session** is runtime state, not durable membership
+- A **Voice Session** represents one browser audio connection
+- A User may have at most one active **Voice Session** across the app
+- A **Voice Session** is controlled by one **Voice Owner Tab**
+- A User may continue using the app from other browser tabs while one
+  **Voice Owner Tab** remains connected to voice
 - A **Conversation** contains **Messages**
 - A **Message Reply** references a **Message** in the same **Conversation**
 - A **Message Reply** does not create a thread or nested conversation
@@ -189,8 +220,7 @@ _Avoid_: Unread range
 - Deleting the message referenced by a **Message Reply** preserves the reply and
   replaces its quoted preview with a deleted-message placeholder
 - A deleted message cannot become the target of a new **Message Reply**
-- A **Workspace Member** may create **Channels** until role-specific channel
-  permissions are introduced
+- Only Workspace Owners and Admins may create **Channels**
 - A **User** who is not a **Workspace Member** must not be able to view or
   mutate that **Workspace**
 - Creating a **Channel** does not select or change the **Landing Channel**
