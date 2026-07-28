@@ -7,7 +7,11 @@ export function createVoiceChannels(controller) {
       const joinButton = event.target.closest("[data-voice-channel-join]")
 
       if (joinButton) {
-        controller.join({id: joinButton.dataset.voiceChannelId, name: joinButton.dataset.voiceChannelName})
+        controller.join({
+          id: joinButton.dataset.voiceChannelId,
+          name: joinButton.dataset.voiceChannelName,
+          workspaceId: joinButton.dataset.workspaceId,
+        })
         return
       }
 
@@ -43,6 +47,7 @@ export function createVoiceChannels(controller) {
     controls.hidden = !["capturing", "muted"].includes(state.status)
     muteButton.textContent = state.status === "muted" ? "Unmute" : "Mute"
     muteButton.setAttribute("aria-pressed", String(state.status === "muted"))
+
   },
   }
 }

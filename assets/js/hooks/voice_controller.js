@@ -35,7 +35,12 @@ export function createVoiceController({mediaDevices = navigator.mediaDevices} = 
 
       this.leave()
       const request = ++activeRequest
-      publish({channelId: channel.id, channelName: channel.name, status: "requesting"})
+      publish({
+        channelId: channel.id,
+        channelName: channel.name,
+        status: "requesting",
+        workspaceId: channel.workspaceId || null,
+      })
 
       try {
         const mediaStream = await mediaDevices.getUserMedia({audio: true})
@@ -47,7 +52,12 @@ export function createVoiceController({mediaDevices = navigator.mediaDevices} = 
         }
 
         audioTracks = tracks
-        publish({channelId: channel.id, channelName: channel.name, status: "capturing"})
+        publish({
+          channelId: channel.id,
+          channelName: channel.name,
+          status: "capturing",
+          workspaceId: channel.workspaceId || null,
+        })
       } catch (_error) {
         if (request === activeRequest) {
           publish(idleState())
@@ -75,7 +85,7 @@ export function createVoiceController({mediaDevices = navigator.mediaDevices} = 
 }
 
 function idleState() {
-  return {channelId: null, channelName: null, status: "idle"}
+  return {channelId: null, channelName: null, status: "idle", workspaceId: null}
 }
 
 const voiceController = createVoiceController()

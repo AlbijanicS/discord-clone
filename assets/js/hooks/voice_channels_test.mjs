@@ -23,7 +23,7 @@ function eventTarget() {
 }
 
 function mountVoiceChannels() {
-  let currentState = {channelId: null, channelName: null, status: "idle"}
+  let currentState = {channelId: null, channelName: null, status: "idle", workspaceId: null}
   let listener
   const calls = []
   const status = {textContent: ""}
@@ -90,31 +90,31 @@ test("the Voice Channel UI renders its controller lifecycle and sends a Voice Ch
   assert.equal(controls.hidden, true)
 
   const joinButton = {
-    dataset: {voiceChannelId: "voice-1", voiceChannelName: "lobby"},
+    dataset: {voiceChannelId: "voice-1", voiceChannelName: "lobby", workspaceId: "workspace-1"},
     closest(selector) {
       return selector === "[data-voice-channel-join]" ? this : null
     },
   }
 
   document.dispatch("click", {target: joinButton})
-  assert.deepEqual(calls, [{name: "join", value: {id: "voice-1", name: "lobby"}}])
+  assert.deepEqual(calls, [{name: "join", value: {id: "voice-1", name: "lobby", workspaceId: "workspace-1"}}])
 
-  emit({channelId: "voice-1", channelName: "lobby", status: "requesting"})
+  emit({channelId: "voice-1", channelName: "lobby", status: "requesting", workspaceId: "workspace-1"})
   assert.equal(status.textContent, "Requesting microphone for lobby.")
   assert.equal(controls.hidden, true)
 
-  emit({channelId: "voice-1", channelName: "lobby", status: "capturing"})
+  emit({channelId: "voice-1", channelName: "lobby", status: "capturing", workspaceId: "workspace-1"})
   assert.equal(status.textContent, "Capturing microphone in lobby.")
   assert.equal(controls.hidden, false)
   assert.equal(muteButton.textContent, "Mute")
   assert.equal(muteButton["aria-pressed"], "false")
 
-  emit({channelId: "voice-1", channelName: "lobby", status: "muted"})
+  emit({channelId: "voice-1", channelName: "lobby", status: "muted", workspaceId: "workspace-1"})
   assert.equal(status.textContent, "Microphone muted in lobby.")
   assert.equal(muteButton.textContent, "Unmute")
   assert.equal(muteButton["aria-pressed"], "true")
 
-  emit({channelId: null, channelName: null, status: "idle"})
+  emit({channelId: null, channelName: null, status: "idle", workspaceId: null})
   assert.equal(status.textContent, "Voice is not connected.")
   assert.equal(controls.hidden, true)
 

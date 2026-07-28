@@ -37,8 +37,10 @@ function stream(...tracks) {
 
 test("a Voice Channel click requests capture, mutes, unmutes, and leaves without another prompt", async () => {
   const capture = deferred()
+  let captureRequests = 0
   const mediaDevices = {
     getUserMedia(constraints) {
+      captureRequests += 1
       assert.deepEqual(constraints, {audio: true})
       return capture.promise
     },
@@ -47,18 +49,25 @@ test("a Voice Channel click requests capture, mutes, unmutes, and leaves without
   const microphoneTrack = track()
   const secondaryTrack = track()
 
-  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle"})
+  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", workspaceId: null})
 
-  const join = controller.join({id: "voice-1", name: "lobby"})
+  const join = controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
   assert.deepEqual(controller.state(), {
     channelId: "voice-1",
     channelName: "lobby",
     status: "requesting",
+    workspaceId: "workspace-1",
   })
 
   capture.resolve(stream(microphoneTrack, secondaryTrack))
   await join
   assert.equal(controller.state().status, "capturing")
+
+  const reattachedState = []
+  const unsubscribe = controller.subscribe(state => reattachedState.push(state))
+  assert.deepEqual(reattachedState, [controller.state()])
+  assert.equal(captureRequests, 1)
+  unsubscribe()
 
   controller.toggleMute()
   assert.equal(controller.state().status, "muted")
@@ -69,7 +78,7 @@ test("a Voice Channel click requests capture, mutes, unmutes, and leaves without
   assert.equal(microphoneTrack.enabled, true)
 
   controller.leave()
-  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle"})
+  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", workspaceId: null})
   assert.equal(microphoneTrack.stopped, true)
   assert.equal(secondaryTrack.stopped, true)
 })
@@ -81,11 +90,11 @@ test("leaving while permission is pending stops a late stream instead of restori
   })
   const microphoneTrack = track()
 
-  const join = controller.join({id: "voice-1", name: "lobby"})
+  const join = controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
   controller.leave()
   capture.resolve(stream(microphoneTrack))
   await join
 
-  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle"})
+  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", workspaceId: null})
   assert.equal(microphoneTrack.stopped, true)
 })

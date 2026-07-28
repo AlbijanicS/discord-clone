@@ -21,6 +21,18 @@ defmodule DiscordCloneWeb.DirectMessagesDestinationTest do
 
     assert has_element?(
              workspace_view,
+             "#global-voice-controls[phx-hook='VoiceControls'][phx-update='ignore']"
+           )
+
+    assert has_element?(workspace_view, "#global-voice-controls-popover[role='dialog'][hidden]")
+
+    assert has_element?(
+             workspace_view,
+             "#workspace-#{workspace.id}-voice-badge[phx-hook='VoiceWorkspaceBadge'][phx-update='ignore'][aria-haspopup='dialog'][aria-controls='global-voice-controls-popover'][aria-expanded='false'][hidden]"
+           )
+
+    assert has_element?(
+             workspace_view,
              "#global-direct-messages-destination[href='/direct-messages'][aria-label='Direct Messages'][title='Direct Messages']"
            )
 
@@ -29,6 +41,12 @@ defmodule DiscordCloneWeb.DirectMessagesDestinationTest do
     {:ok, direct_view, _html} = live(conn, ~p"/direct-messages")
 
     assert has_element?(direct_view, "#global-destination-rail")
+
+    assert has_element?(
+             direct_view,
+             "#global-voice-controls[phx-hook='VoiceControls'][phx-update='ignore']"
+           )
+
     assert has_element?(direct_view, "#global-activity-bell[href='/activity']")
     assert has_element?(direct_view, "#workspace-create-toggle[title='Create workspace']")
     assert has_element?(direct_view, "#friends-members-sidebar[aria-label='Friends']")

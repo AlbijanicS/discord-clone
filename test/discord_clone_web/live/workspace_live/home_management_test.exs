@@ -34,9 +34,16 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
       assert has_element?(view, "#voice-channel-status[role='status'][aria-live='polite']")
       assert has_element?(view, "#voice-channel-#{voice_channel.id}", "lobby")
 
+      assert has_element?(view, "#voice-channel-#{voice_channel.id}[data-voice-channel-row]")
+
       assert has_element?(
                view,
-               "#voice-channel-#{voice_channel.id}-join[type='button'][aria-label='Join voice channel lobby'][aria-pressed='false']"
+               "#voice-channel-#{voice_channel.id}-active-indicator[phx-hook='VoiceChannelIndicator'][phx-update='ignore'][hidden]"
+             )
+
+      assert has_element?(
+               view,
+               "#voice-channel-#{voice_channel.id}-join[type='button'][aria-label='Join voice channel lobby'][aria-pressed='false'][data-workspace-id='#{workspace.id}']"
              )
 
       assert has_element?(view, "#voice-channel-local-controls[hidden]")

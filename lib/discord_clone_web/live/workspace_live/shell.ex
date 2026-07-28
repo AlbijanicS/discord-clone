@@ -393,6 +393,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                   <div :for={{dom_id, voice_channel} <- @voice_channel_stream || []} id={dom_id}>
                     <div
                       id={"voice-channel-#{voice_channel.id}"}
+                      data-voice-channel-row
                       class="group relative flex items-center rounded-md text-sm text-base-content/70 transition hover:bg-base-300 hover:text-base-content"
                     >
                       <%= if @renaming_voice_channel_id == voice_channel.id && @voice_channel_rename_form do %>
@@ -417,11 +418,22 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                           data-voice-channel-join
                           data-voice-channel-id={voice_channel.id}
                           data-voice-channel-name={voice_channel.name}
+                          data-workspace-id={@selected_workspace.id}
                           aria-label={"Join voice channel #{voice_channel.name}"}
                           aria-pressed="false"
                           class="min-w-0 flex-1 truncate rounded-md py-2 pl-3 pr-10 text-left transition hover:bg-base-300"
                         >
                           <.icon name="hero-speaker-wave" class="mr-2 inline size-4" />{voice_channel.name}
+                          <span
+                            id={"voice-channel-#{voice_channel.id}-active-indicator"}
+                            phx-hook="VoiceChannelIndicator"
+                            phx-update="ignore"
+                            data-voice-channel-id={voice_channel.id}
+                            class="ml-2 inline-flex rounded-full bg-success/15 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-success"
+                            hidden
+                          >
+                            Active
+                          </span>
                         </button>
                       <% end %>
                       <button

@@ -29,6 +29,9 @@ import ClipboardCopy from "./hooks/clipboard_copy"
 import MessageActionsMenu from "./hooks/message_actions_menu"
 import MessageComposer from "./hooks/message_composer"
 import VoiceChannels from "./hooks/voice_channels"
+import VoiceChannelIndicator from "./hooks/voice_channel_indicator"
+import VoiceControls from "./hooks/voice_controls"
+import VoiceWorkspaceBadge from "./hooks/voice_workspace_badge"
 
 const Hooks = {
   ChannelMessages,
@@ -36,6 +39,9 @@ const Hooks = {
   MessageActionsMenu,
   MessageComposer,
   VoiceChannels,
+  VoiceChannelIndicator,
+  VoiceControls,
+  VoiceWorkspaceBadge,
 
   ContextMenu: {
     mounted() {
