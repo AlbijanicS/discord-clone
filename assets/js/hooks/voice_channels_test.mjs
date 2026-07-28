@@ -28,6 +28,7 @@ function mountVoiceChannels() {
   const calls = []
   const status = {textContent: ""}
   const controls = {hidden: true}
+  const retryControls = {hidden: true}
   const muteButton = {
     textContent: "",
     setAttribute(name, value) {
@@ -42,6 +43,9 @@ function mountVoiceChannels() {
     },
     leave() {
       calls.push({name: "leave"})
+    },
+    retry() {
+      calls.push({name: "retry"})
     },
     state() {
       return currentState
@@ -61,6 +65,7 @@ function mountVoiceChannels() {
       querySelector(selector) {
         return {
           "[data-voice-channel-local-controls]": controls,
+          "[data-voice-channel-retry-controls]": retryControls,
           "[data-voice-channel-mute]": muteButton,
           "[data-voice-channel-status]": status,
         }[selector]
@@ -79,15 +84,17 @@ function mountVoiceChannels() {
     },
     hook,
     muteButton,
+    retryControls,
     status,
   }
 }
 
 test("the Voice Channel UI renders its controller lifecycle and sends a Voice Channel click to it", () => {
-  const {calls, controls, emit, hook, muteButton, status} = mountVoiceChannels()
+  const {calls, controls, emit, hook, muteButton, retryControls, status} = mountVoiceChannels()
 
   assert.equal(status.textContent, "Voice is not connected.")
   assert.equal(controls.hidden, true)
+  assert.equal(retryControls.hidden, true)
 
   const joinButton = {
     dataset: {voiceChannelId: "voice-1", voiceChannelName: "lobby", workspaceId: "workspace-1"},
@@ -102,6 +109,14 @@ test("the Voice Channel UI renders its controller lifecycle and sends a Voice Ch
   emit({channelId: "voice-1", channelName: "lobby", status: "requesting", workspaceId: "workspace-1"})
   assert.equal(status.textContent, "Requesting microphone for lobby.")
   assert.equal(controls.hidden, true)
+
+  emit({channelId: "voice-1", channelName: "lobby", retryable: true, status: "permission_denied", workspaceId: "workspace-1"})
+  assert.equal(status.textContent, "Microphone permission was denied. Check your browser settings, then retry.")
+  assert.equal(retryControls.hidden, false)
+
+  const retryButton = {closest: selector => selector === "[data-voice-channel-retry]" ? retryButton : null}
+  document.dispatch("click", {target: retryButton})
+  assert.deepEqual(calls.at(-1), {name: "retry"})
 
   emit({channelId: "voice-1", channelName: "lobby", status: "capturing", workspaceId: "workspace-1"})
   assert.equal(status.textContent, "Capturing microphone in lobby.")

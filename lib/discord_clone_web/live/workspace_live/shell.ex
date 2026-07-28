@@ -382,6 +382,21 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                       Leave Voice
                     </button>
                   </div>
+                  <div
+                    id="voice-channel-retry-controls"
+                    data-voice-channel-retry-controls
+                    hidden
+                    class="mt-3"
+                  >
+                    <button
+                      id="voice-channel-retry"
+                      type="button"
+                      data-voice-channel-retry
+                      class="btn btn-sm btn-primary"
+                    >
+                      Retry microphone
+                    </button>
+                  </div>
                 </div>
                 <div id="voice-channels" phx-update="stream" class="space-y-1">
                   <div
@@ -545,6 +560,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
             <.link
               href={~p"/users/log-out"}
               method="delete"
+              data-voice-logout
               class="btn btn-square btn-xs btn-ghost"
               aria-label="Log out"
             >

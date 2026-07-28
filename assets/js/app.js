@@ -32,6 +32,7 @@ import VoiceChannels from "./hooks/voice_channels"
 import VoiceChannelIndicator from "./hooks/voice_channel_indicator"
 import VoiceControls from "./hooks/voice_controls"
 import VoiceWorkspaceBadge from "./hooks/voice_workspace_badge"
+import VoiceLifecycle from "./hooks/voice_lifecycle"
 
 const Hooks = {
   ChannelMessages,
@@ -42,6 +43,7 @@ const Hooks = {
   VoiceChannelIndicator,
   VoiceControls,
   VoiceWorkspaceBadge,
+  VoiceLifecycle,
 
   ContextMenu: {
     mounted() {

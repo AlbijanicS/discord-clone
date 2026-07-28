@@ -28,6 +28,16 @@ defmodule DiscordCloneWeb.DirectMessagesDestinationTest do
 
     assert has_element?(
              workspace_view,
+             "#voice-lifecycle[phx-hook='VoiceLifecycle'][phx-update='ignore'][hidden]"
+           )
+
+    assert has_element?(
+             workspace_view,
+             "#global-voice-controls-retry[type='button'][data-voice-controls-retry][hidden]"
+           )
+
+    assert has_element?(
+             workspace_view,
              "#workspace-#{workspace.id}-voice-badge[phx-hook='VoiceWorkspaceBadge'][phx-update='ignore'][aria-haspopup='dialog'][aria-controls='global-voice-controls-popover'][aria-expanded='false'][hidden]"
            )
 
@@ -46,6 +56,8 @@ defmodule DiscordCloneWeb.DirectMessagesDestinationTest do
              direct_view,
              "#global-voice-controls[phx-hook='VoiceControls'][phx-update='ignore']"
            )
+
+    assert has_element?(direct_view, "[data-voice-logout]")
 
     assert has_element?(direct_view, "#global-activity-bell[href='/activity']")
     assert has_element?(direct_view, "#workspace-create-toggle[title='Create workspace']")

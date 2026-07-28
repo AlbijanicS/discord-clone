@@ -47,8 +47,11 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
              )
 
       assert has_element?(view, "#voice-channel-local-controls[hidden]")
+      assert has_element?(view, "#voice-channel-retry-controls[hidden]")
+      assert has_element?(view, "#voice-channel-retry[type='button'][data-voice-channel-retry]")
       assert has_element?(view, "#voice-channel-mute[aria-pressed='false']")
       assert has_element?(view, "#voice-channel-leave")
+      assert has_element?(view, "[data-voice-logout]")
       assert has_element?(view, "#voice-channel-create-toggle")
     end
 

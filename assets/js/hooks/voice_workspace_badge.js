@@ -20,9 +20,18 @@ export function createVoiceWorkspaceBadge(controller) {
       const active =
         ["requesting", "capturing", "muted"].includes(state.status) &&
           state.workspaceId === this.el.dataset.workspaceId
+      const attention = state.error && state.workspaceId === this.el.dataset.workspaceId
+      const microphone = this.el.querySelector("[data-voice-workspace-badge-microphone]")
+      const warning = this.el.querySelector("[data-voice-workspace-badge-warning]")
 
-      this.el.hidden = !active
-      if (!active) this.el.setAttribute("aria-expanded", "false")
+      this.el.hidden = !active && !attention
+      microphone.hidden = Boolean(attention)
+      warning.hidden = !attention
+      this.el.setAttribute(
+        "aria-label",
+        attention ? "Open Voice Channel issue" : "Open Voice Channel controls"
+      )
+      if (!active && !attention) this.el.setAttribute("aria-expanded", "false")
     },
   }
 }

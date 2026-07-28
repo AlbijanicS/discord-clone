@@ -169,6 +169,7 @@ defmodule DiscordCloneWeb.DirectMessagesLive.Shell do
             <.link
               href={~p"/users/log-out"}
               method="delete"
+              data-voice-logout
               class="btn btn-square btn-xs btn-ghost"
               aria-label="Log out"
             >

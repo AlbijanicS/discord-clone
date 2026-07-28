@@ -162,6 +162,14 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
         </div>
 
         <div
+          id="voice-lifecycle"
+          phx-hook="VoiceLifecycle"
+          phx-update="ignore"
+          hidden
+        >
+        </div>
+
+        <div
           id="global-voice-controls"
           phx-hook="VoiceControls"
           phx-update="ignore"
@@ -187,6 +195,15 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
             >
             </p>
             <div class="mt-4 flex gap-2">
+              <button
+                id="global-voice-controls-retry"
+                type="button"
+                data-voice-controls-retry
+                class="btn btn-sm btn-primary"
+                hidden
+              >
+                Retry microphone
+              </button>
               <button
                 id="global-voice-controls-mute"
                 type="button"
@@ -253,7 +270,10 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
               class="absolute -right-1 -top-1 flex size-5 items-center justify-center rounded-full bg-success text-success-content shadow-sm ring-2 ring-base-300 transition hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-success/60"
               hidden
             >
-              <.icon name="hero-microphone" class="size-3" />
+              <span data-voice-workspace-badge-microphone>
+                <.icon name="hero-microphone" class="size-3" />
+              </span>
+              <span data-voice-workspace-badge-warning class="font-bold" hidden>!</span>
             </button>
           </div>
         </div>

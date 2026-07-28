@@ -23,6 +23,9 @@ test("the active Voice Channel indicator immediately reflects controller state",
   listener({channelId: "voice-2", channelName: "standup", status: "muted", workspaceId: "workspace-1"})
   assert.equal(hook.el.hidden, false)
 
+  listener({channelId: "voice-2", channelName: "standup", retryable: true, status: "externally_ended", workspaceId: "workspace-1"})
+  assert.equal(hook.el.hidden, true)
+
   hook.destroyed()
   assert.equal(listener, null)
 })

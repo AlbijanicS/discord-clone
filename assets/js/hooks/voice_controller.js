@@ -1,4 +1,7 @@
-export function createVoiceController({mediaDevices = navigator.mediaDevices} = {}) {
+export function createVoiceController({
+  mediaDevices = globalThis.navigator?.mediaDevices,
+  secureContext = globalThis.isSecureContext,
+} = {}) {
   let activeRequest = 0
   let audioTracks = []
   let currentState = idleState()
@@ -10,7 +13,56 @@ export function createVoiceController({mediaDevices = navigator.mediaDevices} = 
   }
 
   function stopTracks(tracks = audioTracks) {
-    tracks.forEach(track => track.stop())
+    tracks.forEach(track => {
+      track.removeEventListener?.("ended", handleTrackEnded)
+      track.stop()
+    })
+  }
+
+  function clearCapture() {
+    stopTracks()
+    audioTracks = []
+  }
+
+  function handleTrackEnded() {
+    if (audioTracks.length === 0) return
+
+    const channel = currentState
+    activeRequest += 1
+    clearCapture()
+    publish({...channel, error: "externally_ended", retryable: true, status: "externally_ended"})
+  }
+
+  function requestCapture(channel) {
+    const request = ++activeRequest
+    publish({...channel, status: "requesting"})
+
+    if (!mediaDevices?.getUserMedia) {
+      publish(failureState(channel, "unsupported"))
+      return Promise.resolve()
+    }
+
+    if (secureContext === false) {
+      publish(failureState(channel, "insecure_context"))
+      return Promise.resolve()
+    }
+
+    return mediaDevices.getUserMedia({audio: true})
+      .then(mediaStream => {
+        const tracks = mediaStream.getAudioTracks()
+
+        if (request !== activeRequest) {
+          stopTracks(tracks)
+          return
+        }
+
+        audioTracks = tracks
+        audioTracks.forEach(track => track.addEventListener?.("ended", handleTrackEnded))
+        publish({...channel, status: "capturing"})
+      })
+      .catch(error => {
+        if (request === activeRequest) publish(failureState(channel, failureFor(error)))
+      })
   }
 
   return {
@@ -24,45 +76,20 @@ export function createVoiceController({mediaDevices = navigator.mediaDevices} = 
       return () => listeners.delete(listener)
     },
 
-    async join(channel) {
-      if (currentState.status === "requesting") {
-        return
-      }
-
-      if (currentState.channelId === channel.id && audioTracks.length > 0) {
-        return
-      }
+    join(channel) {
+      if (currentState.status === "requesting") return Promise.resolve()
+      if (currentState.channelId === channel.id) return Promise.resolve()
 
       this.leave()
-      const request = ++activeRequest
-      publish({
-        channelId: channel.id,
-        channelName: channel.name,
-        status: "requesting",
-        workspaceId: channel.workspaceId || null,
-      })
+      return requestCapture(normalizeChannel(channel))
+    },
 
-      try {
-        const mediaStream = await mediaDevices.getUserMedia({audio: true})
-        const tracks = mediaStream.getAudioTracks()
+    retry() {
+      if (!currentState.retryable || !currentState.channelId) return Promise.resolve()
 
-        if (request !== activeRequest) {
-          stopTracks(tracks)
-          return
-        }
-
-        audioTracks = tracks
-        publish({
-          channelId: channel.id,
-          channelName: channel.name,
-          status: "capturing",
-          workspaceId: channel.workspaceId || null,
-        })
-      } catch (_error) {
-        if (request === activeRequest) {
-          publish(idleState())
-        }
-      }
+      const channel = normalizeChannel(currentState)
+      this.leave()
+      return requestCapture(channel)
     },
 
     toggleMute() {
@@ -77,10 +104,42 @@ export function createVoiceController({mediaDevices = navigator.mediaDevices} = 
 
     leave() {
       activeRequest += 1
-      stopTracks()
-      audioTracks = []
+      clearCapture()
       publish(idleState())
     },
+
+    teardown() {
+      this.leave()
+    },
+  }
+}
+
+function normalizeChannel(channel) {
+  return {channelId: channel.id || channel.channelId, channelName: channel.name || channel.channelName, workspaceId: channel.workspaceId || null}
+}
+
+function failureState(channel, error) {
+  return {...channel, error, retryable: retryableFailure(error), status: error}
+}
+
+function retryableFailure(error) {
+  return ["permission_denied", "no_device", "unknown_error"].includes(error)
+}
+
+function failureFor(error) {
+  switch (error?.name) {
+    case "NotAllowedError":
+      return "permission_denied"
+    case "NotFoundError":
+    case "DevicesNotFoundError":
+      return "no_device"
+    case "SecurityError":
+      return "insecure_context"
+    case "NotSupportedError":
+    case "TypeError":
+      return "unsupported"
+    default:
+      return "unknown_error"
   }
 }
 

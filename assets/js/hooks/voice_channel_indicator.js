@@ -11,7 +11,9 @@ export function createVoiceChannelIndicator(controller) {
     },
 
     renderState(state) {
-      this.el.hidden = state.channelId !== this.el.dataset.voiceChannelId
+      this.el.hidden =
+        state.channelId !== this.el.dataset.voiceChannelId ||
+          !["requesting", "capturing", "muted"].includes(state.status)
     },
   }
 }

@@ -24,10 +24,12 @@ function mountVoiceControls(state) {
   const status = {textContent: ""}
   const mute = {textContent: "", setAttribute(name, value) { this[name] = value }}
   const popover = {hidden: true}
+  const retry = {hidden: true}
   globalThis.document = eventTarget()
   globalThis.window = eventTarget()
   const controller = {
     leave() { calls.push("leave") },
+    retry() { calls.push("retry") },
     state() { return currentState },
     subscribe(nextListener) { listener = nextListener; listener(currentState); return () => listener = null },
     toggleMute() { calls.push("toggleMute") },
@@ -37,10 +39,11 @@ function mountVoiceControls(state) {
     "[data-voice-controls-status]": status,
     "[data-voice-controls-mute]": mute,
     "[data-voice-controls-popover]": popover,
+    "[data-voice-controls-retry]": retry,
   }
   const hook = {...createVoiceControls(controller), el: {querySelector: selector => elements[selector]}}
   hook.mounted()
-  return {calls, channel, emit(nextState) { currentState = nextState; listener(nextState) }, hook, mute, popover, status}
+  return {calls, channel, emit(nextState) { currentState = nextState; listener(nextState) }, hook, mute, popover, retry, status}
 }
 
 test("the rail adapter immediately renders an existing capture and controls it without requesting media again", () => {
@@ -64,4 +67,17 @@ test("the rail adapter immediately renders an existing capture and controls it w
   mounted.hook.destroyed()
   document.dispatch("click", {target: muteButton})
   assert.deepEqual(mounted.calls, ["toggleMute", "leave"])
+})
+
+test("the rail renders a browser failure and delegates its explicit retry", () => {
+  const mounted = mountVoiceControls({channelId: "voice-1", channelName: "lobby", error: "no_device", retryable: true, status: "no_device", workspaceId: "workspace-1"})
+
+  assert.equal(mounted.status.textContent, "No microphone was found. Connect an input, then retry.")
+  assert.equal(mounted.retry.hidden, false)
+  assert.equal(mounted.popover.hidden, false)
+
+  const retryButton = {closest: selector => selector === "[data-voice-controls-retry]" ? retryButton : null}
+  document.dispatch("click", {target: retryButton})
+  assert.deepEqual(mounted.calls, ["retry"])
+  mounted.hook.destroyed()
 })

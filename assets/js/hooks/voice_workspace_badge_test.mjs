@@ -23,8 +23,16 @@ test("a Workspace badge only appears for its active Voice Channel Workspace and 
       addEventListener() {},
       dataset: {workspaceId: "workspace-2"},
       hidden: true,
+      querySelector(selector) {
+        return {
+          "[data-voice-workspace-badge-microphone]": this.microphone,
+          "[data-voice-workspace-badge-warning]": this.warning,
+        }[selector]
+      },
+      microphone: {hidden: false},
       removeEventListener() {},
       setAttribute(name, value) { this[name] = value },
+      warning: {hidden: true},
     },
   }
 
@@ -40,6 +48,12 @@ test("a Workspace badge only appears for its active Voice Channel Workspace and 
 
   listener({channelId: null, channelName: null, status: "idle", workspaceId: null})
   assert.equal(hook.el["aria-expanded"], "false")
+
+  listener({channelId: "voice-2", channelName: "standup", error: "no_device", retryable: true, status: "no_device", workspaceId: "workspace-2"})
+  assert.equal(hook.el.hidden, false)
+  assert.equal(hook.el.microphone.hidden, true)
+  assert.equal(hook.el.warning.hidden, false)
+  assert.equal(hook.el["aria-label"], "Open Voice Channel issue")
 
   hook.destroyed()
   assert.equal(listener, null)
