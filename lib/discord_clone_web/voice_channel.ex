@@ -2,7 +2,7 @@ defmodule DiscordCloneWeb.VoiceChannel do
   use DiscordCloneWeb, :channel
 
   alias DiscordClone.Workspaces
-  alias DiscordCloneWeb.VoiceSignaling.{FakeHeartbeat, FakeIce, FakeOffer}
+  alias DiscordCloneWeb.VoiceSignaling.{Diagnostics, FakeHeartbeat, FakeIce, FakeOffer}
 
   @impl true
   def join("voice:" <> voice_channel_id, _params, socket) do
@@ -25,56 +25,74 @@ defmodule DiscordCloneWeb.VoiceChannel do
 
   @impl true
   def handle_in("offer", params, socket) do
-    with :ok <- validate_signaling_session_id(params, socket),
-         {:ok, offer} <- FakeOffer.validate(params) do
-      {:reply,
-       {:ok,
-        %{
-          signaling_session_id: socket.assigns.signaling_session_id,
-          label: "fake-answer",
-          sequence: offer.sequence
-        }}, socket}
-    else
-      :error -> {:reply, {:error, %{reason: "invalid_request"}}, socket}
-      {:error, errors} -> {:reply, {:error, %{errors: errors}}, socket}
-    end
+    handle_fake_message("offer", params, socket, FakeOffer, fn offer ->
+      %{
+        signaling_session_id: socket.assigns.signaling_session_id,
+        label: "fake-answer",
+        sequence: offer.sequence
+      }
+    end)
   end
 
   def handle_in("ice_candidate", params, socket) do
-    with :ok <- validate_signaling_session_id(params, socket),
-         {:ok, ice} <- FakeIce.validate(params) do
+    handle_fake_message("ice_candidate", params, socket, FakeIce, fn ice ->
       push(socket, "ice_candidate", %{
         signaling_session_id: socket.assigns.signaling_session_id,
         label: "fake-server-ice",
         sequence: ice.sequence
       })
 
-      {:reply,
-       {:ok,
-        %{
-          signaling_session_id: socket.assigns.signaling_session_id,
-          label: "fake-client-ice-ack",
-          sequence: ice.sequence
-        }}, socket}
-    else
-      :error -> {:reply, {:error, %{reason: "invalid_request"}}, socket}
-      {:error, errors} -> {:reply, {:error, %{errors: errors}}, socket}
-    end
+      %{
+        signaling_session_id: socket.assigns.signaling_session_id,
+        label: "fake-client-ice-ack",
+        sequence: ice.sequence
+      }
+    end)
   end
 
   def handle_in("heartbeat", params, socket) do
+    handle_fake_message("heartbeat", params, socket, FakeHeartbeat, fn heartbeat ->
+      %{
+        signaling_session_id: socket.assigns.signaling_session_id,
+        label: "fake-heartbeat-ack",
+        sequence: heartbeat.sequence
+      }
+    end)
+  end
+
+  def handle_in(_event, _params, socket),
+    do: {:reply, {:error, %{reason: "unsupported_event"}}, socket}
+
+  defp handle_fake_message(operation, params, socket, validator, response) do
+    byte_count = decoded_request_byte_count(params)
+
     with :ok <- validate_signaling_session_id(params, socket),
-         {:ok, heartbeat} <- FakeHeartbeat.validate(params) do
-      {:reply,
-       {:ok,
-        %{
-          signaling_session_id: socket.assigns.signaling_session_id,
-          label: "fake-heartbeat-ack",
-          sequence: heartbeat.sequence
-        }}, socket}
+         {:ok, message} <- validator.validate(params) do
+      Diagnostics.emit(operation, :accepted, decoded_request_byte_count: byte_count)
+      {:reply, {:ok, response.(message)}, socket}
     else
-      :error -> {:reply, {:error, %{reason: "invalid_request"}}, socket}
-      {:error, errors} -> {:reply, {:error, %{errors: errors}}, socket}
+      :error ->
+        Diagnostics.emit(operation, :rejected,
+          error_code: "invalid_request",
+          decoded_request_byte_count: byte_count
+        )
+
+        {:reply, {:error, %{reason: "invalid_request"}}, socket}
+
+      {:error, errors} ->
+        Diagnostics.emit(operation, :rejected,
+          error_code: "invalid_payload",
+          decoded_request_byte_count: byte_count
+        )
+
+        {:reply, {:error, %{errors: errors}}, socket}
+    end
+  end
+
+  defp decoded_request_byte_count(params) do
+    case Jason.encode(params) do
+      {:ok, encoded_params} -> byte_size(encoded_params)
+      {:error, _reason} -> nil
     end
   end
 

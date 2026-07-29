@@ -531,4 +531,165 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       end
     end
   end
+
+  describe "same-topic signaling isolation and safe diagnostics" do
+    setup do
+      owner = user_fixture()
+      scope = DiscordClone.Accounts.Scope.for_user(owner)
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Signaling isolation"})
+
+      {:ok, voice_channel} =
+        Workspaces.create_voice_channel(scope, workspace.id, %{name: "lobby"})
+
+      token = Accounts.generate_user_session_token(owner)
+
+      {:ok, first_socket} =
+        connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
+
+      {:ok, second_socket} =
+        connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
+
+      topic = "voice:#{voice_channel.id}"
+
+      {:ok, %{signaling_session_id: first_id}, first_channel} =
+        subscribe_and_join(first_socket, VoiceChannel, topic)
+
+      {:ok, %{signaling_session_id: second_id}, second_channel} =
+        subscribe_and_join(second_socket, VoiceChannel, topic)
+
+      %{
+        first_channel: first_channel,
+        first_id: first_id,
+        second_channel: second_channel,
+        second_id: second_id
+      }
+    end
+
+    test "keeps fake signaling replies, events, validation errors, and session IDs isolated",
+         context do
+      %{
+        first_channel: first_channel,
+        first_id: first_id,
+        second_channel: second_channel,
+        second_id: second_id
+      } = context
+
+      refute first_id == second_id
+
+      assert_reply push(first_channel, "offer", valid_payload(first_id, "fake-offer", 1)), :ok, %{
+        signaling_session_id: ^first_id,
+        label: "fake-answer",
+        sequence: 1
+      }
+
+      assert_reply push(second_channel, "offer", valid_payload(second_id, "fake-offer", 2)),
+                   :ok,
+                   %{signaling_session_id: ^second_id, label: "fake-answer", sequence: 2}
+
+      first_ice =
+        push(first_channel, "ice_candidate", valid_payload(first_id, "fake-client-ice", 3))
+
+      assert_reply first_ice, :ok, %{
+        signaling_session_id: ^first_id,
+        label: "fake-client-ice-ack",
+        sequence: 3
+      }
+
+      assert_push "ice_candidate", %{
+        signaling_session_id: ^first_id,
+        label: "fake-server-ice",
+        sequence: 3
+      }
+
+      refute_push "ice_candidate", _payload
+
+      second_ice =
+        push(second_channel, "ice_candidate", valid_payload(second_id, "fake-client-ice", 4))
+
+      assert_reply second_ice, :ok, %{
+        signaling_session_id: ^second_id,
+        label: "fake-client-ice-ack",
+        sequence: 4
+      }
+
+      assert_push "ice_candidate", %{
+        signaling_session_id: ^second_id,
+        label: "fake-server-ice",
+        sequence: 4
+      }
+
+      refute_push "ice_candidate", _payload
+
+      assert_reply push(first_channel, "heartbeat", valid_payload(first_id, "fake-heartbeat", 5)),
+                   :ok,
+                   %{signaling_session_id: ^first_id, label: "fake-heartbeat-ack", sequence: 5}
+
+      assert_reply push(
+                     second_channel,
+                     "heartbeat",
+                     valid_payload(second_id, "fake-heartbeat", 6)
+                   ),
+                   :ok,
+                   %{signaling_session_id: ^second_id, label: "fake-heartbeat-ack", sequence: 6}
+
+      assert_reply push(first_channel, "offer", valid_payload(second_id, "fake-offer", 7)),
+                   :error,
+                   %{reason: "invalid_request"}
+
+      assert_reply push(second_channel, "offer", %{"signaling_session_id" => second_id}),
+                   :error,
+                   %{errors: %{"label" => "is required"}}
+
+      refute_push "offer", _payload
+      refute_push "answer", _payload
+      refute_push "heartbeat", _payload
+      refute_push "error", _payload
+    end
+
+    test "rejects unsupported events with a stable safe error", %{first_channel: channel} do
+      assert_reply push(channel, "unsupported", %{"sensitive" => "not returned"}), :error, %{
+        reason: "unsupported_event"
+      }
+    end
+
+    test "emits only safe operation diagnostics", %{
+      first_channel: channel,
+      first_id: signaling_session_id
+    } do
+      telemetry_handler_id = "voice-signaling-diagnostics-#{System.unique_integer([:positive])}"
+      test_pid = self()
+
+      :ok =
+        :telemetry.attach(
+          telemetry_handler_id,
+          [:discord_clone, :voice_signaling, :operation],
+          fn event, measurements, metadata, _config ->
+            send(test_pid, {:voice_diagnostic, event, measurements, metadata})
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(telemetry_handler_id) end)
+
+      payload = valid_payload(signaling_session_id, "private-fake-value", 8)
+      assert_reply push(channel, "offer", payload), :ok
+
+      assert_receive {:voice_diagnostic, [:discord_clone, :voice_signaling, :operation], %{},
+                      metadata}
+
+      assert metadata.operation == "offer"
+      assert metadata.outcome == :accepted
+      assert is_integer(metadata.decoded_request_byte_count)
+      refute Map.has_key?(metadata, :signaling_session_id)
+      refute Map.has_key?(metadata, :params)
+      refute Map.has_key?(metadata, :payload)
+      refute Map.has_key?(metadata, :socket)
+      refute Map.has_key?(metadata, :user_id)
+      refute Map.has_key?(metadata, :voice_channel_id)
+    end
+
+    defp valid_payload(signaling_session_id, label, sequence) do
+      %{"signaling_session_id" => signaling_session_id, "label" => label, "sequence" => sequence}
+    end
+  end
 end
