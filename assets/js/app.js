@@ -33,6 +33,7 @@ import VoiceChannelIndicator from "./hooks/voice_channel_indicator"
 import VoiceControls from "./hooks/voice_controls"
 import VoiceWorkspaceBadge from "./hooks/voice_workspace_badge"
 import VoiceLifecycle from "./hooks/voice_lifecycle"
+import {createVoiceSignaling} from "./voice_signaling"
 
 const Hooks = {
   ChannelMessages,
@@ -87,6 +88,10 @@ liveSocket.connect()
 // >> liveSocket.enableLatencySim(1000)  // enabled for duration of browser session
 // >> liveSocket.disableLatencySim()
 window.liveSocket = liveSocket
+
+// Voice signaling is deliberately separate from the Voice Owner Tab controller,
+// which remains responsible only for local microphone capture and ownership.
+window.voiceSignaling = createVoiceSignaling({Socket})
 
 // The lines below enable quality of life phoenix_live_reload
 // development features:

@@ -163,6 +163,32 @@ defmodule DiscordClone.Workspaces do
   def fetch_voice_channel(_scope, _workspace_id, _voice_channel_id),
     do: {:error, :unauthenticated}
 
+  @doc """
+  Finds a Voice Channel when the scoped User is currently a Workspace Member.
+
+  This is the authorization boundary for ephemeral Voice signaling admission.
+  It deliberately returns the same result for malformed, missing, and
+  inaccessible identifiers so callers can keep topic admission non-enumerable.
+  """
+  @spec authorize_voice_channel_for_signaling(Scope.t(), Ecto.UUID.t()) ::
+          {:ok, VoiceChannel.t()} | {:error, :not_found}
+  def authorize_voice_channel_for_signaling(%Scope{user: %User{id: user_id}}, voice_channel_id) do
+    with {:ok, voice_channel_id} <- Ecto.UUID.cast(voice_channel_id),
+         %VoiceChannel{} = voice_channel <-
+           Repo.one(
+             from voice_channel in VoiceChannel,
+               join: membership in WorkspaceMembership,
+               on: membership.workspace_id == voice_channel.workspace_id,
+               where: voice_channel.id == ^voice_channel_id and membership.user_id == ^user_id
+           ) do
+      {:ok, voice_channel}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  def authorize_voice_channel_for_signaling(_scope, _voice_channel_id), do: {:error, :not_found}
+
   def resolve_landing_channel(%Scope{} = scope, workspace_id) do
     with {:ok, %Workspace{} = workspace} <- fetch_workspace(scope, workspace_id),
          {:ok, %Channel{} = channel} <- fetch_landing_channel(workspace) do
