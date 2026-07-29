@@ -55,6 +55,10 @@ _Avoid_: Voice Conversation, Voice Room
 An active browser audio connection by one User inside one Voice Channel.
 _Avoid_: Participant, membership
 
+**Signaling Session ID**:
+An opaque, server-generated identifier that binds signaling messages to one admitted Voice Channel connection. It is not a Voice Session.
+_Avoid_: Voice Session ID, socket ID, process ID
+
 **Voice Owner Tab**:
 The browser tab that owns a User's active Voice Session and continues playing
 voice audio while that tab remains connected.
