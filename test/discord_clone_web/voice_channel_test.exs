@@ -126,4 +126,181 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       refute first_id == second_id
     end
   end
+
+  describe "fake offer signaling" do
+    setup do
+      owner = user_fixture()
+      scope = DiscordClone.Accounts.Scope.for_user(owner)
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Fake offer signaling"})
+
+      {:ok, voice_channel} =
+        Workspaces.create_voice_channel(scope, workspace.id, %{name: "lobby"})
+
+      {:ok, other_voice_channel} =
+        Workspaces.create_voice_channel(scope, workspace.id, %{name: "breakout"})
+
+      token = Accounts.generate_user_session_token(owner)
+
+      {:ok, socket} =
+        connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
+
+      {:ok, %{signaling_session_id: signaling_session_id}, channel_socket} =
+        subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}")
+
+      %{
+        channel_socket: channel_socket,
+        other_voice_channel: other_voice_channel,
+        signaling_session_id: signaling_session_id
+      }
+    end
+
+    test "returns a correlated fake answer for a valid fake offer", %{
+      channel_socket: channel_socket,
+      signaling_session_id: signaling_session_id
+    } do
+      offer = %{
+        "signaling_session_id" => signaling_session_id,
+        "label" => "fake-offer",
+        "sequence" => 7
+      }
+
+      ref = push(channel_socket, "offer", offer)
+
+      assert_reply ref, :ok, %{
+        signaling_session_id: ^signaling_session_id,
+        label: "fake-answer",
+        sequence: 7
+      }
+    end
+
+    test "returns field-level errors for malformed fake offer fields", %{
+      channel_socket: channel_socket,
+      signaling_session_id: signaling_session_id
+    } do
+      assert_reply push(channel_socket, "offer", %{"signaling_session_id" => signaling_session_id}),
+                   :error,
+                   %{errors: %{"label" => "is required"}}
+
+      assert_reply(
+        push(channel_socket, "offer", %{
+          "signaling_session_id" => signaling_session_id,
+          "label" => String.duplicate("a", 257),
+          "sequence" => 1
+        }),
+        :error,
+        %{errors: %{"label" => "must be at most 256 characters"}}
+      )
+
+      assert_reply(
+        push(channel_socket, "offer", %{
+          "signaling_session_id" => signaling_session_id,
+          "label" => 1,
+          "sequence" => 1
+        }),
+        :error,
+        %{errors: %{"label" => "must be a string"}}
+      )
+
+      assert_reply(
+        push(channel_socket, "offer", %{
+          "signaling_session_id" => signaling_session_id,
+          "label" => "fake-offer",
+          "sequence" => "one"
+        }),
+        :error,
+        %{errors: %{"sequence" => "must be a non-negative integer"}}
+      )
+
+      assert_reply(
+        push(channel_socket, "offer", %{
+          "signaling_session_id" => signaling_session_id,
+          "label" => "fake-offer",
+          "sequence" => 1,
+          "unexpected" => "field"
+        }),
+        :error,
+        %{errors: %{"payload" => "contains unsupported fields"}}
+      )
+
+      assert_reply(
+        push(channel_socket, "offer", %{
+          "signaling_session_id" => signaling_session_id,
+          "label" => String.duplicate("a", 4_096),
+          "sequence" => 1
+        }),
+        :error,
+        %{errors: %{"payload" => "must be at most 4096 bytes"}}
+      )
+    end
+
+    test "rejects missing, mismatched, stale, and cross-topic signaling session IDs safely", %{
+      channel_socket: channel_socket,
+      other_voice_channel: other_voice_channel,
+      signaling_session_id: first_id
+    } do
+      offer = %{"label" => "fake-offer", "sequence" => 1}
+
+      for signaling_session_id <- [nil, "mismatched-signaling-session"] do
+        assert_reply(
+          push(
+            channel_socket,
+            "offer",
+            Map.put(offer, "signaling_session_id", signaling_session_id)
+          ),
+          :error,
+          %{reason: "invalid_request"}
+        )
+      end
+
+      assert {:ok, %{signaling_session_id: other_id}, other_channel_socket} =
+               subscribe_and_join(
+                 channel_socket,
+                 VoiceChannel,
+                 "voice:#{other_voice_channel.id}"
+               )
+
+      refute first_id == other_id
+
+      assert_reply(
+        push(other_channel_socket, "offer", Map.put(offer, "signaling_session_id", first_id)),
+        :error,
+        %{reason: "invalid_request"}
+      )
+
+      Process.unlink(channel_socket.channel_pid)
+      assert_reply leave(channel_socket), :ok
+
+      assert {:ok, %{signaling_session_id: rejoined_id}, rejoined_channel_socket} =
+               subscribe_and_join(channel_socket, VoiceChannel, channel_socket.topic)
+
+      refute first_id == rejoined_id
+
+      assert_reply(
+        push(rejoined_channel_socket, "offer", Map.put(offer, "signaling_session_id", first_id)),
+        :error,
+        %{reason: "invalid_request"}
+      )
+    end
+
+    test "does not push offer or answer traffic to another topic subscriber", %{
+      channel_socket: channel_socket,
+      signaling_session_id: signaling_session_id
+    } do
+      assert {:ok, _reply, _other_channel_socket} =
+               subscribe_and_join(channel_socket, VoiceChannel, channel_socket.topic)
+
+      assert_reply(
+        push(channel_socket, "offer", %{
+          "signaling_session_id" => signaling_session_id,
+          "label" => "fake-offer",
+          "sequence" => 1
+        }),
+        :ok
+      )
+
+      refute_push "offer", _payload
+      refute_push "answer", _payload
+      refute_push "error", _payload
+    end
+  end
 end

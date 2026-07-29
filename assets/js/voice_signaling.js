@@ -18,6 +18,10 @@ export function createVoiceSignaling({Socket} = {}) {
       return channel.join()
     },
 
+    sendFakeOffer(offer) {
+      return channel?.push("offer", offer) ?? null
+    },
+
     leave() {
       if (!channel) return null
 

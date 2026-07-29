@@ -2,6 +2,7 @@ defmodule DiscordCloneWeb.VoiceChannel do
   use DiscordCloneWeb, :channel
 
   alias DiscordClone.Workspaces
+  alias DiscordCloneWeb.VoiceSignaling.FakeOffer
 
   @impl true
   def join("voice:" <> voice_channel_id, _params, socket) do
@@ -21,6 +22,33 @@ defmodule DiscordCloneWeb.VoiceChannel do
   end
 
   def join(_topic, _params, _socket), do: {:error, %{reason: "not_found"}}
+
+  @impl true
+  def handle_in("offer", params, socket) do
+    with :ok <- validate_signaling_session_id(params, socket),
+         {:ok, offer} <- FakeOffer.validate(params) do
+      {:reply,
+       {:ok,
+        %{
+          signaling_session_id: socket.assigns.signaling_session_id,
+          label: "fake-answer",
+          sequence: offer.sequence
+        }}, socket}
+    else
+      :error -> {:reply, {:error, %{reason: "invalid_request"}}, socket}
+      {:error, errors} -> {:reply, {:error, %{errors: errors}}, socket}
+    end
+  end
+
+  defp validate_signaling_session_id(
+         %{"signaling_session_id" => signaling_session_id},
+         socket
+       )
+       when is_binary(signaling_session_id) do
+    if signaling_session_id == socket.assigns.signaling_session_id, do: :ok, else: :error
+  end
+
+  defp validate_signaling_session_id(_params, _socket), do: :error
 
   defp new_signaling_session_id do
     32
