@@ -3,7 +3,7 @@
 Status: ready-for-agent
 Owner: Stefan
 Scope: audio-only workspace Voice Channels, server-routed through ExWebRTC, capped at 5 active Voice Sessions per Voice Channel
-Related docs: `CLAUDE.md`, `AGENTS.md`, `CONTEXT.md`, `docs/webrtc_voice_channel_research.md`, `docs/adr/0009-model-conversation-kinds-with-shared-primary-key-subtypes.md`, `docs/adr/0016-use-exwebrtc-server-routed-voice-channels.md`
+Related docs: `CLAUDE.md`, `AGENTS.md`, `CONTEXT.md`, `docs/webrtc_voice_channel_research.md`, `docs/adr/0009-model-conversation-kinds-with-shared-primary-key-subtypes.md`, `docs/adr/0016-use-exwebrtc-server-routed-voice-channels.md`, `docs/adr/0017-use-a-browser-wide-controller-for-phase-2-microphone-ownership.md`
 
 ## Decision
 
@@ -118,7 +118,7 @@ full SDP credentials or TURN credentials.
 | Phase | Status | Completion date | Notes |
 | --- | --- | --- | --- |
 | 0. Architecture ADR | Complete | 2026-07-27 | `docs/adr/0016-use-exwebrtc-server-routed-voice-channels.md` |
-| 1. Durable Voice Channel model | Not started |  |  |
+| 1. Durable Voice Channel model | Complete | 2026-07-27 | Durable schema, scoped Workspaces API, and sidebar management UI. |
 | 2. Browser microphone ownership spike | Not started |  |  |
 | 3. Authenticated Phoenix signaling skeleton | Not started |  |  |
 | 4. First browser-to-ExWebRTC PeerConnection | Not started |  |  |
@@ -225,7 +225,38 @@ Prove:
 Implementation Notes:
 
 ```text
-Not started.
+Completed 2026-07-27.
+Files changed:
+- lib/discord_clone/workspaces.ex
+- lib/discord_clone/workspaces/voice_channel.ex
+- lib/discord_clone/workspaces/workspace.ex
+- priv/repo/migrations/20260727130159_create_voice_channels.exs
+- lib/discord_clone_web/live/workspace_live/shell.ex
+- lib/discord_clone_web/live/channel_live/show.ex
+- lib/discord_clone_web/live/workspace_live/audit_log.ex
+- lib/discord_clone_web/live/workspace_live/invite_new.ex
+- test/discord_clone/workspaces_test.exs
+- test/discord_clone_web/live/workspace_live/home_management_test.exs
+
+Final decisions:
+- Voice Channel is a separate durable Workspaces resource with its own UUID,
+  not a Conversation subtype.
+- Workspace Owners and Admins can create and rename Voice Channels; Workspace
+  Owners can delete them; Workspace Members can list them.
+- Voice Channel rows remain non-interactive: there is no Voice Channel route,
+  join control, roster, or runtime process in Phase 1.
+
+Behavior proven:
+- Scoped Workspace Members see only their workspace's Voice Channels.
+- Voice Channel creation, validation, renaming, and owner-only deletion work
+  from the authenticated workspace shell.
+
+Tests run:
+- Workspaces and workspace-shell LiveView coverage was added in the Phase 1
+  implementation; the original commit does not record an exact test command.
+
+Known follow-up work:
+- Phase 2 browser microphone ownership spike.
 ```
 
 ## Phase 2: Browser Microphone Ownership Spike

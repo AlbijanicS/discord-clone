@@ -178,7 +178,8 @@ Deferred, not rejected:
 - production-scale SFU/media-server integration
 - more than five active Voice Sessions per Voice Channel
 - multi-device voice for the same User
-- multi-tab voice takeover
+- server-authoritative multi-tab ownership (Phase 2 provides only a
+  best-effort browser-side handoff)
 - device picker
 - push-to-talk
 - voice activity detection and speaking indicators
