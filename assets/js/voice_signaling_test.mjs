@@ -81,3 +81,59 @@ test("pushes a fake offer so callers receive Phoenix's correlated reply", () => 
 
   assert.deepEqual(receivedAnswer, answer)
 })
+
+test("pushes fake ICE and heartbeat while exposing direct fake server ICE events", () => {
+  const pushes = []
+  const handlers = []
+  const receives = []
+  const icePush = {
+    receive(status, callback) {
+      receives.push(["ice", status, callback])
+      return icePush
+    },
+  }
+  const heartbeatPush = {
+    receive(status, callback) {
+      receives.push(["heartbeat", status, callback])
+      return heartbeatPush
+    },
+  }
+
+  class FakeSocket {
+    connect() {}
+    channel() {
+      return {
+        join() { return {receive() { return this }} },
+        leave() { return {receive() { return this }} },
+        push(event, payload) {
+          pushes.push([event, payload])
+          return event === "ice_candidate" ? icePush : heartbeatPush
+        },
+        on(event, callback) { handlers.push([event, callback]); return 1 },
+      }
+    }
+  }
+
+  const signaling = createVoiceSignaling({Socket: FakeSocket})
+  signaling.join("voice-channel-id")
+
+  const ice = {signaling_session_id: "current-id", label: "fake-client-ice", sequence: 3}
+  const heartbeat = {signaling_session_id: "current-id", label: "fake-heartbeat", sequence: 4}
+  const receivedServerIce = []
+
+  assert.equal(signaling.sendFakeIce(ice), icePush)
+  assert.equal(signaling.sendHeartbeat(heartbeat), heartbeatPush)
+  assert.equal(signaling.onFakeServerIce(payload => receivedServerIce.push(payload)), 1)
+  assert.deepEqual(pushes, [["ice_candidate", ice], ["heartbeat", heartbeat]])
+
+  const serverIce = {signaling_session_id: "current-id", label: "fake-server-ice", sequence: 3}
+  handlers[0][1](serverIce)
+
+  assert.deepEqual(receivedServerIce, [serverIce])
+
+  let receivedError = null
+  signaling.sendFakeIce(ice).receive("error", reply => { receivedError = reply })
+  receives.at(-1)[2]({reason: "invalid_request"})
+
+  assert.deepEqual(receivedError, {reason: "invalid_request"})
+})

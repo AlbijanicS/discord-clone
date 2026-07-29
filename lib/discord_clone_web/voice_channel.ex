@@ -2,7 +2,7 @@ defmodule DiscordCloneWeb.VoiceChannel do
   use DiscordCloneWeb, :channel
 
   alias DiscordClone.Workspaces
-  alias DiscordCloneWeb.VoiceSignaling.FakeOffer
+  alias DiscordCloneWeb.VoiceSignaling.{FakeHeartbeat, FakeIce, FakeOffer}
 
   @impl true
   def join("voice:" <> voice_channel_id, _params, socket) do
@@ -33,6 +33,44 @@ defmodule DiscordCloneWeb.VoiceChannel do
           signaling_session_id: socket.assigns.signaling_session_id,
           label: "fake-answer",
           sequence: offer.sequence
+        }}, socket}
+    else
+      :error -> {:reply, {:error, %{reason: "invalid_request"}}, socket}
+      {:error, errors} -> {:reply, {:error, %{errors: errors}}, socket}
+    end
+  end
+
+  def handle_in("ice_candidate", params, socket) do
+    with :ok <- validate_signaling_session_id(params, socket),
+         {:ok, ice} <- FakeIce.validate(params) do
+      push(socket, "ice_candidate", %{
+        signaling_session_id: socket.assigns.signaling_session_id,
+        label: "fake-server-ice",
+        sequence: ice.sequence
+      })
+
+      {:reply,
+       {:ok,
+        %{
+          signaling_session_id: socket.assigns.signaling_session_id,
+          label: "fake-client-ice-ack",
+          sequence: ice.sequence
+        }}, socket}
+    else
+      :error -> {:reply, {:error, %{reason: "invalid_request"}}, socket}
+      {:error, errors} -> {:reply, {:error, %{errors: errors}}, socket}
+    end
+  end
+
+  def handle_in("heartbeat", params, socket) do
+    with :ok <- validate_signaling_session_id(params, socket),
+         {:ok, heartbeat} <- FakeHeartbeat.validate(params) do
+      {:reply,
+       {:ok,
+        %{
+          signaling_session_id: socket.assigns.signaling_session_id,
+          label: "fake-heartbeat-ack",
+          sequence: heartbeat.sequence
         }}, socket}
     else
       :error -> {:reply, {:error, %{reason: "invalid_request"}}, socket}

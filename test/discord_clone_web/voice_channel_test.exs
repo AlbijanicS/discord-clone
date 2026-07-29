@@ -303,4 +303,232 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       refute_push "error", _payload
     end
   end
+
+  describe "fake ICE and heartbeat signaling" do
+    setup do
+      owner = user_fixture()
+      scope = DiscordClone.Accounts.Scope.for_user(owner)
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Fake ICE signaling"})
+
+      {:ok, voice_channel} =
+        Workspaces.create_voice_channel(scope, workspace.id, %{name: "lobby"})
+
+      {:ok, other_voice_channel} =
+        Workspaces.create_voice_channel(scope, workspace.id, %{name: "breakout"})
+
+      token = Accounts.generate_user_session_token(owner)
+
+      {:ok, socket} =
+        connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
+
+      {:ok, %{signaling_session_id: signaling_session_id}, channel_socket} =
+        subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}")
+
+      %{
+        channel_socket: channel_socket,
+        other_voice_channel: other_voice_channel,
+        signaling_session_id: signaling_session_id,
+        token: token
+      }
+    end
+
+    test "acknowledges fake client ICE and pushes one fake server ICE only to its caller", %{
+      channel_socket: channel_socket,
+      signaling_session_id: signaling_session_id
+    } do
+      assert {:ok, _reply, _other_channel_socket} =
+               subscribe_and_join(channel_socket, VoiceChannel, channel_socket.topic)
+
+      ref =
+        push(channel_socket, "ice_candidate", %{
+          "signaling_session_id" => signaling_session_id,
+          "label" => "fake-client-ice",
+          "sequence" => 3
+        })
+
+      assert_reply ref, :ok, %{
+        signaling_session_id: ^signaling_session_id,
+        label: "fake-client-ice-ack",
+        sequence: 3
+      }
+
+      assert_push "ice_candidate", %{
+        signaling_session_id: ^signaling_session_id,
+        label: "fake-server-ice",
+        sequence: 3
+      }
+
+      refute_push "ice_candidate", _payload
+      refute_push "error", _payload
+    end
+
+    test "returns field-level errors for malformed fake ICE and heartbeat fields", %{
+      channel_socket: channel_socket,
+      signaling_session_id: signaling_session_id
+    } do
+      for event <- ["ice_candidate", "heartbeat"] do
+        assert_reply push(channel_socket, event, %{"signaling_session_id" => signaling_session_id}),
+                     :error,
+                     %{errors: %{"label" => "is required"}}
+
+        assert_reply(
+          push(channel_socket, event, %{
+            "signaling_session_id" => signaling_session_id,
+            "label" => String.duplicate("a", 257),
+            "sequence" => 1
+          }),
+          :error,
+          %{errors: %{"label" => "must be at most 256 characters"}}
+        )
+
+        assert_reply(
+          push(channel_socket, event, %{
+            "signaling_session_id" => signaling_session_id,
+            "label" => 1,
+            "sequence" => 1
+          }),
+          :error,
+          %{errors: %{"label" => "must be a string"}}
+        )
+
+        assert_reply(
+          push(channel_socket, event, %{
+            "signaling_session_id" => signaling_session_id,
+            "label" => "fake-value",
+            "sequence" => "one"
+          }),
+          :error,
+          %{errors: %{"sequence" => "must be a non-negative integer"}}
+        )
+
+        assert_reply(
+          push(channel_socket, event, %{
+            "signaling_session_id" => signaling_session_id,
+            "label" => "fake-value",
+            "sequence" => 1,
+            "unexpected" => "field"
+          }),
+          :error,
+          %{errors: %{"payload" => "contains unsupported fields"}}
+        )
+
+        assert_reply(
+          push(channel_socket, event, %{
+            "signaling_session_id" => signaling_session_id,
+            "label" => String.duplicate("a", 4_096),
+            "sequence" => 1
+          }),
+          :error,
+          %{errors: %{"payload" => "must be at most 4096 bytes"}}
+        )
+      end
+    end
+
+    test "rejects missing, mismatched, stale, and cross-topic IDs safely for fake ICE and heartbeat",
+         %{
+           channel_socket: channel_socket,
+           other_voice_channel: other_voice_channel,
+           signaling_session_id: first_id
+         } do
+      payload = %{"label" => "fake-value", "sequence" => 1}
+
+      for event <- ["ice_candidate", "heartbeat"],
+          signaling_session_id <- [nil, "mismatched-id"] do
+        assert_reply(
+          push(
+            channel_socket,
+            event,
+            Map.put(payload, "signaling_session_id", signaling_session_id)
+          ),
+          :error,
+          %{reason: "invalid_request"}
+        )
+      end
+
+      assert {:ok, %{signaling_session_id: other_id}, other_channel_socket} =
+               subscribe_and_join(channel_socket, VoiceChannel, "voice:#{other_voice_channel.id}")
+
+      refute first_id == other_id
+
+      for event <- ["ice_candidate", "heartbeat"] do
+        assert_reply(
+          push(other_channel_socket, event, Map.put(payload, "signaling_session_id", first_id)),
+          :error,
+          %{reason: "invalid_request"}
+        )
+      end
+
+      Process.flag(:trap_exit, true)
+      assert_reply leave(channel_socket), :ok
+      assert_receive {:EXIT, _, {:shutdown, :left}}
+
+      assert {:ok, %{signaling_session_id: rejoined_id}, rejoined_channel_socket} =
+               subscribe_and_join(channel_socket, VoiceChannel, channel_socket.topic)
+
+      refute first_id == rejoined_id
+
+      for event <- ["ice_candidate", "heartbeat"] do
+        assert_reply(
+          push(
+            rejoined_channel_socket,
+            event,
+            Map.put(payload, "signaling_session_id", first_id)
+          ),
+          :error,
+          %{reason: "invalid_request"}
+        )
+      end
+    end
+
+    test "acknowledges a heartbeat without pushing a server event", %{
+      channel_socket: channel_socket,
+      signaling_session_id: signaling_session_id
+    } do
+      ref =
+        push(channel_socket, "heartbeat", %{
+          "signaling_session_id" => signaling_session_id,
+          "label" => "fake-heartbeat",
+          "sequence" => 4
+        })
+
+      assert_reply ref, :ok, %{
+        signaling_session_id: ^signaling_session_id,
+        label: "fake-heartbeat-ack",
+        sequence: 4
+      }
+
+      refute_push "heartbeat", _payload
+      refute_push "ice_candidate", _payload
+    end
+
+    test "rejects the prior ID for fake ICE and heartbeat after an unexpected topic close", %{
+      channel_socket: channel_socket,
+      signaling_session_id: first_id,
+      token: token
+    } do
+      Process.flag(:trap_exit, true)
+      :ok = close(channel_socket)
+      assert_receive {:EXIT, _, {:shutdown, :closed}}
+
+      assert {:ok, reconnected_socket} =
+               connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
+
+      assert {:ok, %{signaling_session_id: second_id}, rejoined_channel_socket} =
+               subscribe_and_join(reconnected_socket, VoiceChannel, channel_socket.topic)
+
+      refute first_id == second_id
+
+      for event <- ["ice_candidate", "heartbeat"] do
+        assert_reply(
+          push(rejoined_channel_socket, event, %{
+            "signaling_session_id" => first_id,
+            "label" => "fake-value",
+            "sequence" => 1
+          }),
+          :error,
+          %{reason: "invalid_request"}
+        )
+      end
+    end
+  end
 end

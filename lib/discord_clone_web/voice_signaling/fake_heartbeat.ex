@@ -1,4 +1,4 @@
-defmodule DiscordCloneWeb.VoiceSignaling.FakeOffer do
+defmodule DiscordCloneWeb.VoiceSignaling.FakeHeartbeat do
   @moduledoc false
 
   alias DiscordCloneWeb.VoiceSignaling.FakeMessage
