@@ -1,11 +1,11 @@
-export function createVoiceSignaling({Socket, socketPath = "/voice"} = {}) {
+export function createVoiceSignaling({Socket} = {}) {
   let socket = null
   let channel = null
 
   function ensureSocket() {
     if (socket) return socket
 
-    socket = new Socket(socketPath)
+    socket = new Socket("/voice")
     socket.connect()
     return socket
   }

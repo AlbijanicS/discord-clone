@@ -56,7 +56,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       {:ok, socket} =
         connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
 
-      %{socket: socket, voice_channel: voice_channel}
+      %{socket: socket, token: token, voice_channel: voice_channel}
     end
 
     test "admits an authorized member with a fresh opaque signaling session ID", %{
@@ -100,6 +100,30 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
           ] do
         assert {:error, %{reason: "not_found"}} = subscribe_and_join(socket, VoiceChannel, topic)
       end
+    end
+
+    test "unexpected topic close ends its Channel-bound signaling session", %{
+      socket: socket,
+      token: token,
+      voice_channel: voice_channel
+    } do
+      topic = "voice:#{voice_channel.id}"
+
+      assert {:ok, %{signaling_session_id: first_id}, first_socket} =
+               subscribe_and_join(socket, VoiceChannel, topic)
+
+      Process.unlink(first_socket.channel_pid)
+      monitor_ref = Process.monitor(first_socket.channel_pid)
+      :ok = close(first_socket)
+      assert_receive {:DOWN, ^monitor_ref, :process, _, _}
+
+      assert {:ok, reconnected_socket} =
+               connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
+
+      assert {:ok, %{signaling_session_id: second_id}, _second_socket} =
+               subscribe_and_join(reconnected_socket, VoiceChannel, topic)
+
+      refute first_id == second_id
     end
   end
 end
