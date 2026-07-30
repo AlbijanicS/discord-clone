@@ -7,12 +7,13 @@ defmodule DiscordCloneWeb.VoiceSignaling.Diagnostics do
 
   @spec emit(String.t(), outcome(), keyword()) :: :ok
   def emit(operation, outcome, options \\ [])
-      when operation in ["offer", "ice_candidate", "heartbeat"] and
+      when operation in ["offer", "ice_candidate", "heartbeat", "connection_state"] and
              outcome in [:accepted, :rejected, :failed] do
     metadata =
       %{operation: operation, outcome: outcome}
       |> maybe_put(:error_code, Keyword.get(options, :error_code))
       |> maybe_put(:decoded_request_byte_count, Keyword.get(options, :decoded_request_byte_count))
+      |> maybe_put(:connection_state, Keyword.get(options, :connection_state))
 
     :telemetry.execute(@event, %{}, metadata)
   end

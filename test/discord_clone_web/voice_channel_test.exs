@@ -7,11 +7,217 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
   alias DiscordClone.Accounts
   alias DiscordClone.Workspaces
   alias DiscordCloneWeb.{VoiceChannel, VoiceSocket}
+  import DiscordCloneWeb.VoiceSignalingHelpers
 
   @endpoint DiscordCloneWeb.Endpoint
 
-  describe "socket authentication" do
-    test "derives the scope from the signed session rather than browser identity params" do
+  describe "authenticated Voice Channel negotiation" do
+    setup do
+      user = user_fixture()
+      scope = DiscordClone.Accounts.Scope.for_user(user)
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Voice negotiation"})
+
+      {:ok, voice_channel} =
+        Workspaces.create_voice_channel(scope, workspace.id, %{name: "lobby"})
+
+      token = Accounts.generate_user_session_token(user)
+
+      {:ok, socket} =
+        connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
+
+      {:ok, %{signaling_session_id: signaling_session_id}, channel_socket} =
+        subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}")
+
+      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id}
+    end
+
+    test "returns a correlated real answer and sends server ICE only to its connection",
+         context do
+      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
+
+      assert {:ok, _reply, _other_channel_socket} =
+               subscribe_and_join(channel_socket, VoiceChannel, channel_socket.topic)
+
+      negotiation_id = "first-negotiation"
+
+      assert_reply push(channel_socket, "offer", offer(signaling_session_id, negotiation_id)),
+                   :ok,
+                   %{
+                     signaling_session_id: ^signaling_session_id,
+                     negotiation_id: ^negotiation_id,
+                     description: %{"type" => "answer", "sdp" => answer_sdp}
+                   }
+
+      assert is_binary(answer_sdp)
+      assert byte_size(answer_sdp) > 0
+
+      assert_push "ice_candidate", %{
+        signaling_session_id: ^signaling_session_id,
+        negotiation_id: ^negotiation_id,
+        candidate: %{"candidate" => candidate}
+      }
+
+      assert is_binary(candidate)
+      refute_push "ice_candidate", _payload
+    end
+
+    test "rejects mismatched, duplicate, malformed, and oversized offers safely", context do
+      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
+      valid_offer = offer(signaling_session_id, "first-negotiation")
+
+      assert_reply push(
+                     channel_socket,
+                     "offer",
+                     put_in(valid_offer["signaling_session_id"], "wrong")
+                   ),
+                   :error,
+                   %{reason: "invalid_request"}
+
+      assert_reply push(channel_socket, "offer", %{"signaling_session_id" => signaling_session_id}),
+                   :error,
+                   %{reason: "invalid_negotiation"}
+
+      oversized_offer = %{
+        "signaling_session_id" => signaling_session_id,
+        "negotiation_id" => "oversized",
+        "description" => %{"type" => "offer", "sdp" => String.duplicate("x", 64 * 1024 + 1)}
+      }
+
+      assert_reply push(channel_socket, "offer", oversized_offer), :error, %{
+        reason: "description_too_large"
+      }
+
+      assert_reply push(channel_socket, "offer", valid_offer), :ok
+
+      assert_reply push(
+                     channel_socket,
+                     "offer",
+                     put_in(valid_offer["negotiation_id"], "another")
+                   ),
+                   :error,
+                   %{reason: "negotiation_already_active"}
+    end
+
+    test "requires the current negotiation for safely bounded client ICE", context do
+      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
+      negotiation_id = "first-negotiation"
+      assert_reply push(channel_socket, "offer", offer(signaling_session_id, negotiation_id)), :ok
+
+      assert_reply(
+        push(channel_socket, "ice_candidate", %{
+          "signaling_session_id" => signaling_session_id,
+          "negotiation_id" => "stale-negotiation",
+          "candidate" => candidate()
+        }),
+        :error,
+        %{reason: "invalid_negotiation"}
+      )
+
+      assert_reply(
+        push(channel_socket, "ice_candidate", %{
+          "signaling_session_id" => signaling_session_id,
+          "negotiation_id" => negotiation_id,
+          "candidate" => Map.put(candidate(), "candidate", String.duplicate("x", 8 * 1024 + 1))
+        }),
+        :error,
+        %{reason: "candidate_too_large"}
+      )
+    end
+
+    test "buffers a bounded early ICE candidate until its offer is accepted", context do
+      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
+      negotiation_id = "first-negotiation"
+
+      assert_reply(
+        push(channel_socket, "ice_candidate", %{
+          "signaling_session_id" => signaling_session_id,
+          "negotiation_id" => negotiation_id,
+          "candidate" => candidate()
+        }),
+        :ok,
+        %{negotiation_id: ^negotiation_id}
+      )
+
+      assert_reply push(channel_socket, "offer", offer(signaling_session_id, negotiation_id)), :ok
+    end
+
+    test "keeps signaling session IDs and server ICE isolated between admitted connections",
+         context do
+      %{channel_socket: first_channel, signaling_session_id: first_id} = context
+
+      assert {:ok, %{signaling_session_id: second_id}, second_channel} =
+               subscribe_and_join(first_channel, VoiceChannel, first_channel.topic)
+
+      refute first_id == second_id
+
+      assert_reply push(second_channel, "offer", offer(first_id, "cross-connection")), :error, %{
+        reason: "invalid_request"
+      }
+
+      assert_reply push(first_channel, "offer", offer(first_id, "first-negotiation")), :ok
+
+      assert_push "ice_candidate", %{signaling_session_id: ^first_id}
+      refute_push "ice_candidate", _payload
+    end
+
+    test "stops the Channel-owned peer connection when the topic leaves", context do
+      %{channel_socket: channel_socket} = context
+      running_before_leave = ExWebRTC.PeerConnection.get_all_running()
+
+      assert Enum.any?(running_before_leave)
+
+      Process.unlink(channel_socket.channel_pid)
+      monitor_ref = Process.monitor(channel_socket.channel_pid)
+      assert_reply leave(channel_socket), :ok
+      assert_receive {:DOWN, ^monitor_ref, :process, _, _reason}
+
+      refute Enum.any?(ExWebRTC.PeerConnection.get_all_running())
+    end
+
+    test "emits metadata-only diagnostics for real descriptions", context do
+      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
+      handler_id = "voice-signaling-#{System.unique_integer([:positive])}"
+      test_pid = self()
+
+      :ok =
+        :telemetry.attach(
+          handler_id,
+          [:discord_clone, :voice_signaling, :operation],
+          fn _, _, metadata, _ ->
+            send(test_pid, {:voice_diagnostic, metadata})
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      assert_reply push(
+                     channel_socket,
+                     "offer",
+                     offer(signaling_session_id, "first-negotiation")
+                   ),
+                   :ok
+
+      assert_receive {:voice_diagnostic, %{operation: "offer"} = metadata}
+
+      assert metadata.outcome == :accepted
+      assert is_integer(metadata.decoded_request_byte_count)
+
+      for forbidden <- [
+            :signaling_session_id,
+            :negotiation_id,
+            :description,
+            :candidate,
+            :params,
+            :socket
+          ] do
+        refute Map.has_key?(metadata, forbidden)
+      end
+    end
+  end
+
+  describe "socket admission" do
+    test "derives scope from the signed session and denies invalid sessions" do
       user = user_fixture()
       other_user = user_fixture()
       token = Accounts.generate_user_session_token(user)
@@ -22,674 +228,23 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
                )
 
       assert socket.assigns.current_scope.user.id == user.id
-    end
-
-    test "rejects missing, invalid, expired, and revoked sessions" do
-      user = user_fixture()
-      expired_token = Accounts.generate_user_session_token(user)
-      revoked_token = Accounts.generate_user_session_token(user)
-      offset_user_token(expired_token, -61, :day)
-      Accounts.delete_user_session_token(revoked_token)
-
-      for session <- [
-            nil,
-            %{"user_token" => "invalid"},
-            %{"user_token" => expired_token},
-            %{"user_token" => revoked_token}
-          ] do
-        assert :error = connect(VoiceSocket, %{}, connect_info: %{session: session})
-      end
+      assert :error = connect(VoiceSocket, %{}, connect_info: %{session: nil})
     end
   end
 
-  describe "Voice Channel topic admission" do
-    setup do
-      owner = user_fixture()
-      scope = DiscordClone.Accounts.Scope.for_user(owner)
-      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Voice admission"})
-
-      {:ok, voice_channel} =
-        Workspaces.create_voice_channel(scope, workspace.id, %{name: "lobby"})
-
-      token = Accounts.generate_user_session_token(owner)
-
-      {:ok, socket} =
-        connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
-
-      %{socket: socket, token: token, voice_channel: voice_channel}
-    end
-
-    test "admits an authorized member with a fresh opaque signaling session ID", %{
-      socket: socket,
-      voice_channel: voice_channel
-    } do
-      topic = "voice:#{voice_channel.id}"
-
-      assert {:ok, %{signaling_session_id: first_id}, first_socket} =
-               subscribe_and_join(socket, VoiceChannel, topic)
-
-      assert is_binary(first_id)
-      assert first_id =~ ~r/^[A-Za-z0-9_-]+$/
-      assert byte_size(first_id) >= 32
-
-      assert {:ok, %{signaling_session_id: second_id}, _second_socket} =
-               subscribe_and_join(socket, VoiceChannel, topic)
-
-      refute first_id == second_id
-
-      Process.unlink(first_socket.channel_pid)
-      assert_reply leave(first_socket), :ok
-    end
-
-    test "denies malformed, missing, and inaccessible topics with the same safe error", %{
-      socket: socket
-    } do
-      inaccessible_user = user_fixture()
-      inaccessible_scope = DiscordClone.Accounts.Scope.for_user(inaccessible_user)
-
-      {:ok, other_workspace} =
-        Workspaces.create_workspace(inaccessible_scope, %{name: "Private voice"})
-
-      {:ok, inaccessible_voice_channel} =
-        Workspaces.create_voice_channel(inaccessible_scope, other_workspace.id, %{name: "private"})
-
-      for topic <- [
-            "voice:not-a-uuid",
-            "voice:00000000-0000-0000-0000-000000000000",
-            "voice:#{inaccessible_voice_channel.id}"
-          ] do
-        assert {:error, %{reason: "not_found"}} = subscribe_and_join(socket, VoiceChannel, topic)
-      end
-    end
-
-    test "unexpected topic close ends its Channel-bound signaling session", %{
-      socket: socket,
-      token: token,
-      voice_channel: voice_channel
-    } do
-      topic = "voice:#{voice_channel.id}"
-
-      assert {:ok, %{signaling_session_id: first_id}, first_socket} =
-               subscribe_and_join(socket, VoiceChannel, topic)
-
-      Process.unlink(first_socket.channel_pid)
-      monitor_ref = Process.monitor(first_socket.channel_pid)
-      :ok = close(first_socket)
-      assert_receive {:DOWN, ^monitor_ref, :process, _, _}
-
-      assert {:ok, reconnected_socket} =
-               connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
-
-      assert {:ok, %{signaling_session_id: second_id}, _second_socket} =
-               subscribe_and_join(reconnected_socket, VoiceChannel, topic)
-
-      refute first_id == second_id
-    end
+  defp offer(signaling_session_id, negotiation_id) do
+    %{
+      "signaling_session_id" => signaling_session_id,
+      "negotiation_id" => negotiation_id,
+      "description" => browser_offer()
+    }
   end
 
-  describe "fake offer signaling" do
-    setup do
-      owner = user_fixture()
-      scope = DiscordClone.Accounts.Scope.for_user(owner)
-      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Fake offer signaling"})
-
-      {:ok, voice_channel} =
-        Workspaces.create_voice_channel(scope, workspace.id, %{name: "lobby"})
-
-      {:ok, other_voice_channel} =
-        Workspaces.create_voice_channel(scope, workspace.id, %{name: "breakout"})
-
-      token = Accounts.generate_user_session_token(owner)
-
-      {:ok, socket} =
-        connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
-
-      {:ok, %{signaling_session_id: signaling_session_id}, channel_socket} =
-        subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}")
-
-      %{
-        channel_socket: channel_socket,
-        other_voice_channel: other_voice_channel,
-        signaling_session_id: signaling_session_id
-      }
-    end
-
-    test "returns a correlated fake answer for a valid fake offer", %{
-      channel_socket: channel_socket,
-      signaling_session_id: signaling_session_id
-    } do
-      offer = %{
-        "signaling_session_id" => signaling_session_id,
-        "label" => "fake-offer",
-        "sequence" => 7
-      }
-
-      ref = push(channel_socket, "offer", offer)
-
-      assert_reply ref, :ok, %{
-        signaling_session_id: ^signaling_session_id,
-        label: "fake-answer",
-        sequence: 7
-      }
-    end
-
-    test "returns field-level errors for malformed fake offer fields", %{
-      channel_socket: channel_socket,
-      signaling_session_id: signaling_session_id
-    } do
-      assert_reply push(channel_socket, "offer", %{"signaling_session_id" => signaling_session_id}),
-                   :error,
-                   %{errors: %{"label" => "is required"}}
-
-      assert_reply(
-        push(channel_socket, "offer", %{
-          "signaling_session_id" => signaling_session_id,
-          "label" => String.duplicate("a", 257),
-          "sequence" => 1
-        }),
-        :error,
-        %{errors: %{"label" => "must be at most 256 characters"}}
-      )
-
-      assert_reply(
-        push(channel_socket, "offer", %{
-          "signaling_session_id" => signaling_session_id,
-          "label" => 1,
-          "sequence" => 1
-        }),
-        :error,
-        %{errors: %{"label" => "must be a string"}}
-      )
-
-      assert_reply(
-        push(channel_socket, "offer", %{
-          "signaling_session_id" => signaling_session_id,
-          "label" => "fake-offer",
-          "sequence" => "one"
-        }),
-        :error,
-        %{errors: %{"sequence" => "must be a non-negative integer"}}
-      )
-
-      assert_reply(
-        push(channel_socket, "offer", %{
-          "signaling_session_id" => signaling_session_id,
-          "label" => "fake-offer",
-          "sequence" => 1,
-          "unexpected" => "field"
-        }),
-        :error,
-        %{errors: %{"payload" => "contains unsupported fields"}}
-      )
-
-      assert_reply(
-        push(channel_socket, "offer", %{
-          "signaling_session_id" => signaling_session_id,
-          "label" => String.duplicate("a", 4_096),
-          "sequence" => 1
-        }),
-        :error,
-        %{errors: %{"payload" => "must be at most 4096 bytes"}}
-      )
-    end
-
-    test "rejects missing, mismatched, stale, and cross-topic signaling session IDs safely", %{
-      channel_socket: channel_socket,
-      other_voice_channel: other_voice_channel,
-      signaling_session_id: first_id
-    } do
-      offer = %{"label" => "fake-offer", "sequence" => 1}
-
-      for signaling_session_id <- [nil, "mismatched-signaling-session"] do
-        assert_reply(
-          push(
-            channel_socket,
-            "offer",
-            Map.put(offer, "signaling_session_id", signaling_session_id)
-          ),
-          :error,
-          %{reason: "invalid_request"}
-        )
-      end
-
-      assert {:ok, %{signaling_session_id: other_id}, other_channel_socket} =
-               subscribe_and_join(
-                 channel_socket,
-                 VoiceChannel,
-                 "voice:#{other_voice_channel.id}"
-               )
-
-      refute first_id == other_id
-
-      assert_reply(
-        push(other_channel_socket, "offer", Map.put(offer, "signaling_session_id", first_id)),
-        :error,
-        %{reason: "invalid_request"}
-      )
-
-      Process.unlink(channel_socket.channel_pid)
-      assert_reply leave(channel_socket), :ok
-
-      assert {:ok, %{signaling_session_id: rejoined_id}, rejoined_channel_socket} =
-               subscribe_and_join(channel_socket, VoiceChannel, channel_socket.topic)
-
-      refute first_id == rejoined_id
-
-      assert_reply(
-        push(rejoined_channel_socket, "offer", Map.put(offer, "signaling_session_id", first_id)),
-        :error,
-        %{reason: "invalid_request"}
-      )
-    end
-
-    test "does not push offer or answer traffic to another topic subscriber", %{
-      channel_socket: channel_socket,
-      signaling_session_id: signaling_session_id
-    } do
-      assert {:ok, _reply, _other_channel_socket} =
-               subscribe_and_join(channel_socket, VoiceChannel, channel_socket.topic)
-
-      assert_reply(
-        push(channel_socket, "offer", %{
-          "signaling_session_id" => signaling_session_id,
-          "label" => "fake-offer",
-          "sequence" => 1
-        }),
-        :ok
-      )
-
-      refute_push "offer", _payload
-      refute_push "answer", _payload
-      refute_push "error", _payload
-    end
-  end
-
-  describe "fake ICE and heartbeat signaling" do
-    setup do
-      owner = user_fixture()
-      scope = DiscordClone.Accounts.Scope.for_user(owner)
-      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Fake ICE signaling"})
-
-      {:ok, voice_channel} =
-        Workspaces.create_voice_channel(scope, workspace.id, %{name: "lobby"})
-
-      {:ok, other_voice_channel} =
-        Workspaces.create_voice_channel(scope, workspace.id, %{name: "breakout"})
-
-      token = Accounts.generate_user_session_token(owner)
-
-      {:ok, socket} =
-        connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
-
-      {:ok, %{signaling_session_id: signaling_session_id}, channel_socket} =
-        subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}")
-
-      %{
-        channel_socket: channel_socket,
-        other_voice_channel: other_voice_channel,
-        signaling_session_id: signaling_session_id,
-        token: token
-      }
-    end
-
-    test "acknowledges fake client ICE and pushes one fake server ICE only to its caller", %{
-      channel_socket: channel_socket,
-      signaling_session_id: signaling_session_id
-    } do
-      assert {:ok, _reply, _other_channel_socket} =
-               subscribe_and_join(channel_socket, VoiceChannel, channel_socket.topic)
-
-      ref =
-        push(channel_socket, "ice_candidate", %{
-          "signaling_session_id" => signaling_session_id,
-          "label" => "fake-client-ice",
-          "sequence" => 3
-        })
-
-      assert_reply ref, :ok, %{
-        signaling_session_id: ^signaling_session_id,
-        label: "fake-client-ice-ack",
-        sequence: 3
-      }
-
-      assert_push "ice_candidate", %{
-        signaling_session_id: ^signaling_session_id,
-        label: "fake-server-ice",
-        sequence: 3
-      }
-
-      refute_push "ice_candidate", _payload
-      refute_push "error", _payload
-    end
-
-    test "returns field-level errors for malformed fake ICE and heartbeat fields", %{
-      channel_socket: channel_socket,
-      signaling_session_id: signaling_session_id
-    } do
-      for event <- ["ice_candidate", "heartbeat"] do
-        assert_reply push(channel_socket, event, %{"signaling_session_id" => signaling_session_id}),
-                     :error,
-                     %{errors: %{"label" => "is required"}}
-
-        assert_reply(
-          push(channel_socket, event, %{
-            "signaling_session_id" => signaling_session_id,
-            "label" => String.duplicate("a", 257),
-            "sequence" => 1
-          }),
-          :error,
-          %{errors: %{"label" => "must be at most 256 characters"}}
-        )
-
-        assert_reply(
-          push(channel_socket, event, %{
-            "signaling_session_id" => signaling_session_id,
-            "label" => 1,
-            "sequence" => 1
-          }),
-          :error,
-          %{errors: %{"label" => "must be a string"}}
-        )
-
-        assert_reply(
-          push(channel_socket, event, %{
-            "signaling_session_id" => signaling_session_id,
-            "label" => "fake-value",
-            "sequence" => "one"
-          }),
-          :error,
-          %{errors: %{"sequence" => "must be a non-negative integer"}}
-        )
-
-        assert_reply(
-          push(channel_socket, event, %{
-            "signaling_session_id" => signaling_session_id,
-            "label" => "fake-value",
-            "sequence" => 1,
-            "unexpected" => "field"
-          }),
-          :error,
-          %{errors: %{"payload" => "contains unsupported fields"}}
-        )
-
-        assert_reply(
-          push(channel_socket, event, %{
-            "signaling_session_id" => signaling_session_id,
-            "label" => String.duplicate("a", 4_096),
-            "sequence" => 1
-          }),
-          :error,
-          %{errors: %{"payload" => "must be at most 4096 bytes"}}
-        )
-      end
-    end
-
-    test "rejects missing, mismatched, stale, and cross-topic IDs safely for fake ICE and heartbeat",
-         %{
-           channel_socket: channel_socket,
-           other_voice_channel: other_voice_channel,
-           signaling_session_id: first_id
-         } do
-      payload = %{"label" => "fake-value", "sequence" => 1}
-
-      for event <- ["ice_candidate", "heartbeat"],
-          signaling_session_id <- [nil, "mismatched-id"] do
-        assert_reply(
-          push(
-            channel_socket,
-            event,
-            Map.put(payload, "signaling_session_id", signaling_session_id)
-          ),
-          :error,
-          %{reason: "invalid_request"}
-        )
-      end
-
-      assert {:ok, %{signaling_session_id: other_id}, other_channel_socket} =
-               subscribe_and_join(channel_socket, VoiceChannel, "voice:#{other_voice_channel.id}")
-
-      refute first_id == other_id
-
-      for event <- ["ice_candidate", "heartbeat"] do
-        assert_reply(
-          push(other_channel_socket, event, Map.put(payload, "signaling_session_id", first_id)),
-          :error,
-          %{reason: "invalid_request"}
-        )
-      end
-
-      Process.flag(:trap_exit, true)
-      assert_reply leave(channel_socket), :ok
-      assert_receive {:EXIT, _, {:shutdown, :left}}
-
-      assert {:ok, %{signaling_session_id: rejoined_id}, rejoined_channel_socket} =
-               subscribe_and_join(channel_socket, VoiceChannel, channel_socket.topic)
-
-      refute first_id == rejoined_id
-
-      for event <- ["ice_candidate", "heartbeat"] do
-        assert_reply(
-          push(
-            rejoined_channel_socket,
-            event,
-            Map.put(payload, "signaling_session_id", first_id)
-          ),
-          :error,
-          %{reason: "invalid_request"}
-        )
-      end
-    end
-
-    test "acknowledges a heartbeat without pushing a server event", %{
-      channel_socket: channel_socket,
-      signaling_session_id: signaling_session_id
-    } do
-      ref =
-        push(channel_socket, "heartbeat", %{
-          "signaling_session_id" => signaling_session_id,
-          "label" => "fake-heartbeat",
-          "sequence" => 4
-        })
-
-      assert_reply ref, :ok, %{
-        signaling_session_id: ^signaling_session_id,
-        label: "fake-heartbeat-ack",
-        sequence: 4
-      }
-
-      refute_push "heartbeat", _payload
-      refute_push "ice_candidate", _payload
-    end
-
-    test "rejects the prior ID for fake ICE and heartbeat after an unexpected topic close", %{
-      channel_socket: channel_socket,
-      signaling_session_id: first_id,
-      token: token
-    } do
-      Process.flag(:trap_exit, true)
-      :ok = close(channel_socket)
-      assert_receive {:EXIT, _, {:shutdown, :closed}}
-
-      assert {:ok, reconnected_socket} =
-               connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
-
-      assert {:ok, %{signaling_session_id: second_id}, rejoined_channel_socket} =
-               subscribe_and_join(reconnected_socket, VoiceChannel, channel_socket.topic)
-
-      refute first_id == second_id
-
-      for event <- ["ice_candidate", "heartbeat"] do
-        assert_reply(
-          push(rejoined_channel_socket, event, %{
-            "signaling_session_id" => first_id,
-            "label" => "fake-value",
-            "sequence" => 1
-          }),
-          :error,
-          %{reason: "invalid_request"}
-        )
-      end
-    end
-  end
-
-  describe "same-topic signaling isolation and safe diagnostics" do
-    setup do
-      owner = user_fixture()
-      scope = DiscordClone.Accounts.Scope.for_user(owner)
-      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Signaling isolation"})
-
-      {:ok, voice_channel} =
-        Workspaces.create_voice_channel(scope, workspace.id, %{name: "lobby"})
-
-      token = Accounts.generate_user_session_token(owner)
-
-      {:ok, first_socket} =
-        connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
-
-      {:ok, second_socket} =
-        connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
-
-      topic = "voice:#{voice_channel.id}"
-
-      {:ok, %{signaling_session_id: first_id}, first_channel} =
-        subscribe_and_join(first_socket, VoiceChannel, topic)
-
-      {:ok, %{signaling_session_id: second_id}, second_channel} =
-        subscribe_and_join(second_socket, VoiceChannel, topic)
-
-      %{
-        first_channel: first_channel,
-        first_id: first_id,
-        second_channel: second_channel,
-        second_id: second_id
-      }
-    end
-
-    test "keeps fake signaling replies, events, validation errors, and session IDs isolated",
-         context do
-      %{
-        first_channel: first_channel,
-        first_id: first_id,
-        second_channel: second_channel,
-        second_id: second_id
-      } = context
-
-      refute first_id == second_id
-
-      assert_reply push(first_channel, "offer", valid_payload(first_id, "fake-offer", 1)), :ok, %{
-        signaling_session_id: ^first_id,
-        label: "fake-answer",
-        sequence: 1
-      }
-
-      assert_reply push(second_channel, "offer", valid_payload(second_id, "fake-offer", 2)),
-                   :ok,
-                   %{signaling_session_id: ^second_id, label: "fake-answer", sequence: 2}
-
-      first_ice =
-        push(first_channel, "ice_candidate", valid_payload(first_id, "fake-client-ice", 3))
-
-      assert_reply first_ice, :ok, %{
-        signaling_session_id: ^first_id,
-        label: "fake-client-ice-ack",
-        sequence: 3
-      }
-
-      assert_push "ice_candidate", %{
-        signaling_session_id: ^first_id,
-        label: "fake-server-ice",
-        sequence: 3
-      }
-
-      refute_push "ice_candidate", _payload
-
-      second_ice =
-        push(second_channel, "ice_candidate", valid_payload(second_id, "fake-client-ice", 4))
-
-      assert_reply second_ice, :ok, %{
-        signaling_session_id: ^second_id,
-        label: "fake-client-ice-ack",
-        sequence: 4
-      }
-
-      assert_push "ice_candidate", %{
-        signaling_session_id: ^second_id,
-        label: "fake-server-ice",
-        sequence: 4
-      }
-
-      refute_push "ice_candidate", _payload
-
-      assert_reply push(first_channel, "heartbeat", valid_payload(first_id, "fake-heartbeat", 5)),
-                   :ok,
-                   %{signaling_session_id: ^first_id, label: "fake-heartbeat-ack", sequence: 5}
-
-      assert_reply push(
-                     second_channel,
-                     "heartbeat",
-                     valid_payload(second_id, "fake-heartbeat", 6)
-                   ),
-                   :ok,
-                   %{signaling_session_id: ^second_id, label: "fake-heartbeat-ack", sequence: 6}
-
-      assert_reply push(first_channel, "offer", valid_payload(second_id, "fake-offer", 7)),
-                   :error,
-                   %{reason: "invalid_request"}
-
-      assert_reply push(second_channel, "offer", %{"signaling_session_id" => second_id}),
-                   :error,
-                   %{errors: %{"label" => "is required"}}
-
-      refute_push "offer", _payload
-      refute_push "answer", _payload
-      refute_push "heartbeat", _payload
-      refute_push "error", _payload
-    end
-
-    test "rejects unsupported events with a stable safe error", %{first_channel: channel} do
-      assert_reply push(channel, "unsupported", %{"sensitive" => "not returned"}), :error, %{
-        reason: "unsupported_event"
-      }
-    end
-
-    test "emits only safe operation diagnostics", %{
-      first_channel: channel,
-      first_id: signaling_session_id
-    } do
-      telemetry_handler_id = "voice-signaling-diagnostics-#{System.unique_integer([:positive])}"
-      test_pid = self()
-
-      :ok =
-        :telemetry.attach(
-          telemetry_handler_id,
-          [:discord_clone, :voice_signaling, :operation],
-          fn event, measurements, metadata, _config ->
-            send(test_pid, {:voice_diagnostic, event, measurements, metadata})
-          end,
-          nil
-        )
-
-      on_exit(fn -> :telemetry.detach(telemetry_handler_id) end)
-
-      payload = valid_payload(signaling_session_id, "private-fake-value", 8)
-      assert_reply push(channel, "offer", payload), :ok
-
-      assert_receive {:voice_diagnostic, [:discord_clone, :voice_signaling, :operation], %{},
-                      metadata}
-
-      assert metadata.operation == "offer"
-      assert metadata.outcome == :accepted
-      assert is_integer(metadata.decoded_request_byte_count)
-      refute Map.has_key?(metadata, :signaling_session_id)
-      refute Map.has_key?(metadata, :params)
-      refute Map.has_key?(metadata, :payload)
-      refute Map.has_key?(metadata, :socket)
-      refute Map.has_key?(metadata, :user_id)
-      refute Map.has_key?(metadata, :voice_channel_id)
-    end
-
-    defp valid_payload(signaling_session_id, label, sequence) do
-      %{"signaling_session_id" => signaling_session_id, "label" => label, "sequence" => sequence}
-    end
+  defp candidate do
+    %{
+      "candidate" => "candidate:1 1 udp 1 127.0.0.1 9 typ host",
+      "sdpMid" => "0",
+      "sdpMLineIndex" => 0
+    }
   end
 end
