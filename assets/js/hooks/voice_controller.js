@@ -4,11 +4,14 @@ export function createVoiceController({
   now = () => Date.now(),
   tabCoordination = createBroadcastTabCoordination(),
   tabId = createTabId(),
+  connectionFactory = null,
 } = {}) {
   let activeRequest = 0
   let audioTracks = []
   let currentState = idleState()
   let currentClaim = null
+  let activeConnection = null
+  let statusBeforeMute = null
   const listeners = new Set()
 
   function publish(nextState) {
@@ -28,18 +31,24 @@ export function createVoiceController({
     audioTracks = []
   }
 
+  function closeConnection() {
+    activeConnection?.leave?.()
+    activeConnection = null
+  }
+
   function releaseForTakeover() {
     if (!ownsLocalCapture()) return
 
     const channel = currentState
     activeRequest += 1
     currentClaim = null
+    closeConnection()
     clearCapture()
     publish({...channel, error: "taken_over", retryable: false, status: "taken_over"})
   }
 
   function ownsLocalCapture() {
-    return ["requesting", "capturing", "muted"].includes(currentState.status)
+    return ["requesting", "capturing", "joining", "connected", "muted"].includes(currentState.status)
   }
 
   function handleClaim(claim) {
@@ -69,6 +78,7 @@ export function createVoiceController({
 
     const channel = currentState
     activeRequest += 1
+    closeConnection()
     clearCapture()
     publish({...channel, error: "externally_ended", retryable: true, status: "externally_ended"})
   }
@@ -99,10 +109,35 @@ export function createVoiceController({
         audioTracks = tracks
         audioTracks.forEach(track => track.addEventListener?.("ended", handleTrackEnded))
         publish({...channel, status: "capturing"})
+        startConnection(channel, tracks[0], request)
       })
       .catch(error => {
         if (request === activeRequest) publish(failureState(channel, failureFor(error)))
       })
+  }
+
+  function startConnection(channel, track, request) {
+    if (!connectionFactory || !track || request !== activeRequest) return
+
+    const connection = connectionFactory({
+      channel,
+      track,
+      onFailure(error) {
+        if (connection !== activeConnection || request !== activeRequest) return
+
+        activeConnection = null
+        clearCapture()
+        publish({...channel, error, retryable: true, status: error})
+      },
+      onState(status) {
+        if (connection !== activeConnection || request !== activeRequest) return
+        publish({...channel, status})
+      },
+    })
+
+    activeConnection = connection
+    publish({...channel, status: "joining"})
+    connection?.connect?.({channelId: channel.channelId, track})?.catch?.(() => {})
   }
 
   try {
@@ -139,18 +174,21 @@ export function createVoiceController({
     },
 
     toggleMute() {
-      if (currentState.status === "capturing") {
+      if (["capturing", "connected"].includes(currentState.status)) {
+        statusBeforeMute = currentState.status
         audioTracks.forEach(track => track.enabled = false)
         publish({...currentState, status: "muted"})
       } else if (currentState.status === "muted") {
         audioTracks.forEach(track => track.enabled = true)
-        publish({...currentState, status: "capturing"})
+        publish({...currentState, status: statusBeforeMute || "capturing"})
+        statusBeforeMute = null
       }
     },
 
     leave() {
       activeRequest += 1
       currentClaim = null
+      closeConnection()
       clearCapture()
       publish(idleState())
     },
@@ -162,6 +200,10 @@ export function createVoiceController({
       } catch (_) {
         // Browser teardown must not fail because a coordination channel cannot close.
       }
+    },
+
+    configure({connectionFactory: nextConnectionFactory} = {}) {
+      connectionFactory = nextConnectionFactory || null
     },
   }
 }

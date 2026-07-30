@@ -50,7 +50,7 @@ export function createVoiceChannels(controller) {
     const muteButton = this.el.querySelector("[data-voice-channel-mute]")
 
     status.textContent = statusMessage(state)
-    controls.hidden = !["capturing", "muted"].includes(state.status)
+    controls.hidden = !["joining", "connected", "muted"].includes(state.status)
     retryControls.hidden = !state.retryable
     muteButton.textContent = state.status === "muted" ? "Unmute" : "Mute"
     muteButton.setAttribute("aria-pressed", String(state.status === "muted"))
@@ -60,9 +60,11 @@ export function createVoiceChannels(controller) {
 }
 
 function statusMessage(state) {
-  if (state.status === "requesting") return `Requesting microphone for ${state.channelName}.`
-  if (state.status === "capturing") return `Capturing microphone in ${state.channelName}.`
-  if (state.status === "muted") return `Microphone muted in ${state.channelName}.`
+  if (state.status === "requesting") return "Allow microphone access"
+  if (state.status === "joining" || state.status === "capturing") return "Joining voice…"
+  if (state.status === "connected" || state.status === "muted") return "Connected"
+  if (state.status === "connection_failed") return "Couldn’t connect — try again"
+  if (state.status === "connection_lost") return "Connection lost — try again"
   if (state.status === "permission_denied") return "Microphone permission was denied. Check your browser settings, then retry."
   if (state.status === "no_device") return "No microphone was found. Connect or select an input device, then retry."
   if (state.status === "insecure_context") return "Microphone capture needs a secure connection. Use HTTPS outside localhost."

@@ -107,7 +107,7 @@ test("the Voice Channel UI renders its controller lifecycle and sends a Voice Ch
   assert.deepEqual(calls, [{name: "join", value: {id: "voice-1", name: "lobby", workspaceId: "workspace-1"}}])
 
   emit({channelId: "voice-1", channelName: "lobby", status: "requesting", workspaceId: "workspace-1"})
-  assert.equal(status.textContent, "Requesting microphone for lobby.")
+  assert.equal(status.textContent, "Allow microphone access")
   assert.equal(controls.hidden, true)
 
   emit({channelId: "voice-1", channelName: "lobby", retryable: true, status: "permission_denied", workspaceId: "workspace-1"})
@@ -123,14 +123,23 @@ test("the Voice Channel UI renders its controller lifecycle and sends a Voice Ch
   assert.equal(controls.hidden, true)
   assert.equal(retryControls.hidden, true)
 
-  emit({channelId: "voice-1", channelName: "lobby", status: "capturing", workspaceId: "workspace-1"})
-  assert.equal(status.textContent, "Capturing microphone in lobby.")
+  emit({channelId: "voice-1", channelName: "lobby", status: "joining", workspaceId: "workspace-1"})
+  assert.equal(status.textContent, "Joining voice…")
   assert.equal(controls.hidden, false)
   assert.equal(muteButton.textContent, "Mute")
   assert.equal(muteButton["aria-pressed"], "false")
 
+  emit({channelId: "voice-1", channelName: "lobby", status: "connected", workspaceId: "workspace-1"})
+  assert.equal(status.textContent, "Connected")
+
+  emit({channelId: "voice-1", channelName: "lobby", error: "connection_failed", retryable: true, status: "connection_failed", workspaceId: "workspace-1"})
+  assert.equal(status.textContent, "Couldn’t connect — try again")
+
+  emit({channelId: "voice-1", channelName: "lobby", error: "connection_lost", retryable: true, status: "connection_lost", workspaceId: "workspace-1"})
+  assert.equal(status.textContent, "Connection lost — try again")
+
   emit({channelId: "voice-1", channelName: "lobby", status: "muted", workspaceId: "workspace-1"})
-  assert.equal(status.textContent, "Microphone muted in lobby.")
+  assert.equal(status.textContent, "Connected")
   assert.equal(muteButton.textContent, "Unmute")
   assert.equal(muteButton["aria-pressed"], "true")
 

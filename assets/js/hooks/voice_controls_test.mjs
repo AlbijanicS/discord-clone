@@ -61,8 +61,8 @@ test("the rail adapter immediately renders an existing capture and controls it w
   const mounted = mountVoiceControls({channelId: "voice-1", channelName: "lobby", status: "capturing", workspaceId: "workspace-1"})
 
   assert.equal(mounted.channel.textContent, "lobby")
-  assert.equal(mounted.status.textContent, "Capturing microphone")
-  assert.equal(mounted.announcement.textContent, "Capturing microphone")
+  assert.equal(mounted.status.textContent, "Joining voice…")
+  assert.equal(mounted.announcement.textContent, "Joining voice…")
   assert.equal(mounted.mute.textContent, "Mute")
 
   const muteButton = {closest: selector => selector === "[data-voice-controls-mute]" ? muteButton : null}

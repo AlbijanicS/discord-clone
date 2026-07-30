@@ -157,7 +157,9 @@ test("leaving while permission is pending stops a late stream instead of restori
 })
 
 test("a denied browser permission keeps the selected Voice Channel and offers a retry", async () => {
+  let connectionAttempts = 0
   const controller = createVoiceController({
+    connectionFactory() { connectionAttempts += 1 },
     mediaDevices: {
       getUserMedia: () => Promise.reject({name: "NotAllowedError"}),
     },
@@ -171,6 +173,52 @@ test("a denied browser permission keeps the selected Voice Channel and offers a 
     error: "permission_denied",
     retryable: true,
     status: "permission_denied",
+    workspaceId: "workspace-1",
+  })
+  assert.equal(connectionAttempts, 0)
+})
+
+test("capture succeeds before one connection attempt receives the owned track and reports connected", async () => {
+  const microphoneTrack = track()
+  const attempts = []
+  const controller = createVoiceController({
+    connectionFactory({channel, onFailure, onState, track: suppliedTrack}) {
+      attempts.push({channel, onFailure, onState, track: suppliedTrack})
+      return {leave() { attempts[0].left = true }}
+    },
+    mediaDevices: {getUserMedia: () => Promise.resolve(stream(microphoneTrack))},
+  })
+
+  await controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+
+  assert.equal(attempts.length, 1)
+  assert.equal(attempts[0].track, microphoneTrack)
+  assert.equal(controller.state().status, "joining")
+  attempts[0].onState("connected")
+  assert.equal(controller.state().status, "connected")
+})
+
+test("a terminal connection failure releases controller-owned capture and exposes a retryable error", async () => {
+  const microphoneTrack = track()
+  let attempt
+  const controller = createVoiceController({
+    connectionFactory(options) {
+      attempt = options
+      return {leave() {}}
+    },
+    mediaDevices: {getUserMedia: () => Promise.resolve(stream(microphoneTrack))},
+  })
+
+  await controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+  attempt.onFailure("connection_failed")
+
+  assert.equal(microphoneTrack.stopped, true)
+  assert.deepEqual(controller.state(), {
+    channelId: "voice-1",
+    channelName: "lobby",
+    error: "connection_failed",
+    retryable: true,
+    status: "connection_failed",
     workspaceId: "workspace-1",
   })
 })

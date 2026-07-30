@@ -62,7 +62,7 @@ export function createVoiceControls(controller) {
 
     renderState(state) {
       this.currentState = state
-      const visible = ["requesting", "capturing", "muted"].includes(state.status) || state.error
+      const visible = ["requesting", "capturing", "joining", "connected", "muted"].includes(state.status) || state.error
       const channel = this.el.querySelector("[data-voice-controls-channel]")
       const status = this.el.querySelector("[data-voice-controls-status]")
       const announcement = this.el.querySelector("[data-voice-controls-announcement]")
@@ -92,9 +92,11 @@ export function createVoiceControls(controller) {
 }
 
 function railStatusMessage(state) {
-  if (state.status === "requesting") return "Requesting microphone"
-  if (state.status === "capturing") return "Capturing microphone"
-  if (state.status === "muted") return "Microphone muted"
+  if (state.status === "requesting") return "Allow microphone access"
+  if (state.status === "joining" || state.status === "capturing") return "Joining voice…"
+  if (state.status === "connected" || state.status === "muted") return "Connected"
+  if (state.status === "connection_failed") return "Couldn’t connect — try again"
+  if (state.status === "connection_lost") return "Connection lost — try again"
   if (state.status === "permission_denied") return "Microphone permission was denied. Check browser settings, then retry."
   if (state.status === "no_device") return "No microphone was found. Connect an input, then retry."
   if (state.status === "insecure_context") return "Microphone capture needs HTTPS outside localhost."

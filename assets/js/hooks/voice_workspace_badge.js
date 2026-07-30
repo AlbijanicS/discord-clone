@@ -18,7 +18,7 @@ export function createVoiceWorkspaceBadge(controller) {
 
     renderState(state) {
       const active =
-        ["requesting", "capturing", "muted"].includes(state.status) &&
+        ["requesting", "joining", "connected", "muted"].includes(state.status) &&
           state.workspaceId === this.el.dataset.workspaceId
       const attention = state.error && state.workspaceId === this.el.dataset.workspaceId
       const microphone = this.el.querySelector("[data-voice-workspace-badge-microphone]")

@@ -18,11 +18,16 @@ export function createVoiceSignaling({Socket} = {}) {
       return channel.join()
     },
 
-    sendFakeOffer(offer) {
-      return channel?.push("offer", offer) ?? null
+    joinVoiceChannel(voiceChannelId) {
+      return awaitReply(this.join(voiceChannelId))
     },
 
-    sendFakeIce(ice) {
+    sendOffer(offer) {
+      const push = channel?.push("offer", offer)
+      return push ? awaitReply(push) : Promise.reject(new Error("voice signaling is not joined"))
+    },
+
+    sendIce(ice) {
       return channel?.push("ice_candidate", ice) ?? null
     },
 
@@ -30,7 +35,7 @@ export function createVoiceSignaling({Socket} = {}) {
       return channel?.push("heartbeat", heartbeat) ?? null
     },
 
-    onFakeServerIce(callback) {
+    onServerIce(callback) {
       return channel?.on("ice_candidate", callback) ?? null
     },
 
@@ -48,4 +53,12 @@ export function createVoiceSignaling({Socket} = {}) {
       socket = null
     },
   }
+}
+
+function awaitReply(push) {
+  return new Promise((resolve, reject) => {
+    push.receive("ok", resolve)
+    push.receive("error", reject)
+    push.receive("timeout", () => reject(new Error("voice signaling request timed out")))
+  })
 }

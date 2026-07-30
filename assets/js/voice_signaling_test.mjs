@@ -31,7 +31,7 @@ test("joins the dedicated Voice topic and leaves through Phoenix's built-in life
   assert.deepEqual(events.at(-1), ["leave"])
 })
 
-test("pushes a fake offer so callers receive Phoenix's correlated reply", () => {
+test("pushes a real offer and resolves Phoenix's correlated answer reply", async () => {
   const pushes = []
   const receives = []
   const offerPush = {
@@ -60,29 +60,25 @@ test("pushes a fake offer so callers receive Phoenix's correlated reply", () => 
 
   const offer = {
     signaling_session_id: "current-signaling-session",
-    label: "fake-offer",
-    sequence: 7,
+    negotiation_id: "browser-negotiation",
+    description: {type: "offer", sdp: "browser-offer"},
   }
 
-  const returnedPush = signaling.sendFakeOffer(offer)
+  const answerPromise = signaling.sendOffer(offer)
 
-  assert.equal(returnedPush, offerPush)
   assert.deepEqual(pushes, [["offer", offer]])
 
   const answer = {
     signaling_session_id: "current-signaling-session",
-    label: "fake-answer",
-    sequence: 7,
+    negotiation_id: "browser-negotiation",
+    description: {type: "answer", sdp: "server-answer"},
   }
-  let receivedAnswer = null
+  receives.find(([status]) => status === "ok")[1](answer)
 
-  returnedPush.receive("ok", reply => { receivedAnswer = reply })
-  receives[0][1](answer)
-
-  assert.deepEqual(receivedAnswer, answer)
+  assert.deepEqual(await answerPromise, answer)
 })
 
-test("pushes fake ICE and heartbeat while exposing direct fake server ICE events", () => {
+test("pushes individual ICE and heartbeat while exposing direct server ICE events", () => {
   const pushes = []
   const handlers = []
   const receives = []
@@ -117,22 +113,22 @@ test("pushes fake ICE and heartbeat while exposing direct fake server ICE events
   const signaling = createVoiceSignaling({Socket: FakeSocket})
   signaling.join("voice-channel-id")
 
-  const ice = {signaling_session_id: "current-id", label: "fake-client-ice", sequence: 3}
+  const ice = {signaling_session_id: "current-id", negotiation_id: "browser-negotiation", candidate: {candidate: "client-ice"}}
   const heartbeat = {signaling_session_id: "current-id", label: "fake-heartbeat", sequence: 4}
   const receivedServerIce = []
 
-  assert.equal(signaling.sendFakeIce(ice), icePush)
+  assert.equal(signaling.sendIce(ice), icePush)
   assert.equal(signaling.sendHeartbeat(heartbeat), heartbeatPush)
-  assert.equal(signaling.onFakeServerIce(payload => receivedServerIce.push(payload)), 1)
+  assert.equal(signaling.onServerIce(payload => receivedServerIce.push(payload)), 1)
   assert.deepEqual(pushes, [["ice_candidate", ice], ["heartbeat", heartbeat]])
 
-  const serverIce = {signaling_session_id: "current-id", label: "fake-server-ice", sequence: 3}
+  const serverIce = {signaling_session_id: "current-id", negotiation_id: "browser-negotiation", candidate: {candidate: "server-ice"}}
   handlers[0][1](serverIce)
 
   assert.deepEqual(receivedServerIce, [serverIce])
 
   let receivedError = null
-  signaling.sendFakeIce(ice).receive("error", reply => { receivedError = reply })
+  signaling.sendIce(ice).receive("error", reply => { receivedError = reply })
   receives.at(-1)[2]({reason: "invalid_request"})
 
   assert.deepEqual(receivedError, {reason: "invalid_request"})
