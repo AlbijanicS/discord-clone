@@ -39,6 +39,10 @@ export function createVoiceSignaling({Socket} = {}) {
       return channel?.on("ice_candidate", callback) ?? null
     },
 
+    onClose(callback) {
+      return channel?.onClose(callback) ?? null
+    },
+
     leave() {
       if (!channel) return null
 

@@ -3,8 +3,9 @@ import test from "node:test"
 
 import {createVoiceSignaling} from "./voice_signaling.js"
 
-test("joins the dedicated Voice topic and leaves through Phoenix's built-in lifecycle", () => {
+test("joins the dedicated Voice topic, observes unexpected close, and leaves through Phoenix's built-in lifecycle", () => {
   const events = []
+  let onClose
   const joinPush = {receive() { return joinPush }}
   const leavePush = {receive() { return leavePush }}
 
@@ -13,7 +14,11 @@ test("joins the dedicated Voice topic and leaves through Phoenix's built-in life
     connect() { events.push(["connect"]) }
     channel(topic, params) {
       events.push(["channel", topic, params])
-      return {join() { return joinPush }, leave() { events.push(["leave"]); return leavePush }}
+      return {
+        join() { return joinPush },
+        leave() { events.push(["leave"]); return leavePush },
+        onClose(callback) { onClose = callback },
+      }
     }
     disconnect() { events.push(["disconnect"]) }
   }
@@ -26,6 +31,11 @@ test("joins the dedicated Voice topic and leaves through Phoenix's built-in life
     ["connect"],
     ["channel", "voice:voice-channel-id", {}],
   ])
+
+  let closes = 0
+  signaling.onClose(() => { closes += 1 })
+  onClose()
+  assert.equal(closes, 1)
 
   assert.equal(signaling.leave(), leavePush)
   assert.deepEqual(events.at(-1), ["leave"])

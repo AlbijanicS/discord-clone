@@ -108,6 +108,7 @@ export function createVoicePeerAttempt({
         peerConnection.addEventListener("icecandidate", sendLocalIce)
         peerConnection.addEventListener("connectionstatechange", handleConnectionStateChange)
         signaling.onServerIce(receiveServerIce)
+        signaling.onClose(() => fail("connection_lost"))
         peerConnection.addTrack(track)
 
         const offer = await peerConnection.createOffer()

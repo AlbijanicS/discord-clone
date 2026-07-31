@@ -223,6 +223,25 @@ test("a terminal connection failure releases controller-owned capture and expose
   })
 })
 
+test("explicit Leave, page teardown, and an ended microphone tell the active attempt to leave before release", async () => {
+  for (const action of ["leave", "teardown", "end"]) {
+    const microphoneTrack = track()
+    let attemptLeaves = 0
+    const controller = createVoiceController({
+      connectionFactory() { return {leave() { attemptLeaves += 1 }} },
+      mediaDevices: {getUserMedia: () => Promise.resolve(stream(microphoneTrack))},
+    })
+
+    await controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+    if (action === "leave") controller.leave()
+    else if (action === "teardown") controller.teardown()
+    else microphoneTrack.end()
+
+    assert.equal(attemptLeaves, 1)
+    assert.equal(microphoneTrack.stopped, true)
+  }
+})
+
 test("browser failures have safe understandable states", async () => {
   const cases = [
     [{name: "NotAllowedError"}, "permission_denied", true],

@@ -36,9 +36,11 @@ function fakePeerConnection() {
 function attemptFixture() {
   const peer = fakePeerConnection()
   const serverIce = []
+  const closes = []
   const signaling = {
     joinVoiceChannel: async () => ({signaling_session_id: "server-session"}),
     leave() {},
+    onClose(callback) { closes.push(callback); return 1 },
     onServerIce(callback) { serverIce.push(callback); return 1 },
     sendIce() {},
     sendOffer: async () => ({
@@ -48,7 +50,7 @@ function attemptFixture() {
     }),
   }
 
-  return {peer, serverIce, signaling}
+  return {closes, peer, serverIce, signaling}
 }
 
 test("negotiates one supplied audio track and waits for connected before reporting success", async () => {
@@ -137,6 +139,64 @@ test("a rejected offer is terminal, closes the peer, and leaves signaling", asyn
   assert.equal(peer.closed, true)
   assert.equal(leaves, 1)
   assert.deepEqual(failures, ["connection_failed"])
+})
+
+test("an unexpected signaling-topic close is terminal and releases the browser peer", async () => {
+  const {closes, peer, signaling} = attemptFixture()
+  const failures = []
+  let leaves = 0
+  signaling.leave = () => { leaves += 1 }
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    negotiationId: () => "browser-negotiation",
+    onFailure: failure => failures.push(failure),
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  closes[0]()
+
+  assert.equal(peer.closed, true)
+  assert.equal(leaves, 1)
+  assert.deepEqual(failures, ["connection_lost"])
+})
+
+test("explicit Leave closes one active browser peer and leaves its topic only once", async () => {
+  const {peer, signaling} = attemptFixture()
+  let leaves = 0
+  signaling.leave = () => { leaves += 1 }
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    negotiationId: () => "browser-negotiation",
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  attempt.leave()
+  attempt.leave()
+
+  assert.equal(peer.closed, true)
+  assert.equal(leaves, 1)
+})
+
+test("failed and closed browser connection states are terminal and use the retryable lost-connection state", async () => {
+  for (const state of ["failed", "closed"]) {
+    const {peer, signaling} = attemptFixture()
+    const failures = []
+    const attempt = createVoicePeerAttempt({
+      PeerConnection: class { constructor() { return peer } },
+      negotiationId: () => "browser-negotiation",
+      onFailure: failure => failures.push(failure),
+      signaling,
+    })
+
+    await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+    peer.connectionState = state
+    peer.emit("connectionstatechange")
+
+    assert.equal(peer.closed, true)
+    assert.deepEqual(failures, ["connection_lost"])
+  }
 })
 
 test("an offer reply that exceeds ten seconds is terminal", async () => {
