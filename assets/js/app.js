@@ -93,7 +93,7 @@ window.liveSocket = liveSocket
 
 // Voice signaling is deliberately separate from the Voice Owner Tab controller,
 // which remains responsible only for local microphone capture and ownership.
-window.voiceSignaling = createVoiceSignaling({Socket})
+window.voiceSignaling = createVoiceSignaling({Socket, csrfToken})
 voiceController.configure({
   connectionFactory: options => createVoicePeerAttempt({...options, signaling: window.voiceSignaling}),
 })

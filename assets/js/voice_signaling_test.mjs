@@ -3,14 +3,14 @@ import test from "node:test"
 
 import {createVoiceSignaling} from "./voice_signaling.js"
 
-test("joins the dedicated Voice topic, observes unexpected close, and leaves through Phoenix's built-in lifecycle", () => {
+test("joins the dedicated Voice topic with the page CSRF token, observes unexpected close, and leaves through Phoenix's built-in lifecycle", () => {
   const events = []
   let onClose
   const joinPush = {receive() { return joinPush }}
   const leavePush = {receive() { return leavePush }}
 
   class FakeSocket {
-    constructor(path) { events.push(["new", path]) }
+    constructor(path, options) { events.push(["new", path, options]) }
     connect() { events.push(["connect"]) }
     channel(topic, params) {
       events.push(["channel", topic, params])
@@ -23,11 +23,11 @@ test("joins the dedicated Voice topic, observes unexpected close, and leaves thr
     disconnect() { events.push(["disconnect"]) }
   }
 
-  const signaling = createVoiceSignaling({Socket: FakeSocket})
+  const signaling = createVoiceSignaling({Socket: FakeSocket, csrfToken: "page-csrf-token"})
 
   assert.equal(signaling.join("voice-channel-id"), joinPush)
   assert.deepEqual(events, [
-    ["new", "/voice"],
+    ["new", "/voice", {params: {_csrf_token: "page-csrf-token"}}],
     ["connect"],
     ["channel", "voice:voice-channel-id", {}],
   ])

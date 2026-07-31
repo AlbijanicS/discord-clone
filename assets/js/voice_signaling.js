@@ -1,11 +1,11 @@
-export function createVoiceSignaling({Socket} = {}) {
+export function createVoiceSignaling({Socket, csrfToken} = {}) {
   let socket = null
   let channel = null
 
   function ensureSocket() {
     if (socket) return socket
 
-    socket = new Socket("/voice")
+    socket = new Socket("/voice", {params: {_csrf_token: csrfToken}})
     socket.connect()
     return socket
   }

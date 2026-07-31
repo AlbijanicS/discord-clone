@@ -14,6 +14,8 @@ defmodule DiscordCloneWeb.VoiceSocket do
     end
   end
 
+  def connect(_params, _socket, %{session: _session}), do: :error
+
   def connect(_params, _socket, _connect_info), do: :error
 
   @impl true

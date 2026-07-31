@@ -121,7 +121,7 @@ full SDP credentials or TURN credentials.
 | 1. Durable Voice Channel model | Complete | 2026-07-27 | Durable schema, scoped Workspaces API, and sidebar management UI. |
 | 2. Browser microphone ownership spike | Not started |  |  |
 | 3. Authenticated Phoenix signaling skeleton | Not started |  |  |
-| 4. First browser-to-ExWebRTC PeerConnection | Automated work complete; localhost proof blocked | 2026-07-31 | Real signaling and terminal ICE coverage are green. The available in-app browser captured audio but remained at `Joining voice…`; it did not reach `connected`, and no alternate Chrome surface was available for the required manual proof. |
+| 4. First browser-to-ExWebRTC PeerConnection | Manual localhost pass in progress | 2026-07-31 | Real signaling and terminal ICE coverage are green. After the voice socket began sending the page CSRF token, Chrome completed microphone permission, signaling, and browser-to-server connection; it also remained connected through app navigation and could be left globally. The required repeated-cycle proof remains. |
 | 5. RTP echo experiment | Not started |  |  |
 | 6. OTP Voice Channel Room and Session architecture | Not started |  |  |
 | 7. Move echo into supervised `Voice.Session` | Not started |  |  |
@@ -342,8 +342,11 @@ Prove:
 Implementation Notes:
 
 ```text
-Implemented through commit e9c2548 on 2026-07-31; not yet complete because
-the required real-browser localhost connection proof could not be obtained.
+Implemented through commit e9c2548 on 2026-07-31. A 2026-07-31 Chrome
+localhost pass subsequently exposed and fixed the admission blocker: Phoenix
+requires the page CSRF token before it will make a cookie session available to
+the separate `/voice` WebSocket. The client now supplies that token when it
+creates the voice socket.
 
 Files changed in Ticket 04:
 - assets/js/voice_peer_attempt.js
@@ -376,11 +379,20 @@ Behavior proven automatically:
 Tests run:
 - mix precommit (54 Node tests, 887 ExUnit tests; passed). The suite emitted
   known parallel Postgrex sandbox-disconnect log noise without test failures.
+- Focused post-fix tests: `node --test assets/js/voice_signaling_test.mjs`
+  (3 passing) and `mix test test/discord_clone_web/voice_channel_test.exs`
+  (10 passing).
+
+Manual observations:
+- Chrome prompted for microphone permission, proceeded rapidly through joining,
+  and reached `connected` with the server.
+- The connection remained active while navigating the app and could be left
+  from any app location.
 
 Known follow-up work:
-- Repeat the localhost proof in a browser surface that can complete local
-  WebRTC: browser and server must both reach connected, then perform three
-  Join/Leave cycles and inspect for retained PeerConnection processes.
+- Complete the localhost proof: verify both endpoints reach `connected` in
+  each of three Join/Leave cycles and inspect for retained PeerConnection
+  processes after every leave.
 - Exercise and record manual permission-denial, navigation-persistence, and
   failure-path observations in that same browser.
 ```
