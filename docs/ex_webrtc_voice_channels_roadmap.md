@@ -426,8 +426,7 @@ Automated evidence:
   media diagnostics tests assert aggregate counters and reject identifying
   signaling/media metadata.
 
-Localhost headphone checklist (operator-run; no physical result is claimed by
-automation):
+Localhost headphone checklist:
 1. With headphones connected, join a Voice Channel and confirm browser and
    server connection state reach `connected`.
 2. Confirm the browser attaches and plays the remote echo track, then speak and
