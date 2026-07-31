@@ -50,23 +50,24 @@ export function createVoicePeerAttempt({
       !active ||
       message?.signaling_session_id !== signalingSessionId ||
       message?.negotiation_id !== currentNegotiationId ||
-      !message?.candidate
+      (!message?.candidate && message?.end_of_candidates !== true)
     ) return
 
-    if (!answerApplied) {
-      const byteSize = candidateByteSize(message.candidate)
+    const candidate = message.end_of_candidates === true ? {candidate: ""} : message.candidate
+    const byteSize = message.end_of_candidates === true ? 0 : candidateByteSize(candidate)
 
+    if (!answerApplied) {
       if (
         pendingServerCandidates.length < MAX_PENDING_SERVER_CANDIDATES &&
         pendingServerCandidateBytes + byteSize <= MAX_PENDING_SERVER_CANDIDATE_BYTES
       ) {
-        pendingServerCandidates.push(message.candidate)
+        pendingServerCandidates.push(candidate)
         pendingServerCandidateBytes += byteSize
       }
       return
     }
 
-    addServerCandidate(message.candidate)
+    addServerCandidate(candidate)
   }
 
   function handleConnectionStateChange() {

@@ -101,6 +101,52 @@ test("buffers matching server ICE until the answer is applied, then preserves ar
   assert.deepEqual(peer.addedCandidates, [{candidate: "first"}])
 })
 
+test("buffers the correlated server end marker until the answer, then applies ExWebRTC's empty-candidate form", async () => {
+  const {peer, serverIce, signaling} = attemptFixture()
+  const answer = deferred()
+  signaling.sendOffer = async () => answer.promise
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    negotiationId: () => "browser-negotiation",
+    signaling,
+  })
+
+  const connecting = attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  await new Promise(resolve => setImmediate(resolve))
+  serverIce[0]({
+    signaling_session_id: "server-session",
+    negotiation_id: "browser-negotiation",
+    end_of_candidates: true,
+  })
+
+  answer.resolve({
+    signaling_session_id: "server-session",
+    negotiation_id: "browser-negotiation",
+    description: {type: "answer", sdp: "server-answer"},
+  })
+  await connecting
+
+  assert.deepEqual(peer.addedCandidates, [{candidate: ""}])
+})
+
+test("applies a correlated server end marker received after the answer as an empty candidate", async () => {
+  const {peer, serverIce, signaling} = attemptFixture()
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    negotiationId: () => "browser-negotiation",
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  serverIce[0]({
+    signaling_session_id: "server-session",
+    negotiation_id: "browser-negotiation",
+    end_of_candidates: true,
+  })
+
+  assert.deepEqual(peer.addedCandidates, [{candidate: ""}])
+})
+
 test("sends browser ICE candidates individually and never sends the null gathering event", async () => {
   const {peer, signaling} = attemptFixture()
   const sent = []
@@ -177,6 +223,34 @@ test("explicit Leave closes one active browser peer and leaves its topic only on
 
   assert.equal(peer.closed, true)
   assert.equal(leaves, 1)
+})
+
+test("Leave clears server ICE buffered before the answer", async () => {
+  const {peer, serverIce, signaling} = attemptFixture()
+  const answer = deferred()
+  signaling.sendOffer = () => answer.promise
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    negotiationId: () => "browser-negotiation",
+    signaling,
+  })
+
+  const connecting = attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  await new Promise(resolve => setImmediate(resolve))
+  serverIce[0]({
+    signaling_session_id: "server-session",
+    negotiation_id: "browser-negotiation",
+    candidate: {candidate: "early-candidate"},
+  })
+  attempt.leave()
+  answer.resolve({
+    signaling_session_id: "server-session",
+    negotiation_id: "browser-negotiation",
+    description: {type: "answer", sdp: "server-answer"},
+  })
+
+  await assert.rejects(connecting, /cancelled/)
+  assert.deepEqual(peer.addedCandidates, [])
 })
 
 test("failed and closed browser connection states are terminal and use the retryable lost-connection state", async () => {

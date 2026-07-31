@@ -49,7 +49,10 @@ defmodule DiscordCloneWeb.VoiceSignaling.PeerConnection do
   def add_ice_candidate(%__MODULE__{}, _candidate), do: {:error, :candidate_rejected}
 
   @spec signal(t(), term()) ::
-          {:ice_candidate, map()} | {:connection_state_change, atom()} | :ignore
+          {:ice_candidate, map()}
+          | {:connection_state_change, atom()}
+          | :end_of_candidates
+          | :ignore
   def signal(
         %__MODULE__{peer_connection: peer_connection},
         {:ex_webrtc, peer_connection, {:ice_candidate, candidate}}
@@ -63,6 +66,13 @@ defmodule DiscordCloneWeb.VoiceSignaling.PeerConnection do
       )
       when state in [:new, :connecting, :connected, :disconnected, :failed, :closed] do
     {:connection_state_change, state}
+  end
+
+  def signal(
+        %__MODULE__{peer_connection: peer_connection},
+        {:ex_webrtc, peer_connection, {:ice_gathering_state_change, :complete}}
+      ) do
+    :end_of_candidates
   end
 
   def signal(%__MODULE__{}, _message), do: :ignore

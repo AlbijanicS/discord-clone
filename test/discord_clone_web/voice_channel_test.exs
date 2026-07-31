@@ -58,6 +58,13 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       }
 
       assert is_binary(candidate)
+
+      assert_push "ice_candidate", %{
+        signaling_session_id: ^signaling_session_id,
+        negotiation_id: ^negotiation_id,
+        end_of_candidates: true
+      }
+
       refute_push "ice_candidate", _payload
     end
 
@@ -141,6 +148,71 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       assert_reply push(channel_socket, "offer", offer(signaling_session_id, negotiation_id)), :ok
     end
 
+    test "rejects a seventeenth early ICE candidate before the offer", context do
+      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
+      negotiation_id = "first-negotiation"
+
+      for number <- 1..16 do
+        assert_reply(
+          push(channel_socket, "ice_candidate", %{
+            "signaling_session_id" => signaling_session_id,
+            "negotiation_id" => negotiation_id,
+            "candidate" =>
+              Map.put(
+                candidate(),
+                "candidate",
+                "candidate:#{number} 1 udp 1 127.0.0.1 9 typ host"
+              )
+          }),
+          :ok,
+          %{negotiation_id: ^negotiation_id}
+        )
+      end
+
+      assert_reply(
+        push(channel_socket, "ice_candidate", %{
+          "signaling_session_id" => signaling_session_id,
+          "negotiation_id" => negotiation_id,
+          "candidate" => candidate()
+        }),
+        :error,
+        %{reason: "pending_candidate_limit_reached"}
+      )
+    end
+
+    test "rejects the sixty-fifth accepted ICE candidate", context do
+      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
+      negotiation_id = "first-negotiation"
+      assert_reply push(channel_socket, "offer", offer(signaling_session_id, negotiation_id)), :ok
+
+      for number <- 1..64 do
+        assert_reply(
+          push(channel_socket, "ice_candidate", %{
+            "signaling_session_id" => signaling_session_id,
+            "negotiation_id" => negotiation_id,
+            "candidate" =>
+              Map.put(
+                candidate(),
+                "candidate",
+                "candidate:#{number} 1 udp 1 127.0.0.1 9 typ host"
+              )
+          }),
+          :ok,
+          %{negotiation_id: ^negotiation_id}
+        )
+      end
+
+      assert_reply(
+        push(channel_socket, "ice_candidate", %{
+          "signaling_session_id" => signaling_session_id,
+          "negotiation_id" => negotiation_id,
+          "candidate" => candidate()
+        }),
+        :error,
+        %{reason: "candidate_limit_reached"}
+      )
+    end
+
     test "keeps signaling session IDs and server ICE isolated between admitted connections",
          context do
       %{channel_socket: first_channel, signaling_session_id: first_id} = context
@@ -157,6 +229,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       assert_reply push(first_channel, "offer", offer(first_id, "first-negotiation")), :ok
 
       assert_push "ice_candidate", %{signaling_session_id: ^first_id}
+      assert_push "ice_candidate", %{signaling_session_id: ^first_id, end_of_candidates: true}
       refute_push "ice_candidate", _payload
     end
 
@@ -208,8 +281,12 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
             :negotiation_id,
             :description,
             :candidate,
+            :ice_servers,
+            :ice_credentials,
             :params,
-            :socket
+            :socket,
+            :user,
+            :voice_channel
           ] do
         refute Map.has_key?(metadata, forbidden)
       end

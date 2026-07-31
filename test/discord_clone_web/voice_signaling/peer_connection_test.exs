@@ -55,4 +55,57 @@ defmodule DiscordCloneWeb.VoiceSignaling.PeerConnectionTest do
 
     assert candidate["usernameFragment"] == nil
   end
+
+  test "ExWebRTC 0.17.0 marks remote ICE gathering complete with an empty candidate" do
+    peer_connection = start_supervised_peer_connection()
+
+    assert {:ok, _answer, peer_connection} =
+             PeerConnection.accept_offer(peer_connection, browser_offer())
+
+    peer_connection_pid = peer_connection.peer_connection
+
+    assert_receive {
+      :ex_webrtc,
+      ^peer_connection_pid,
+      {:ice_gathering_state_change, :complete}
+    }
+
+    end_of_candidates = %ExWebRTC.ICECandidate{
+      candidate: "",
+      sdp_mid: "0",
+      sdp_m_line_index: 0
+    }
+
+    assert :ok =
+             ExWebRTC.PeerConnection.add_ice_candidate(
+               peer_connection.peer_connection,
+               end_of_candidates
+             )
+
+    assert :ok = PeerConnection.stop(peer_connection)
+  end
+
+  test "serializes the server gathering-complete notification as an end marker" do
+    peer_connection = start_supervised_peer_connection()
+
+    assert :end_of_candidates =
+             PeerConnection.signal(peer_connection, {
+               :ex_webrtc,
+               peer_connection.peer_connection,
+               {:ice_gathering_state_change, :complete}
+             })
+
+    assert :ok = PeerConnection.stop(peer_connection)
+  end
+
+  defp start_supervised_peer_connection do
+    peer_connection =
+      start_supervised!(%{
+        id: make_ref(),
+        start:
+          {ExWebRTC.PeerConnection, :start_link, [[ice_servers: [], controlling_process: self()]]}
+      })
+
+    %PeerConnection{peer_connection: peer_connection}
+  end
 end

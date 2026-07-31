@@ -128,6 +128,16 @@ defmodule DiscordCloneWeb.VoiceChannel do
 
         {:noreply, socket}
 
+      :end_of_candidates when is_binary(socket.assigns.negotiation_id) ->
+        push(socket, "ice_candidate", %{
+          signaling_session_id: socket.assigns.signaling_session_id,
+          negotiation_id: socket.assigns.negotiation_id,
+          end_of_candidates: true
+        })
+
+        Diagnostics.emit("ice_candidate", :accepted, decoded_request_byte_count: 0)
+        {:noreply, socket}
+
       {:connection_state_change, state} ->
         Diagnostics.emit("connection_state", :accepted, connection_state: state)
         {:noreply, socket}
