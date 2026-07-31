@@ -408,7 +408,12 @@ Prove:
 Implementation Notes:
 
 ```text
-Not started.
+Ticket 01 implemented on 2026-07-31: the authenticated Voice Channel now
+validates one negotiated Opus microphone source, attaches its server echo track
+before creating the initial answer, directly routes only admitted inbound RTP,
+and emits non-identifying aggregate media diagnostics. Browser remote playback,
+manual headphone proof, and lifecycle certification remain Phase 5 follow-up
+work.
 ```
 
 ## Phase 6: OTP Voice Channel Room And Session Architecture

@@ -105,6 +105,23 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
                    %{reason: "negotiation_already_active"}
     end
 
+    test "closes an incompatible media offer without exposing its description", context do
+      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
+
+      incompatible_offer =
+        offer(signaling_session_id, "first-negotiation")
+        |> update_in(["description", "sdp"], &String.replace(&1, "opus/48000/2", "ISAC/16000"))
+
+      Process.unlink(channel_socket.channel_pid)
+      monitor_ref = Process.monitor(channel_socket.channel_pid)
+
+      assert_reply push(channel_socket, "offer", incompatible_offer), :error, %{
+        reason: "negotiation_failed"
+      }
+
+      assert_receive {:DOWN, ^monitor_ref, :process, _, :normal}
+    end
+
     test "requires the current negotiation for safely bounded client ICE", context do
       %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
       negotiation_id = "first-negotiation"
@@ -290,6 +307,94 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
           ] do
         refute Map.has_key?(metadata, forbidden)
       end
+    end
+
+    test "counts admitted, echoed, and dropped media without identifying metadata", context do
+      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
+      handler_id = "voice-media-#{System.unique_integer([:positive])}"
+      test_pid = self()
+
+      assert_reply push(
+                     channel_socket,
+                     "offer",
+                     offer(signaling_session_id, "first-negotiation")
+                   ),
+                   :ok
+
+      [peer_connection] =
+        Enum.filter(ExWebRTC.PeerConnection.get_all_running(), fn peer_connection ->
+          peer_connection
+          |> ExWebRTC.PeerConnection.get_transceivers()
+          |> Enum.any?(& &1.sender.track)
+        end)
+
+      [transceiver] = ExWebRTC.PeerConnection.get_transceivers(peer_connection)
+      inbound_track = transceiver.receiver.track
+
+      :ok =
+        :telemetry.attach(
+          handler_id,
+          [:discord_clone, :voice_signaling, :operation],
+          fn _, _, metadata, _ -> send(test_pid, {:voice_media_diagnostic, metadata}) end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      send(channel_socket.channel_pid, {:ex_webrtc, peer_connection, {:track, inbound_track}})
+
+      assert_receive {:voice_media_diagnostic,
+                      %{media_lifecycle: :inbound_track_admitted} = admitted_metadata}
+
+      assert admitted_metadata.inbound_packet_count == 0
+      assert admitted_metadata.echoed_packet_count == 0
+      assert admitted_metadata.dropped_packet_count == 0
+      assert admitted_metadata.dropped_media_count == 0
+
+      packet =
+        ExRTP.Packet.new(<<>>, payload_type: 111, sequence_number: 1, timestamp: 1, ssrc: 1)
+
+      send(
+        channel_socket.channel_pid,
+        {:ex_webrtc, peer_connection, {:rtp, inbound_track.id, nil, packet}}
+      )
+
+      assert_receive {:voice_media_diagnostic,
+                      %{
+                        media_lifecycle: :rtp_routed,
+                        inbound_packet_count: 1,
+                        echoed_packet_count: 1,
+                        dropped_packet_count: 0,
+                        dropped_media_count: 0
+                      }}
+
+      send(
+        channel_socket.channel_pid,
+        {:ex_webrtc, peer_connection,
+         {:track, %ExWebRTC.MediaStreamTrack{id: inbound_track.id + 1, kind: :video}}}
+      )
+
+      send(channel_socket.channel_pid, {:ex_webrtc, peer_connection, {:data_channel, %{}}})
+
+      send(
+        channel_socket.channel_pid,
+        {:ex_webrtc, peer_connection, {:rtp, inbound_track.id + 2, nil, packet}}
+      )
+
+      assert_receive {:voice_media_diagnostic,
+                      %{media_lifecycle: :unexpected_media_dropped, dropped_media_count: 1}}
+
+      assert_receive {:voice_media_diagnostic,
+                      %{media_lifecycle: :unexpected_media_dropped, dropped_media_count: 2}}
+
+      assert_receive {:voice_media_diagnostic,
+                      %{
+                        media_lifecycle: :unexpected_media_dropped,
+                        inbound_packet_count: 1,
+                        echoed_packet_count: 1,
+                        dropped_packet_count: 1,
+                        dropped_media_count: 2
+                      }}
     end
   end
 

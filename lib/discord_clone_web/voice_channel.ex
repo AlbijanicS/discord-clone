@@ -24,7 +24,8 @@ defmodule DiscordCloneWeb.VoiceChannel do
            |> assign(:peer_connection, peer_connection)
            |> assign(:negotiation_id, nil)
            |> assign(:pending_candidates, [])
-           |> assign(:accepted_candidate_count, 0)}
+           |> assign(:accepted_candidate_count, 0)
+           |> assign(:media_counts, empty_media_counts())}
         else
           {:error, :peer_connection_unavailable} -> {:error, %{reason: "unavailable"}}
         end
@@ -63,6 +64,9 @@ defmodule DiscordCloneWeb.VoiceChannel do
     else
       :invalid_session ->
         reject("offer", "invalid_request", decoded_request_byte_count(params), socket)
+
+      {:error, :negotiation_failed} ->
+        reject_terminal_offer(decoded_request_byte_count(params), socket)
 
       {:error, error_code} ->
         reject("offer", error_code, decoded_request_byte_count(params), socket)
@@ -118,7 +122,46 @@ defmodule DiscordCloneWeb.VoiceChannel do
 
   @impl true
   def handle_info(message, socket) do
-    case PeerConnection.signal(socket.assigns.peer_connection, message) do
+    case PeerConnection.route_media(socket.assigns.peer_connection, message) do
+      {:accepted_inbound_track, peer_connection} ->
+        emit_media_diagnostics(:inbound_track_admitted, socket.assigns.media_counts)
+        {:noreply, assign(socket, :peer_connection, peer_connection)}
+
+      {:echoed_rtp, peer_connection} ->
+        media_counts = increment_media_count(socket.assigns.media_counts, :inbound_packet_count)
+        media_counts = increment_media_count(media_counts, :echoed_packet_count)
+        emit_media_diagnostics(:rtp_routed, media_counts)
+
+        {:noreply,
+         socket
+         |> assign(:peer_connection, peer_connection)
+         |> assign(:media_counts, media_counts)}
+
+      {:dropped_rtp, peer_connection} ->
+        media_counts = increment_media_count(socket.assigns.media_counts, :dropped_packet_count)
+        emit_media_diagnostics(:unexpected_media_dropped, media_counts)
+
+        {:noreply,
+         socket
+         |> assign(:peer_connection, peer_connection)
+         |> assign(:media_counts, media_counts)}
+
+      {:dropped_media, peer_connection} ->
+        media_counts = increment_media_count(socket.assigns.media_counts, :dropped_media_count)
+        emit_media_diagnostics(:unexpected_media_dropped, media_counts)
+
+        {:noreply,
+         socket
+         |> assign(:peer_connection, peer_connection)
+         |> assign(:media_counts, media_counts)}
+
+      {:ignore, peer_connection} ->
+        handle_peer_signal(peer_connection, message, socket)
+    end
+  end
+
+  defp handle_peer_signal(peer_connection, message, socket) do
+    case PeerConnection.signal(peer_connection, message) do
       {:ice_candidate, candidate} when is_binary(socket.assigns.negotiation_id) ->
         push(socket, "ice_candidate", %{
           signaling_session_id: socket.assigns.signaling_session_id,
@@ -225,6 +268,15 @@ defmodule DiscordCloneWeb.VoiceChannel do
     {:reply, {:error, %{reason: error_code}}, socket}
   end
 
+  defp reject_terminal_offer(byte_count, socket) do
+    Diagnostics.emit("offer", :rejected,
+      error_code: "negotiation_failed",
+      decoded_request_byte_count: byte_count
+    )
+
+    {:stop, :normal, {:error, %{reason: "negotiation_failed"}}, socket}
+  end
+
   defp decoded_request_byte_count(params) do
     case Jason.encode(params) do
       {:ok, encoded_params} -> byte_size(encoded_params)
@@ -245,5 +297,22 @@ defmodule DiscordCloneWeb.VoiceChannel do
     32
     |> :crypto.strong_rand_bytes()
     |> Base.url_encode64(padding: false)
+  end
+
+  defp empty_media_counts do
+    %{
+      inbound_packet_count: 0,
+      echoed_packet_count: 0,
+      dropped_packet_count: 0,
+      dropped_media_count: 0
+    }
+  end
+
+  defp increment_media_count(media_counts, count_name) do
+    Map.update!(media_counts, count_name, &(&1 + 1))
+  end
+
+  defp emit_media_diagnostics(lifecycle, media_counts) do
+    Diagnostics.emit_media(lifecycle, media_counts)
   end
 end

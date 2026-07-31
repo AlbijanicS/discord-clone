@@ -18,6 +18,56 @@ defmodule DiscordCloneWeb.VoiceSignaling.PeerConnectionTest do
     assert :ok = PeerConnection.stop(peer_connection)
   end
 
+  test "provisions an Opus echo sender and routes only its admitted inbound track" do
+    peer_connection = start_supervised_peer_connection()
+
+    assert {:ok, _answer, peer_connection} =
+             PeerConnection.accept_offer(peer_connection, browser_offer())
+
+    [transceiver] = ExWebRTC.PeerConnection.get_transceivers(peer_connection.peer_connection)
+    assert transceiver.kind == :audio
+    assert transceiver.direction == :sendrecv
+    assert transceiver.sender.track.id == peer_connection.outbound_track_id
+    assert Enum.any?(transceiver.codecs, &(&1.mime_type == "audio/opus"))
+
+    inbound_track = transceiver.receiver.track
+
+    assert {:accepted_inbound_track, peer_connection} =
+             PeerConnection.route_media(peer_connection, {
+               :ex_webrtc,
+               peer_connection.peer_connection,
+               {:track, inbound_track}
+             })
+
+    packet =
+      ExRTP.Packet.new(<<1, 2, 3>>, payload_type: 111, sequence_number: 1, timestamp: 1, ssrc: 1)
+
+    assert {:echoed_rtp, ^peer_connection} =
+             PeerConnection.route_media(peer_connection, {
+               :ex_webrtc,
+               peer_connection.peer_connection,
+               {:rtp, inbound_track.id, nil, packet}
+             })
+
+    assert {:dropped_rtp, ^peer_connection} =
+             PeerConnection.route_media(peer_connection, {
+               :ex_webrtc,
+               peer_connection.peer_connection,
+               {:rtp, inbound_track.id + 1, nil, packet}
+             })
+  end
+
+  test "rejects an offer without a compatible Opus audio source" do
+    peer_connection = start_supervised_peer_connection()
+    offer = browser_offer()
+
+    incompatible_offer =
+      Map.update!(offer, "sdp", &String.replace(&1, "opus/48000/2", "ISAC/16000"))
+
+    assert {:error, :negotiation_failed} =
+             PeerConnection.accept_offer(peer_connection, incompatible_offer)
+  end
+
   test "serializes server ICE messages and stops its linked peer process" do
     assert {:ok, peer_connection} = PeerConnection.start()
     monitor_ref = Process.monitor(peer_connection.peer_connection)

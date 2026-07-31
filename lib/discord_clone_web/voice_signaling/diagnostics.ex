@@ -5,6 +5,13 @@ defmodule DiscordCloneWeb.VoiceSignaling.Diagnostics do
 
   @type outcome :: :accepted | :rejected | :failed
 
+  @type media_counts :: %{
+          inbound_packet_count: non_neg_integer(),
+          echoed_packet_count: non_neg_integer(),
+          dropped_packet_count: non_neg_integer(),
+          dropped_media_count: non_neg_integer()
+        }
+
   @spec emit(String.t(), outcome(), keyword()) :: :ok
   def emit(operation, outcome, options \\ [])
       when operation in ["offer", "ice_candidate", "heartbeat", "connection_state"] and
@@ -16,6 +23,16 @@ defmodule DiscordCloneWeb.VoiceSignaling.Diagnostics do
       |> maybe_put(:connection_state, Keyword.get(options, :connection_state))
 
     :telemetry.execute(@event, %{}, metadata)
+  end
+
+  @spec emit_media(
+          :inbound_track_admitted | :unexpected_media_dropped | :rtp_routed,
+          media_counts()
+        ) ::
+          :ok
+  def emit_media(lifecycle, counts)
+      when lifecycle in [:inbound_track_admitted, :unexpected_media_dropped, :rtp_routed] do
+    :telemetry.execute(@event, %{}, Map.put(counts, :media_lifecycle, lifecycle))
   end
 
   defp maybe_put(metadata, _key, nil), do: metadata
