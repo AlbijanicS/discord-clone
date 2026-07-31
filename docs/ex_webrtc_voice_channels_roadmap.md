@@ -121,7 +121,7 @@ full SDP credentials or TURN credentials.
 | 1. Durable Voice Channel model | Complete | 2026-07-27 | Durable schema, scoped Workspaces API, and sidebar management UI. |
 | 2. Browser microphone ownership spike | Not started |  |  |
 | 3. Authenticated Phoenix signaling skeleton | Not started |  |  |
-| 4. First browser-to-ExWebRTC PeerConnection | Not started |  |  |
+| 4. First browser-to-ExWebRTC PeerConnection | Automated work complete; localhost proof blocked | 2026-07-31 | Real signaling and terminal ICE coverage are green. The available in-app browser captured audio but remained at `Joining voice…`; it did not reach `connected`, and no alternate Chrome surface was available for the required manual proof. |
 | 5. RTP echo experiment | Not started |  |  |
 | 6. OTP Voice Channel Room and Session architecture | Not started |  |  |
 | 7. Move echo into supervised `Voice.Session` | Not started |  |  |
@@ -284,7 +284,47 @@ Prove:
 Implementation Notes:
 
 ```text
-Not started.
+Implemented through commit e9c2548 on 2026-07-31; not yet complete because
+the required real-browser localhost connection proof could not be obtained.
+
+Files changed in Ticket 04:
+- assets/js/voice_peer_attempt.js
+- assets/js/voice_peer_attempt_test.mjs
+- lib/discord_clone_web/voice_channel.ex
+- lib/discord_clone_web/voice_signaling/peer_connection.ex
+- test/discord_clone_web/voice_channel_test.exs
+- test/discord_clone_web/voice_signaling/peer_connection_test.exs
+
+Final decisions:
+- ExWebRTC v0.17.0 signals completed local ICE gathering with
+  {:ice_gathering_state_change, :complete}; the Channel projects that to the
+  existing correlated {end_of_candidates: true} wire envelope.
+- ExWebRTC accepts the remote terminal marker as an ICECandidate whose
+  candidate field is the empty string. The browser converts the correlated
+  envelope back to {candidate: ""}, both before and after it applies the
+  answer.
+- No SDP, ICE payload, credential, Signaling Session ID, Negotiation ID, raw
+  params, socket, User, or Voice Channel data is emitted as diagnostics.
+
+Behavior proven automatically:
+- The focused ExWebRTC test observes an actual server gathering-complete event
+  from a supervised PeerConnection and verifies the empty remote candidate.
+- Server ICE is session- and negotiation-correlated, topic-subscriber-isolated,
+  and has 16 pending / 64 accepted candidate limits.
+- Browser ICE queues are bounded, preserve arrival order, and are discarded on
+  Leave or terminal cleanup. Failed and closed remain terminal; disconnected
+  remains non-terminal.
+
+Tests run:
+- mix precommit (54 Node tests, 887 ExUnit tests; passed). The suite emitted
+  known parallel Postgrex sandbox-disconnect log noise without test failures.
+
+Known follow-up work:
+- Repeat the localhost proof in a browser surface that can complete local
+  WebRTC: browser and server must both reach connected, then perform three
+  Join/Leave cycles and inspect for retained PeerConnection processes.
+- Exercise and record manual permission-denial, navigation-persistence, and
+  failure-path observations in that same browser.
 ```
 
 ## Phase 3: Authenticated Phoenix Signaling Skeleton
