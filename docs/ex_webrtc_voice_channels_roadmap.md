@@ -436,7 +436,10 @@ Localhost headphone checklist:
 4. Leave: confirm microphone capture and remote playback stop; rejoin and
    repeat the connected/echo checks to confirm a clean new attempt.
 
-Record the date, browser, and pass/fail outcome here after the headphone run.
+Manual result — 2026-07-31, browser not recorded: PASS. The localhost
+headphone run reached connected state, attached and played the remote echo,
+produced audible echo, muted and unmuted on the same connection, released
+capture/playback on leave, and rejoined cleanly.
 ```
 
 ## Phase 6: OTP Voice Channel Room And Session Architecture
