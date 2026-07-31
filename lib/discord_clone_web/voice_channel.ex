@@ -154,7 +154,12 @@ defmodule DiscordCloneWeb.VoiceChannel do
 
       {:connection_state_change, state} ->
         Diagnostics.emit("connection_state", :accepted, connection_state: state)
-        {:noreply, socket}
+
+        if state in [:failed, :closed] do
+          {:stop, :normal, socket}
+        else
+          {:noreply, socket}
+        end
 
       _other ->
         {:noreply, socket}

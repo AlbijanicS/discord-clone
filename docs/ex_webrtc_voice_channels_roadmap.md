@@ -411,9 +411,33 @@ Implementation Notes:
 Ticket 01 implemented on 2026-07-31: the authenticated Voice Channel now
 validates one negotiated Opus microphone source, attaches its server echo track
 before creating the initial answer, directly routes only admitted inbound RTP,
-and emits non-identifying aggregate media diagnostics. Browser remote playback,
-manual headphone proof, and lifecycle certification remain Phase 5 follow-up
-work.
+and emits non-identifying aggregate media diagnostics. Ticket 02 made the
+Voice Owner Tab own remote audio attachment and playback fallback. Ticket 03
+keeps local mute/unmute on that established connection, treats silence and
+`disconnected` as non-terminal, and terminates server peer failures cleanly.
+
+Automated evidence:
+- Browser controller tests prove mute/unmute changes the existing microphone
+  track without another capture request or Voice connection attempt; existing
+  attempt tests cover remote playback, signaling closure, terminal peer states,
+  and idempotent remote-audio release.
+- Authenticated Voice Channel tests prove a `disconnected` server peer remains
+  available while `failed` releases the Channel-owned PeerConnection. Existing
+  media diagnostics tests assert aggregate counters and reject identifying
+  signaling/media metadata.
+
+Localhost headphone checklist (operator-run; no physical result is claimed by
+automation):
+1. With headphones connected, join a Voice Channel and confirm browser and
+   server connection state reach `connected`.
+2. Confirm the browser attaches and plays the remote echo track, then speak and
+   confirm audible echo.
+3. Mute: confirm echo stops; unmute: confirm echo resumes without a new
+   permission prompt, Join action, or connection transition.
+4. Leave: confirm microphone capture and remote playback stop; rejoin and
+   repeat the connected/echo checks to confirm a clean new attempt.
+
+Record the date, browser, and pass/fail outcome here after the headphone run.
 ```
 
 ## Phase 6: OTP Voice Channel Room And Session Architecture

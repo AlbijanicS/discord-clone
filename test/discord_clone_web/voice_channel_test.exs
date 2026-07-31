@@ -264,6 +264,29 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       refute Enum.any?(ExWebRTC.PeerConnection.get_all_running())
     end
 
+    test "keeps disconnected peers available but releases terminal server peers", context do
+      %{channel_socket: channel_socket} = context
+      [peer_connection] = ExWebRTC.PeerConnection.get_all_running()
+
+      send(
+        channel_socket.channel_pid,
+        {:ex_webrtc, peer_connection, {:connection_state_change, :disconnected}}
+      )
+
+      _ = :sys.get_state(channel_socket.channel_pid)
+
+      Process.unlink(channel_socket.channel_pid)
+      monitor_ref = Process.monitor(channel_socket.channel_pid)
+
+      send(
+        channel_socket.channel_pid,
+        {:ex_webrtc, peer_connection, {:connection_state_change, :failed}}
+      )
+
+      assert_receive {:DOWN, ^monitor_ref, :process, _, :normal}
+      refute Enum.any?(ExWebRTC.PeerConnection.get_all_running())
+    end
+
     test "emits metadata-only diagnostics for real descriptions", context do
       %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
       handler_id = "voice-signaling-#{System.unique_integer([:positive])}"

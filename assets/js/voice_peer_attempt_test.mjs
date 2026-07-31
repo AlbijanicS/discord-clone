@@ -87,6 +87,27 @@ test("negotiates one supplied audio track and waits for connected before reporti
   assert.deepEqual(states, ["joining", "connected"])
 })
 
+test("a connected silent microphone remains active without an RTP inactivity timeout", async () => {
+  const {peer, signaling} = attemptFixture()
+  const failures = []
+  const states = []
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    negotiationId: () => "browser-negotiation",
+    onFailure: failure => failures.push(failure),
+    onState: state => states.push(state),
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  peer.connectionState = "connected"
+  peer.emit("connectionstatechange")
+
+  assert.deepEqual(states, ["joining", "connected"])
+  assert.deepEqual(failures, [])
+  assert.equal(peer.closed, false)
+})
+
 test("attaches the remote stream to the Voice Owner Tab audio element and starts playback", async () => {
   const {peer, signaling} = attemptFixture()
   const audio = remoteAudio({

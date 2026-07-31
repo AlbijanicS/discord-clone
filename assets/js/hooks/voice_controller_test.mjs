@@ -200,6 +200,68 @@ test("capture succeeds before one connection attempt receives the owned track an
   assert.equal(controller.state().status, "connected")
 })
 
+test("local mute and unmute keep the established Voice connection and capture request", async () => {
+  const microphoneTrack = track()
+  let captureRequests = 0
+  let connectionAttempts = 0
+  let offers = 0
+  const handlers = new Map()
+  const peer = {
+    addEventListener(event, callback) { handlers.set(event, callback) },
+    addTrack() {},
+    close() {},
+    connectionState: "new",
+    createOffer() { offers += 1; return Promise.resolve({type: "offer", sdp: "browser-offer"}) },
+    setLocalDescription(description) { this.localDescription = description; return Promise.resolve() },
+    setRemoteDescription() { return Promise.resolve() },
+  }
+  const controller = createVoiceController({
+    connectionFactory(options) {
+      connectionAttempts += 1
+      return createVoicePeerAttempt({
+        ...options,
+        PeerConnection: class { constructor() { return peer } },
+        negotiationId: () => "browser-negotiation",
+        signaling: {
+          joinVoiceChannel: async () => ({signaling_session_id: "server-session"}),
+          leave() {},
+          onClose() {},
+          onServerIce() {},
+          sendIce() {},
+          sendOffer: async () => ({
+            signaling_session_id: "server-session",
+            negotiation_id: "browser-negotiation",
+            description: {type: "answer", sdp: "server-answer"},
+          }),
+        },
+      })
+    },
+    mediaDevices: {
+      getUserMedia() {
+        captureRequests += 1
+        return Promise.resolve(stream(microphoneTrack))
+      },
+    },
+  })
+
+  await controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+  peer.connectionState = "connected"
+  handlers.get("connectionstatechange")()
+  controller.toggleMute()
+
+  assert.equal(microphoneTrack.enabled, false)
+  assert.equal(captureRequests, 1)
+  assert.equal(connectionAttempts, 1)
+  assert.equal(offers, 1)
+
+  controller.toggleMute()
+
+  assert.equal(microphoneTrack.enabled, true)
+  assert.equal(captureRequests, 1)
+  assert.equal(connectionAttempts, 1)
+  assert.equal(offers, 1)
+})
+
 test("the Voice Owner Tab creates one remote audio element and Enable audio retries its active attempt only", async () => {
   const microphoneTrack = track()
   const audio = {autoplay: false, playsInline: false, srcObject: null}
