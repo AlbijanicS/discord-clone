@@ -123,40 +123,11 @@ defmodule DiscordCloneWeb.VoiceChannel do
   @impl true
   def handle_info(message, socket) do
     case PeerConnection.route_media(socket.assigns.peer_connection, message) do
-      {:accepted_inbound_track, peer_connection} ->
-        emit_media_diagnostics(:inbound_track_admitted, socket.assigns.media_counts)
-        {:noreply, assign(socket, :peer_connection, peer_connection)}
-
-      {:echoed_rtp, peer_connection} ->
-        media_counts = increment_media_count(socket.assigns.media_counts, :inbound_packet_count)
-        media_counts = increment_media_count(media_counts, :echoed_packet_count)
-        emit_media_diagnostics(:rtp_routed, media_counts)
-
-        {:noreply,
-         socket
-         |> assign(:peer_connection, peer_connection)
-         |> assign(:media_counts, media_counts)}
-
-      {:dropped_rtp, peer_connection} ->
-        media_counts = increment_media_count(socket.assigns.media_counts, :dropped_packet_count)
-        emit_media_diagnostics(:unexpected_media_dropped, media_counts)
-
-        {:noreply,
-         socket
-         |> assign(:peer_connection, peer_connection)
-         |> assign(:media_counts, media_counts)}
-
-      {:dropped_media, peer_connection} ->
-        media_counts = increment_media_count(socket.assigns.media_counts, :dropped_media_count)
-        emit_media_diagnostics(:unexpected_media_dropped, media_counts)
-
-        {:noreply,
-         socket
-         |> assign(:peer_connection, peer_connection)
-         |> assign(:media_counts, media_counts)}
-
       {:ignore, peer_connection} ->
         handle_peer_signal(peer_connection, message, socket)
+
+      {outcome, peer_connection} ->
+        {:noreply, record_media_outcome(socket, peer_connection, outcome)}
     end
   end
 
@@ -312,7 +283,33 @@ defmodule DiscordCloneWeb.VoiceChannel do
     Map.update!(media_counts, count_name, &(&1 + 1))
   end
 
-  defp emit_media_diagnostics(lifecycle, media_counts) do
+  defp record_media_outcome(socket, peer_connection, :accepted_inbound_track) do
+    record_media(socket, peer_connection, :inbound_track_admitted, [])
+  end
+
+  defp record_media_outcome(socket, peer_connection, :echoed_rtp) do
+    record_media(socket, peer_connection, :rtp_routed, [
+      :inbound_packet_count,
+      :echoed_packet_count
+    ])
+  end
+
+  defp record_media_outcome(socket, peer_connection, :dropped_rtp) do
+    record_media(socket, peer_connection, :unexpected_media_dropped, [:dropped_packet_count])
+  end
+
+  defp record_media_outcome(socket, peer_connection, :dropped_media) do
+    record_media(socket, peer_connection, :unexpected_media_dropped, [:dropped_media_count])
+  end
+
+  defp record_media(socket, peer_connection, lifecycle, count_names) do
+    media_counts =
+      Enum.reduce(count_names, socket.assigns.media_counts, &increment_media_count(&2, &1))
+
     Diagnostics.emit_media(lifecycle, media_counts)
+
+    socket
+    |> assign(:peer_connection, peer_connection)
+    |> assign(:media_counts, media_counts)
   end
 end
