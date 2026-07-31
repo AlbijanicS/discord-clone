@@ -2,6 +2,8 @@ import assert from "node:assert/strict"
 import {readFile} from "node:fs/promises"
 import test from "node:test"
 
+import {createVoicePeerAttempt} from "../voice_peer_attempt.js"
+
 const controllerSource = await readFile(new URL("./voice_controller.js", import.meta.url), "utf8")
 const controllerModuleUrl = `data:text/javascript;base64,${Buffer.from(controllerSource).toString("base64")}`
 const {createVoiceController} = await import(controllerModuleUrl)
@@ -196,6 +198,94 @@ test("capture succeeds before one connection attempt receives the owned track an
   assert.equal(controller.state().status, "joining")
   attempts[0].onState("connected")
   assert.equal(controller.state().status, "connected")
+})
+
+test("the Voice Owner Tab creates one remote audio element and Enable audio retries its active attempt only", async () => {
+  const microphoneTrack = track()
+  const audio = {autoplay: false, playsInline: false, srcObject: null}
+  let createdAudio = 0
+  let attempt
+  const controller = createVoiceController({
+    audioElementFactory() { createdAudio += 1; return audio },
+    connectionFactory(options) {
+      attempt = options
+      return {enableAudio() { attempt.enableCalls = (attempt.enableCalls || 0) + 1 }, leave() {}}
+    },
+    mediaDevices: {getUserMedia: () => Promise.resolve(stream(microphoneTrack))},
+  })
+
+  await controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+  attempt.onPlayback("blocked")
+  controller.enableAudio()
+
+  assert.equal(createdAudio, 1)
+  assert.equal(attempt.remoteAudio, audio)
+  assert.equal(controller.state().audioPlayback, "blocked")
+  assert.equal(attempt.enableCalls, 1)
+
+  attempt.onPlayback("playing")
+  assert.equal(controller.state().audioPlayback, undefined)
+})
+
+test("takeover and teardown release the active remote audio attempt exactly once", async () => {
+  for (const action of ["takeover", "teardown"]) {
+    const microphoneTrack = track()
+    const audio = {
+      autoplay: false,
+      pauseCalls: 0,
+      play() { return Promise.resolve() },
+      playsInline: false,
+      srcObject: null,
+      pause() { this.pauseCalls += 1 },
+    }
+    const handlers = new Map()
+    const peer = {
+      addEventListener(event, callback) { handlers.set(event, callback) },
+      addTrack() {},
+      close() { this.closed = true },
+      connectionState: "new",
+      createOffer() { return Promise.resolve({type: "offer", sdp: "browser-offer"}) },
+      setLocalDescription(description) { this.localDescription = description; return Promise.resolve() },
+      setRemoteDescription() { return Promise.resolve() },
+    }
+    let claimListener
+    const controller = createVoiceController({
+      audioElementFactory: () => audio,
+      connectionFactory: options => createVoicePeerAttempt({
+        ...options,
+        PeerConnection: class { constructor() { return peer } },
+        negotiationId: () => "browser-negotiation",
+        signaling: {
+          joinVoiceChannel: async () => ({signaling_session_id: "server-session"}),
+          leave() {},
+          onClose() {},
+          onServerIce() {},
+          sendIce() {},
+          sendOffer: async () => ({
+            signaling_session_id: "server-session",
+            negotiation_id: "browser-negotiation",
+            description: {type: "answer", sdp: "server-answer"},
+          }),
+        },
+      }),
+      mediaDevices: {getUserMedia: () => Promise.resolve(stream(microphoneTrack))},
+      tabCoordination: {
+        publish() {},
+        subscribe(listener) { claimListener = listener },
+      },
+      tabId: "tab-a",
+    })
+
+    await controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+    handlers.get("track")({streams: [{id: "remote-stream"}], track: {id: "echo"}})
+    await new Promise(resolve => setImmediate(resolve))
+    if (action === "takeover") claimListener({tabId: "tab-b", timestamp: Number.MAX_SAFE_INTEGER})
+    else controller.teardown()
+
+    assert.equal(audio.pauseCalls, 1)
+    assert.equal(audio.srcObject, null)
+    assert.equal(peer.closed, true)
+  }
 })
 
 test("a terminal connection failure releases controller-owned capture and exposes a retryable error", async () => {

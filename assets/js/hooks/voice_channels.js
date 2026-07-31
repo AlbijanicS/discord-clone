@@ -27,6 +27,11 @@ export function createVoiceChannels(controller) {
 
       if (event.target.closest("[data-voice-channel-retry]")) {
         controller.retry()
+        return
+      }
+
+      if (event.target.closest("[data-voice-channel-enable-audio]")) {
+        controller.enableAudio()
       }
     }
 
@@ -48,10 +53,12 @@ export function createVoiceChannels(controller) {
     const controls = this.el.querySelector("[data-voice-channel-local-controls]")
     const retryControls = this.el.querySelector("[data-voice-channel-retry-controls]")
     const muteButton = this.el.querySelector("[data-voice-channel-mute]")
+    const enableAudio = this.el.querySelector("[data-voice-channel-enable-audio]")
 
     status.textContent = statusMessage(state)
     controls.hidden = !["joining", "connected", "muted"].includes(state.status)
     retryControls.hidden = !state.retryable
+    enableAudio.hidden = state.audioPlayback !== "blocked"
     muteButton.textContent = state.status === "muted" ? "Unmute" : "Mute"
     muteButton.setAttribute("aria-pressed", String(state.status === "muted"))
 
@@ -60,6 +67,7 @@ export function createVoiceChannels(controller) {
 }
 
 function statusMessage(state) {
+  if (state.audioPlayback === "blocked") return "Audio is ready — select Enable audio to hear it."
   if (state.status === "requesting") return "Allow microphone access"
   if (state.status === "joining" || state.status === "capturing") return "Joining voice…"
   if (state.status === "connected" || state.status === "muted") return "Connected"

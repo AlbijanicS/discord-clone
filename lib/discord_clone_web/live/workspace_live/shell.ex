@@ -365,6 +365,15 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                     class="mt-3 flex gap-2"
                   >
                     <button
+                      id="voice-channel-enable-audio"
+                      type="button"
+                      data-voice-channel-enable-audio
+                      class="btn btn-sm btn-primary"
+                      hidden
+                    >
+                      Enable audio
+                    </button>
+                    <button
                       id="voice-channel-mute"
                       type="button"
                       data-voice-channel-mute

@@ -33,6 +33,18 @@ function fakePeerConnection() {
   }
 }
 
+function remoteAudio({play = () => Promise.resolve()} = {}) {
+  return {
+    autoplay: false,
+    pauseCalls: 0,
+    play,
+    playCalls: 0,
+    playsInline: false,
+    srcObject: null,
+    pause() { this.pauseCalls += 1 },
+  }
+}
+
 function attemptFixture() {
   const peer = fakePeerConnection()
   const serverIce = []
@@ -73,6 +85,106 @@ test("negotiates one supplied audio track and waits for connected before reporti
   peer.connectionState = "connected"
   peer.emit("connectionstatechange")
   assert.deepEqual(states, ["joining", "connected"])
+})
+
+test("attaches the remote stream to the Voice Owner Tab audio element and starts playback", async () => {
+  const {peer, signaling} = attemptFixture()
+  const audio = remoteAudio({
+    play() { this.playCalls += 1; return Promise.resolve() },
+  })
+  const playback = []
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    negotiationId: () => "browser-negotiation",
+    onPlayback: outcome => playback.push(outcome),
+    remoteAudio: audio,
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  const remoteStream = {id: "remote-stream"}
+  peer.emit("track", {streams: [remoteStream], track: {id: "echo"}})
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(audio.autoplay, true)
+  assert.equal(audio.playsInline, true)
+  assert.equal(audio.srcObject, remoteStream)
+  assert.equal(audio.playCalls, 1)
+  assert.deepEqual(playback, ["playing"])
+})
+
+test("a blocked automatic playback keeps the attempt active and Enable audio retries only playback", async () => {
+  const {peer, signaling} = attemptFixture()
+  let offers = 0
+  signaling.sendOffer = async () => {
+    offers += 1
+    return {
+      signaling_session_id: "server-session",
+      negotiation_id: "browser-negotiation",
+      description: {type: "answer", sdp: "server-answer"},
+    }
+  }
+  let remainingFailures = 1
+  const audio = remoteAudio({
+    play() {
+      this.playCalls += 1
+      if (remainingFailures > 0) {
+        remainingFailures -= 1
+        return Promise.reject(new Error("autoplay blocked"))
+      }
+      return Promise.resolve()
+    },
+  })
+  const failures = []
+  const playback = []
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    negotiationId: () => "browser-negotiation",
+    onFailure: failure => failures.push(failure),
+    onPlayback: outcome => playback.push(outcome),
+    remoteAudio: audio,
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  peer.emit("track", {streams: [{id: "remote-stream"}], track: {id: "echo"}})
+  await new Promise(resolve => setImmediate(resolve))
+  await attempt.enableAudio()
+
+  assert.equal(audio.playCalls, 2)
+  assert.deepEqual(playback, ["blocked", "playing"])
+  assert.deepEqual(failures, [])
+  assert.equal(peer.closed, false)
+  assert.equal(offers, 1)
+})
+
+test("releases remote audio exactly once on explicit leave and terminal connection failure", async () => {
+  for (const terminal of ["leave", "failed"]) {
+    const {peer, signaling} = attemptFixture()
+    const audio = remoteAudio({
+      play() { this.playCalls += 1; return Promise.resolve() },
+    })
+    const attempt = createVoicePeerAttempt({
+      PeerConnection: class { constructor() { return peer } },
+      negotiationId: () => "browser-negotiation",
+      remoteAudio: audio,
+      signaling,
+    })
+
+    await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+    peer.emit("track", {streams: [{id: "remote-stream"}], track: {id: "echo"}})
+    await new Promise(resolve => setImmediate(resolve))
+    if (terminal === "leave") attempt.leave()
+    else {
+      peer.connectionState = "failed"
+      peer.emit("connectionstatechange")
+    }
+    attempt.leave()
+
+    assert.equal(audio.pauseCalls, 1)
+    assert.equal(audio.srcObject, null)
+    assert.equal(peer.closed, true)
+  }
 })
 
 test("buffers matching server ICE until the answer is applied, then preserves arrival order", async () => {

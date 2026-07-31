@@ -26,6 +26,7 @@ function mountVoiceControls(state) {
   const mute = {textContent: "", setAttribute(name, value) { this[name] = value }}
   const popover = {hidden: true}
   const retry = {hidden: true}
+  const enableAudio = {hidden: true}
   const localActions = {hidden: false}
   const close = {}
   const trigger = {
@@ -38,6 +39,7 @@ function mountVoiceControls(state) {
   const controller = {
     leave() { calls.push("leave") },
     retry() { calls.push("retry") },
+    enableAudio() { calls.push("enableAudio") },
     state() { return currentState },
     subscribe(nextListener) { listener = nextListener; listener(currentState); return () => listener = null },
     toggleMute() { calls.push("toggleMute") },
@@ -49,12 +51,13 @@ function mountVoiceControls(state) {
     "[data-voice-controls-mute]": mute,
     "[data-voice-controls-popover]": popover,
     "[data-voice-controls-retry]": retry,
+    "[data-voice-controls-enable-audio]": enableAudio,
     "[data-voice-controls-local-actions]": localActions,
     "[data-voice-controls-close]": close,
   }
   const hook = {...createVoiceControls(controller), el: {querySelector: selector => elements[selector]}}
   hook.mounted()
-  return {announcement, calls, channel, close, emit(nextState) { currentState = nextState; listener(nextState) }, hook, localActions, mute, popover, retry, status, trigger}
+  return {announcement, calls, channel, close, emit(nextState) { currentState = nextState; listener(nextState) }, hook, localActions, mute, popover, retry, enableAudio, status, trigger}
 }
 
 test("the rail adapter immediately renders an existing capture and controls it without requesting media again", () => {
@@ -94,6 +97,20 @@ test("the rail renders a browser failure and delegates its explicit retry", () =
   const retryButton = {closest: selector => selector === "[data-voice-controls-retry]" ? retryButton : null}
   document.dispatch("click", {target: retryButton})
   assert.deepEqual(mounted.calls, ["retry"])
+  mounted.hook.destroyed()
+})
+
+test("the rail announces blocked remote playback and delegates Enable audio without retrying microphone capture", () => {
+  const mounted = mountVoiceControls({audioPlayback: "blocked", channelId: "voice-1", channelName: "lobby", status: "connected", workspaceId: "workspace-1"})
+
+  assert.equal(mounted.status.textContent, "Audio is ready — select Enable audio to hear it.")
+  assert.equal(mounted.announcement.textContent, "Audio is ready — select Enable audio to hear it.")
+  assert.equal(mounted.enableAudio.hidden, false)
+  assert.equal(mounted.popover.hidden, false)
+
+  const enableButton = {closest: selector => selector === "[data-voice-controls-enable-audio]" ? enableButton : null}
+  document.dispatch("click", {target: enableButton})
+  assert.deepEqual(mounted.calls, ["enableAudio"])
   mounted.hook.destroyed()
 })
 

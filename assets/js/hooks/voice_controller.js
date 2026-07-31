@@ -5,6 +5,7 @@ export function createVoiceController({
   tabCoordination = createBroadcastTabCoordination(),
   tabId = createTabId(),
   connectionFactory = null,
+  audioElementFactory = createRemoteAudioElement,
 } = {}) {
   let activeRequest = 0
   let audioTracks = []
@@ -119,8 +120,10 @@ export function createVoiceController({
   function startConnection(channel, track, request) {
     if (!connectionFactory || !track || request !== activeRequest) return
 
+    const remoteAudio = audioElementFactory()
     const connection = connectionFactory({
       channel,
+      remoteAudio,
       track,
       onFailure(error) {
         if (connection !== activeConnection || request !== activeRequest) return
@@ -132,6 +135,15 @@ export function createVoiceController({
       onState(status) {
         if (connection !== activeConnection || request !== activeRequest) return
         publish({...channel, status})
+      },
+      onPlayback(outcome) {
+        if (connection !== activeConnection || request !== activeRequest) return
+
+        if (outcome === "blocked") publish({...currentState, audioPlayback: "blocked"})
+        if (outcome === "playing") {
+          const {audioPlayback: _audioPlayback, ...state} = currentState
+          publish(state)
+        }
       },
     })
 
@@ -173,6 +185,11 @@ export function createVoiceController({
       return startCapture(channel)
     },
 
+    enableAudio() {
+      if (currentState.audioPlayback !== "blocked") return Promise.resolve()
+      return activeConnection?.enableAudio?.() || Promise.resolve()
+    },
+
     toggleMute() {
       if (["capturing", "connected"].includes(currentState.status)) {
         statusBeforeMute = currentState.status
@@ -206,6 +223,10 @@ export function createVoiceController({
       connectionFactory = nextConnectionFactory || null
     },
   }
+}
+
+function createRemoteAudioElement() {
+  return globalThis.document?.createElement?.("audio") || null
 }
 
 function claimIsNewer(candidate, current) {

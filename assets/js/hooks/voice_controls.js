@@ -19,6 +19,11 @@ export function createVoiceControls(controller) {
           return
         }
 
+        if (event.target.closest("[data-voice-controls-enable-audio]")) {
+          controller.enableAudio()
+          return
+        }
+
         if (event.target.closest("[data-voice-controls-leave]")) controller.leave()
       }
 
@@ -62,13 +67,15 @@ export function createVoiceControls(controller) {
 
     renderState(state) {
       this.currentState = state
-      const visible = ["requesting", "capturing", "joining", "connected", "muted"].includes(state.status) || state.error
+      const audioBlocked = state.audioPlayback === "blocked"
+      const visible = ["requesting", "capturing", "joining", "connected", "muted"].includes(state.status) || state.error || audioBlocked
       const channel = this.el.querySelector("[data-voice-controls-channel]")
       const status = this.el.querySelector("[data-voice-controls-status]")
       const announcement = this.el.querySelector("[data-voice-controls-announcement]")
       const mute = this.el.querySelector("[data-voice-controls-mute]")
       const popover = this.el.querySelector("[data-voice-controls-popover]")
       const retry = this.el.querySelector("[data-voice-controls-retry]")
+      const enableAudio = this.el.querySelector("[data-voice-controls-enable-audio]")
       const localActions = this.el.querySelector("[data-voice-controls-local-actions]")
 
       channel.textContent = state.channelName || "Voice Channel"
@@ -78,20 +85,23 @@ export function createVoiceControls(controller) {
       mute.setAttribute("aria-pressed", String(state.status === "muted"))
 
       retry.hidden = !state.retryable
+      enableAudio.hidden = !audioBlocked
       localActions.hidden = state.status === "taken_over"
-      if (state.error && this.lastOpenedError !== state.error) {
+      const notice = state.error || (audioBlocked && "audio_blocked")
+      if (notice && this.lastOpenedError !== notice) {
         this.popoverOpen = true
-        this.lastOpenedError = state.error
+        this.lastOpenedError = notice
       }
-      if (!state.error) this.lastOpenedError = null
+      if (!notice) this.lastOpenedError = null
       if (!visible) this.popoverOpen = false
       popover.hidden = !this.popoverOpen
-      announcement.textContent = !this.popoverOpen || state.error ? railStatusMessage(state) : ""
+      announcement.textContent = !this.popoverOpen || notice ? railStatusMessage(state) : ""
     },
   }
 }
 
 function railStatusMessage(state) {
+  if (state.audioPlayback === "blocked") return "Audio is ready — select Enable audio to hear it."
   if (state.status === "requesting") return "Allow microphone access"
   if (state.status === "joining" || state.status === "capturing") return "Joining voice…"
   if (state.status === "connected" || state.status === "muted") return "Connected"

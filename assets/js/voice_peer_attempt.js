@@ -7,7 +7,9 @@ export function createVoicePeerAttempt({
   PeerConnection = globalThis.RTCPeerConnection,
   negotiationId = createNegotiationId,
   onFailure = () => {},
+  onPlayback = () => {},
   onState = () => {},
+  remoteAudio = null,
   signaling,
   setTimeoutFn = globalThis.setTimeout,
   clearTimeoutFn = globalThis.clearTimeout,
@@ -32,9 +34,40 @@ export function createVoicePeerAttempt({
     answerApplied = false
     pendingServerCandidates = []
     pendingServerCandidateBytes = 0
+    releaseRemoteAudio()
     peerConnection?.close()
     peerConnection = null
     signaling?.leave()
+  }
+
+  async function playRemoteAudio() {
+    if (!active || !remoteAudio?.srcObject) return
+
+    try {
+      await remoteAudio.play()
+      if (active) onPlayback("playing")
+    } catch (_) {
+      if (active) onPlayback("blocked")
+    }
+  }
+
+  function receiveRemoteTrack(event) {
+    if (!active || !remoteAudio) return
+
+    const stream = event?.streams?.[0] || createRemoteStream(event?.track)
+    if (!stream) return
+
+    remoteAudio.autoplay = true
+    remoteAudio.playsInline = true
+    remoteAudio.srcObject = stream
+    playRemoteAudio()
+  }
+
+  function releaseRemoteAudio() {
+    if (!remoteAudio?.srcObject) return
+
+    remoteAudio.pause?.()
+    remoteAudio.srcObject = null
   }
 
   async function addServerCandidate(candidate) {
@@ -108,6 +141,7 @@ export function createVoicePeerAttempt({
         peerConnection = new PeerConnection({iceServers: ICE_SERVERS})
         peerConnection.addEventListener("icecandidate", sendLocalIce)
         peerConnection.addEventListener("connectionstatechange", handleConnectionStateChange)
+        peerConnection.addEventListener("track", receiveRemoteTrack)
         signaling.onServerIce(receiveServerIce)
         signaling.onClose(() => fail("connection_lost"))
         peerConnection.addTrack(track)
@@ -153,7 +187,16 @@ export function createVoicePeerAttempt({
     leave() {
       if (active || peerConnection) cleanup()
     },
+
+    enableAudio() {
+      return playRemoteAudio()
+    },
   }
+}
+
+function createRemoteStream(track) {
+  if (!track || typeof globalThis.MediaStream !== "function") return null
+  return new globalThis.MediaStream([track])
 }
 
 function candidateByteSize(candidate) {

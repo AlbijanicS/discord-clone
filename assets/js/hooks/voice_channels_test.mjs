@@ -29,6 +29,7 @@ function mountVoiceChannels() {
   const status = {textContent: ""}
   const controls = {hidden: true}
   const retryControls = {hidden: true}
+  const enableAudio = {hidden: true}
   const muteButton = {
     textContent: "",
     setAttribute(name, value) {
@@ -46,6 +47,9 @@ function mountVoiceChannels() {
     },
     retry() {
       calls.push({name: "retry"})
+    },
+    enableAudio() {
+      calls.push({name: "enableAudio"})
     },
     state() {
       return currentState
@@ -67,6 +71,7 @@ function mountVoiceChannels() {
           "[data-voice-channel-local-controls]": controls,
           "[data-voice-channel-retry-controls]": retryControls,
           "[data-voice-channel-mute]": muteButton,
+          "[data-voice-channel-enable-audio]": enableAudio,
           "[data-voice-channel-status]": status,
         }[selector]
       },
@@ -78,6 +83,7 @@ function mountVoiceChannels() {
   return {
     calls,
     controls,
+    enableAudio,
     emit(state) {
       currentState = state
       listener(state)
@@ -90,7 +96,7 @@ function mountVoiceChannels() {
 }
 
 test("the Voice Channel UI renders its controller lifecycle and sends a Voice Channel click to it", () => {
-  const {calls, controls, emit, hook, muteButton, retryControls, status} = mountVoiceChannels()
+  const {calls, controls, emit, enableAudio, hook, muteButton, retryControls, status} = mountVoiceChannels()
 
   assert.equal(status.textContent, "Voice is not connected.")
   assert.equal(controls.hidden, true)
@@ -131,6 +137,13 @@ test("the Voice Channel UI renders its controller lifecycle and sends a Voice Ch
 
   emit({channelId: "voice-1", channelName: "lobby", status: "connected", workspaceId: "workspace-1"})
   assert.equal(status.textContent, "Connected")
+
+  emit({audioPlayback: "blocked", channelId: "voice-1", channelName: "lobby", status: "connected", workspaceId: "workspace-1"})
+  assert.equal(status.textContent, "Audio is ready — select Enable audio to hear it.")
+  assert.equal(enableAudio.hidden, false)
+  const enableButton = {closest: selector => selector === "[data-voice-channel-enable-audio]" ? enableButton : null}
+  document.dispatch("click", {target: enableButton})
+  assert.deepEqual(calls.at(-1), {name: "enableAudio"})
 
   emit({channelId: "voice-1", channelName: "lobby", error: "connection_failed", retryable: true, status: "connection_failed", workspaceId: "workspace-1"})
   assert.equal(status.textContent, "Couldn’t connect — try again")

@@ -223,6 +223,15 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
                 Retry microphone
               </button>
               <button
+                id="global-voice-controls-enable-audio"
+                type="button"
+                data-voice-controls-enable-audio
+                class="btn btn-sm btn-primary"
+                hidden
+              >
+                Enable audio
+              </button>
+              <button
                 id="global-voice-controls-mute"
                 type="button"
                 data-voice-controls-mute
