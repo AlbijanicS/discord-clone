@@ -20,6 +20,82 @@ defmodule DiscordClone.Voice do
     UUIDIdentifier.cast_or(voice_channel_id, false, &room_running/1)
   end
 
+  @spec admit(term(), term(), binary(), pid()) :: {:ok, map()} | {:error, term()}
+  def admit(voice_channel_id, user_id, signaling_session_id, signaling_channel)
+      when is_binary(signaling_session_id) and is_pid(signaling_channel) do
+    with true <- Process.alive?(signaling_channel),
+         {:ok, [voice_channel_id, user_id]} <-
+           UUIDIdentifier.cast_all([voice_channel_id, user_id]) do
+      admit(voice_channel_id, user_id, signaling_session_id, signaling_channel, 2)
+    else
+      false -> {:error, :invalid_admission}
+      :error -> {:error, :not_found}
+    end
+  end
+
+  def admit(_voice_channel_id, _user_id, _signaling_session_id, _signaling_channel),
+    do: {:error, :invalid_admission}
+
+  @spec leave(term(), term()) :: :ok | {:error, :not_found | term()}
+  def leave(voice_channel_id, voice_session_id) do
+    with {:ok, [voice_channel_id, voice_session_id]} <-
+           UUIDIdentifier.cast_all([voice_channel_id, voice_session_id]) do
+      case room_server(voice_channel_id) do
+        nil -> :ok
+        room_server -> RoomServer.leave(room_server, voice_session_id)
+      end
+    else
+      :error -> {:error, :not_found}
+    end
+  end
+
+  @spec room_occupancy(term()) ::
+          {:ok, %{occupancy: non_neg_integer(), capacity: pos_integer()}} | {:error, :not_found}
+  def room_occupancy(voice_channel_id) do
+    UUIDIdentifier.cast_or(voice_channel_id, {:error, :not_found}, fn voice_channel_id ->
+      case room_server(voice_channel_id) do
+        nil -> {:error, :not_found}
+        room_server -> RoomServer.occupancy(room_server)
+      end
+    end)
+  end
+
+  @doc false
+  @spec crash_session(term(), term()) :: :ok | {:error, :not_found}
+  def crash_session(voice_channel_id, voice_session_id) do
+    with {:ok, [voice_channel_id, voice_session_id]} <-
+           UUIDIdentifier.cast_all([voice_channel_id, voice_session_id]) do
+      case room_server(voice_channel_id) do
+        nil -> :ok
+        room_server -> RoomServer.crash_session(room_server, voice_session_id)
+      end
+    else
+      :error -> {:error, :not_found}
+    end
+  end
+
+  @doc false
+  @spec await_empty_room(term()) :: :ok | {:error, :not_found}
+  def await_empty_room(voice_channel_id) do
+    UUIDIdentifier.cast_or(voice_channel_id, {:error, :not_found}, fn voice_channel_id ->
+      case room_server(voice_channel_id) do
+        nil -> :ok
+        room_server -> RoomServer.await_empty(room_server)
+      end
+    end)
+  end
+
+  @doc false
+  @spec expire_idle_room(term()) :: :ok | {:error, :not_found}
+  def expire_idle_room(voice_channel_id) do
+    UUIDIdentifier.cast_or(voice_channel_id, {:error, :not_found}, fn voice_channel_id ->
+      case room_server(voice_channel_id) do
+        nil -> :ok
+        room_server -> await_room_shutdown(room_server)
+      end
+    end)
+  end
+
   @doc false
   @spec mark_room_in_use(term()) :: :ok | {:error, :not_found | :not_running | term()}
   def mark_room_in_use(voice_channel_id) do
@@ -74,6 +150,46 @@ defmodule DiscordClone.Voice do
       {:error, :not_running}
   end
 
+  defp admit(voice_channel_id, user_id, signaling_session_id, signaling_channel, attempts_left) do
+    with :ok <- ensure_room_id(voice_channel_id),
+         room_server when is_pid(room_server) <- room_server(voice_channel_id) do
+      case RoomServer.admit(room_server, user_id, signaling_session_id, signaling_channel) do
+        {:error, :unavailable} when attempts_left > 0 ->
+          admit(
+            voice_channel_id,
+            user_id,
+            signaling_session_id,
+            signaling_channel,
+            attempts_left - 1
+          )
+
+        result ->
+          result
+      end
+    else
+      nil when attempts_left > 0 ->
+        admit(
+          voice_channel_id,
+          user_id,
+          signaling_session_id,
+          signaling_channel,
+          attempts_left - 1
+        )
+
+      nil ->
+        {:error, :not_found}
+
+      error ->
+        error
+    end
+  catch
+    :exit, _room_stopped when attempts_left > 0 ->
+      admit(voice_channel_id, user_id, signaling_session_id, signaling_channel, attempts_left - 1)
+
+    :exit, _room_stopped ->
+      {:error, :not_found}
+  end
+
   defp room_running(voice_channel_id) do
     is_pid(room_server(voice_channel_id))
   end
@@ -82,6 +198,15 @@ defmodule DiscordClone.Voice do
     case Registry.lookup(RoomRegistry, {:room, voice_channel_id}) do
       [{pid, _value}] when is_pid(pid) -> if(Process.alive?(pid), do: pid)
       _missing_or_stopped -> nil
+    end
+  end
+
+  defp await_room_shutdown(room_server) do
+    room_monitor = Process.monitor(room_server)
+    :ok = RoomServer.mark_empty(room_server, idle_timeout: 0)
+
+    receive do
+      {:DOWN, ^room_monitor, :process, ^room_server, :normal} -> :ok
     end
   end
 end

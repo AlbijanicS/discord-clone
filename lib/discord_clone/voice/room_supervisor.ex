@@ -14,7 +14,7 @@ defmodule DiscordClone.Voice.RoomSupervisor do
   def init(voice_channel_id) do
     children = [
       {RoomServer, voice_channel_id: voice_channel_id, room_supervisor: self()},
-      {SessionSupervisor, []},
+      {SessionSupervisor, voice_channel_id: voice_channel_id},
       {Forwarder, []}
     ]
 

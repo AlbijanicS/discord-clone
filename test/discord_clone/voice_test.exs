@@ -77,8 +77,140 @@ defmodule DiscordClone.VoiceTest do
     end
   end
 
+  describe "room-local Voice Session admission" do
+    test "admits a Voice Session with a fresh opaque ID" do
+      voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+
+      assert {:ok, admission} =
+               Voice.admit(voice_channel_id, user_id, "signaling-connection-1", self())
+
+      assert %{voice_session_id: voice_session_id, occupancy: 1, capacity: 5} = admission
+      assert {:ok, ^voice_session_id} = Ecto.UUID.cast(voice_session_id)
+      refute voice_session_id in [voice_channel_id, user_id, "signaling-connection-1"]
+      refute inspect(admission) =~ "#PID"
+    end
+
+    test "reuses the existing admission for the same signaling connection" do
+      voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+
+      assert {:ok, first} = Voice.admit(voice_channel_id, user_id, "connection-1", self())
+      assert {:ok, repeated} = Voice.admit(voice_channel_id, user_id, "connection-1", self())
+
+      assert repeated == first
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+    end
+
+    test "atomically caps a room at five concurrent Voice Sessions" do
+      voice_channel_id = Ecto.UUID.generate()
+
+      signaling_channels = Enum.map(1..6, &start_signaling_channel/1)
+
+      results =
+        1..5
+        |> Task.async_stream(
+          fn number ->
+            Voice.admit(
+              voice_channel_id,
+              Ecto.UUID.generate(),
+              "connection-#{number}",
+              Enum.at(signaling_channels, number - 1)
+            )
+          end,
+          max_concurrency: 5,
+          timeout: :infinity
+        )
+        |> Enum.map(fn {:ok, result} -> result end)
+
+      assert Enum.all?(results, &match?({:ok, %{occupancy: _, capacity: 5}}, &1))
+
+      assert {:error, %{reason: :room_full, occupancy: 5, capacity: 5} = room_full} =
+               Voice.admit(
+                 voice_channel_id,
+                 Ecto.UUID.generate(),
+                 "connection-6",
+                 Enum.at(signaling_channels, 5)
+               )
+
+      assert Map.keys(room_full) |> Enum.sort() == [:capacity, :occupancy, :reason]
+    end
+
+    test "leave is idempotent and the final leave begins empty-room cleanup" do
+      voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: voice_session_id}} =
+               Voice.admit(voice_channel_id, user_id, "connection-1", self())
+
+      assert :ok = Voice.leave(voice_channel_id, voice_session_id)
+      assert :ok = Voice.leave(voice_channel_id, voice_session_id)
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+
+      assert :ok = Voice.expire_idle_room(voice_channel_id)
+      refute Voice.room_running?(voice_channel_id)
+    end
+
+    test "a crashed temporary Session removes only its own membership" do
+      voice_channel_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: crashed_session_id}} =
+               Voice.admit(voice_channel_id, Ecto.UUID.generate(), "connection-1", self())
+
+      assert {:ok, %{voice_session_id: healthy_session_id}} =
+               Voice.admit(voice_channel_id, Ecto.UUID.generate(), "connection-2", self())
+
+      assert :ok = Voice.crash_session(voice_channel_id, crashed_session_id)
+
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+
+      assert {:ok, %{voice_session_id: replacement_session_id}} =
+               Voice.admit(voice_channel_id, Ecto.UUID.generate(), "connection-1", self())
+
+      refute replacement_session_id == crashed_session_id
+
+      assert :ok = Voice.leave(voice_channel_id, replacement_session_id)
+      assert :ok = Voice.leave(voice_channel_id, healthy_session_id)
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+    end
+
+    test "a signaling channel death removes its Voice Session" do
+      voice_channel_id = Ecto.UUID.generate()
+
+      signaling_channel = start_signaling_channel(:connection_death)
+
+      assert {:ok, _admission} =
+               Voice.admit(
+                 voice_channel_id,
+                 Ecto.UUID.generate(),
+                 "connection-1",
+                 signaling_channel
+               )
+
+      Process.exit(signaling_channel, :shutdown)
+
+      assert :ok = Voice.await_empty_room(voice_channel_id)
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+    end
+  end
+
   defp room_server(voice_channel_id) do
     {:via, Registry, {DiscordClone.Voice.RoomRegistry, {:room, voice_channel_id}}}
     |> GenServer.whereis()
+  end
+
+  defp start_signaling_channel(id) do
+    start_supervised!(%{
+      id: {:voice_signaling_channel, id},
+      start:
+        {Task, :start_link,
+         [
+           fn ->
+             receive do
+               :stop -> :ok
+             end
+           end
+         ]}
+    })
   end
 end
