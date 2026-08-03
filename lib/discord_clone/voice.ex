@@ -26,7 +26,7 @@ defmodule DiscordClone.Voice do
     with true <- Process.alive?(signaling_channel),
          {:ok, [voice_channel_id, user_id]} <-
            UUIDIdentifier.cast_all([voice_channel_id, user_id]) do
-      AdmissionServer.admit(voice_channel_id, user_id, signaling_session_id, signaling_channel)
+      safe_admit(voice_channel_id, user_id, signaling_session_id, signaling_channel)
     else
       false -> {:error, :invalid_admission}
       :error -> {:error, :not_found}
@@ -40,7 +40,7 @@ defmodule DiscordClone.Voice do
   def leave(voice_channel_id, voice_session_id) do
     with {:ok, [voice_channel_id, voice_session_id]} <-
            UUIDIdentifier.cast_all([voice_channel_id, voice_session_id]) do
-      AdmissionServer.leave(voice_channel_id, voice_session_id)
+      safe_leave(voice_channel_id, voice_session_id)
     else
       :error -> {:error, :not_found}
     end
@@ -52,7 +52,7 @@ defmodule DiscordClone.Voice do
     UUIDIdentifier.cast_or(voice_channel_id, {:error, :not_found}, fn voice_channel_id ->
       case room_server(voice_channel_id) do
         nil -> {:error, :not_found}
-        room_server -> RoomServer.occupancy(room_server)
+        room_server -> safe_room_occupancy(room_server)
       end
     end)
   end
@@ -94,6 +94,42 @@ defmodule DiscordClone.Voice do
   end
 
   @doc false
+  @spec crash_admission_server() :: :ok | {:error, :not_running}
+  def crash_admission_server do
+    case Process.whereis(AdmissionServer) do
+      admission_server when is_pid(admission_server) ->
+        Process.exit(admission_server, :kill)
+        :ok
+
+      nil ->
+        {:error, :not_running}
+    end
+  end
+
+  @doc false
+  @spec crash_forwarder(term()) :: :ok | {:error, :not_found}
+  def crash_forwarder(voice_channel_id) do
+    UUIDIdentifier.cast_or(voice_channel_id, {:error, :not_found}, fn voice_channel_id ->
+      case Registry.lookup(RoomRegistry, {:forwarder, voice_channel_id}) do
+        [{forwarder, _value}] when is_pid(forwarder) ->
+          monitor = Process.monitor(forwarder)
+          Process.exit(forwarder, :kill)
+
+          receive do
+            {:DOWN, ^monitor, :process, ^forwarder, _reason} -> :ok
+          end
+
+        _missing_or_stopped ->
+          :ok
+      end
+    end)
+  end
+
+  @doc false
+  @spec await_admission_recovery() :: :ok
+  def await_admission_recovery, do: AdmissionServer.await_ready()
+
+  @doc false
   @spec mark_room_in_use(term()) :: :ok | {:error, :not_found | :not_running | term()}
   def mark_room_in_use(voice_channel_id) do
     case UUIDIdentifier.cast(voice_channel_id) do
@@ -115,9 +151,9 @@ defmodule DiscordClone.Voice do
 
   @doc false
   @spec admit_room(Ecto.UUID.t(), Ecto.UUID.t(), binary(), pid()) ::
-          {:ok, map()} | {:error, term()}
+          {:ok, map(), pid()} | {:error, term()}
   def admit_room(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
-    admit(voice_channel_id, user_id, signaling_session_id, signaling_channel, 2)
+    admit_room(voice_channel_id, user_id, signaling_session_id, signaling_channel, 2)
   end
 
   @doc false
@@ -125,8 +161,16 @@ defmodule DiscordClone.Voice do
   def leave_room(voice_channel_id, voice_session_id) do
     case room_server(voice_channel_id) do
       nil -> :ok
-      room_server -> RoomServer.leave(room_server, voice_session_id)
+      room_server -> safe_room_leave(room_server, voice_session_id)
     end
+  end
+
+  @doc false
+  @spec running_room_servers() :: [{Ecto.UUID.t(), pid()}]
+  def running_room_servers do
+    Registry.select(RoomRegistry, [
+      {{{:room, :"$1"}, :"$2", :_}, [], [{{:"$1", :"$2"}}]}
+    ])
   end
 
   defp ensure_room_id(voice_channel_id) do
@@ -163,12 +207,21 @@ defmodule DiscordClone.Voice do
       {:error, :not_running}
   end
 
-  defp admit(voice_channel_id, user_id, signaling_session_id, signaling_channel, attempts_left) do
+  defp admit_room(
+         voice_channel_id,
+         user_id,
+         signaling_session_id,
+         signaling_channel,
+         attempts_left
+       ) do
     with :ok <- ensure_room_id(voice_channel_id),
          room_server when is_pid(room_server) <- room_server(voice_channel_id) do
       case RoomServer.admit(room_server, user_id, signaling_session_id, signaling_channel) do
+        {:ok, admission} ->
+          {:ok, admission, room_server}
+
         {:error, :unavailable} when attempts_left > 0 ->
-          admit(
+          admit_room(
             voice_channel_id,
             user_id,
             signaling_session_id,
@@ -181,7 +234,7 @@ defmodule DiscordClone.Voice do
       end
     else
       nil when attempts_left > 0 ->
-        admit(
+        admit_room(
           voice_channel_id,
           user_id,
           signaling_session_id,
@@ -192,12 +245,27 @@ defmodule DiscordClone.Voice do
       nil ->
         {:error, :not_found}
 
+      {:error, _room_starting} when attempts_left > 0 ->
+        admit_room(
+          voice_channel_id,
+          user_id,
+          signaling_session_id,
+          signaling_channel,
+          attempts_left - 1
+        )
+
       error ->
         error
     end
   catch
     :exit, _room_stopped when attempts_left > 0 ->
-      admit(voice_channel_id, user_id, signaling_session_id, signaling_channel, attempts_left - 1)
+      admit_room(
+        voice_channel_id,
+        user_id,
+        signaling_session_id,
+        signaling_channel,
+        attempts_left - 1
+      )
 
     :exit, _room_stopped ->
       {:error, :not_found}
@@ -212,6 +280,30 @@ defmodule DiscordClone.Voice do
       [{pid, _value}] when is_pid(pid) -> if(Process.alive?(pid), do: pid)
       _missing_or_stopped -> nil
     end
+  end
+
+  defp safe_room_leave(room_server, voice_session_id) do
+    RoomServer.leave(room_server, voice_session_id)
+  catch
+    :exit, _room_stopped -> :ok
+  end
+
+  defp safe_admit(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
+    AdmissionServer.admit(voice_channel_id, user_id, signaling_session_id, signaling_channel)
+  catch
+    :exit, _admission_server_unavailable -> {:error, :recovering}
+  end
+
+  defp safe_leave(voice_channel_id, voice_session_id) do
+    AdmissionServer.leave(voice_channel_id, voice_session_id)
+  catch
+    :exit, _admission_server_unavailable -> :ok
+  end
+
+  defp safe_room_occupancy(room_server) do
+    RoomServer.occupancy(room_server)
+  catch
+    :exit, _room_stopped -> {:error, :not_found}
   end
 
   defp await_room_shutdown(room_server) do

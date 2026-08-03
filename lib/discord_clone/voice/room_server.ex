@@ -21,6 +21,10 @@ defmodule DiscordClone.Voice.RoomServer do
   @spec mark_in_use(GenServer.server()) :: :ok
   def mark_in_use(server), do: GenServer.call(server, :mark_in_use)
 
+  @doc false
+  @spec shutdown(GenServer.server()) :: :ok
+  def shutdown(server), do: GenServer.cast(server, :shutdown_runtime)
+
   @spec mark_empty(GenServer.server(), keyword()) :: :ok
   def mark_empty(server, opts \\ []), do: GenServer.call(server, {:mark_empty, opts})
 
@@ -46,14 +50,19 @@ defmodule DiscordClone.Voice.RoomServer do
 
   @impl true
   def init(opts) do
+    voice_channel_id = Keyword.fetch!(opts, :voice_channel_id)
+    AdmissionServer.room_server_started(voice_channel_id, self())
+
     {:ok,
      %{
        room_supervisor: Keyword.fetch!(opts, :room_supervisor),
-       voice_channel_id: Keyword.fetch!(opts, :voice_channel_id),
+       voice_channel_id: voice_channel_id,
        idle_timer: schedule_idle_shutdown(),
        memberships: %{},
        session_by_signaling: %{},
        session_by_monitor: %{},
+       session_supervisor: nil,
+       pending_admissions: [],
        empty_waiters: []
      }}
   end
@@ -74,16 +83,17 @@ defmodule DiscordClone.Voice.RoomServer do
     end
   end
 
-  def handle_call({:admit, user_id, signaling_session_id, signaling_channel}, _from, state) do
-    case Map.fetch(state.session_by_signaling, signaling_session_id) do
-      {:ok, voice_session_id} ->
-        {:reply, {:ok, admission(state.memberships[voice_session_id], state)}, state}
-
-      :error when map_size(state.memberships) >= @capacity ->
-        {:reply, {:error, room_full(state)}, state}
-
-      :error ->
-        admit_new_session(state, user_id, signaling_session_id, signaling_channel)
+  def handle_call({:admit, user_id, signaling_session_id, signaling_channel}, from, state) do
+    if session_supervisor_ready?(state) do
+      admit_request(state, user_id, signaling_session_id, signaling_channel)
+    else
+      {:noreply,
+       %{
+         state
+         | pending_admissions: [
+             {from, user_id, signaling_session_id, signaling_channel} | state.pending_admissions
+           ]
+       }}
     end
   end
 
@@ -119,6 +129,24 @@ defmodule DiscordClone.Voice.RoomServer do
   end
 
   @impl true
+  def handle_info({:session_supervisor_started, session_supervisor}, state) do
+    state = %{state | session_supervisor: session_supervisor}
+    pending_admissions = Enum.reverse(state.pending_admissions)
+
+    state =
+      Enum.reduce(pending_admissions, state, fn {from, user_id, signaling_session_id,
+                                                 signaling_channel},
+                                                state ->
+        {:reply, reply, state} =
+          admit_request(state, user_id, signaling_session_id, signaling_channel)
+
+        GenServer.reply(from, reply)
+        state
+      end)
+
+    {:noreply, %{state | pending_admissions: []}}
+  end
+
   def handle_info({:idle_shutdown, idle_timer}, %{idle_timer: {_timer_ref, idle_timer}} = state) do
     Process.exit(state.room_supervisor, :shutdown)
     {:stop, :normal, state}
@@ -139,6 +167,29 @@ defmodule DiscordClone.Voice.RoomServer do
   @impl true
   def handle_cast({:signaling_channel_down, voice_session_id}, state) do
     {:noreply, remove_membership(state, voice_session_id)}
+  end
+
+  def handle_cast(:shutdown_runtime, state) do
+    state = remove_all_memberships(state)
+    Process.exit(state.room_supervisor, :shutdown)
+    {:noreply, state}
+  end
+
+  defp admit_request(state, user_id, signaling_session_id, signaling_channel) do
+    case Map.fetch(state.session_by_signaling, signaling_session_id) do
+      {:ok, voice_session_id} ->
+        {:reply, {:ok, admission(state.memberships[voice_session_id], state)}, state}
+
+      :error when map_size(state.memberships) >= @capacity ->
+        {:reply, {:error, room_full(state)}, state}
+
+      :error ->
+        admit_new_session(state, user_id, signaling_session_id, signaling_channel)
+    end
+  end
+
+  defp session_supervisor_ready?(state) do
+    is_pid(state.session_supervisor) and Process.alive?(state.session_supervisor)
   end
 
   defp schedule_idle_shutdown(timeout \\ @idle_timeout_ms)
@@ -213,8 +264,14 @@ defmodule DiscordClone.Voice.RoomServer do
         :ok = AdmissionServer.session_removed(user_id, voice_session_id)
 
         if map_size(memberships) == 0 do
-          %{state | idle_timer: schedule_idle_shutdown()}
-          |> reply_empty_waiters()
+          state =
+            if Keyword.get(opts, :schedule_idle?, true) do
+              %{state | idle_timer: schedule_idle_shutdown()}
+            else
+              state
+            end
+
+          reply_empty_waiters(state)
         else
           state
         end
@@ -248,6 +305,12 @@ defmodule DiscordClone.Voice.RoomServer do
       {:DOWN, ^session_monitor, :process, _session, _reason} ->
         %{state | session_by_monitor: Map.delete(state.session_by_monitor, session_monitor)}
     end
+  end
+
+  defp remove_all_memberships(state) do
+    Enum.reduce(Map.keys(state.memberships), state, fn voice_session_id, state ->
+      remove_membership(state, voice_session_id, schedule_idle?: false)
+    end)
   end
 
   defp reply_empty_waiters(state) do

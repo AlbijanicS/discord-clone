@@ -15,7 +15,7 @@ defmodule DiscordClone.Voice.RoomSupervisor do
     children = [
       {RoomServer, voice_channel_id: voice_channel_id, room_supervisor: self()},
       {SessionSupervisor, voice_channel_id: voice_channel_id},
-      {Forwarder, []}
+      {Forwarder, voice_channel_id: voice_channel_id}
     ]
 
     Supervisor.init(children, strategy: :one_for_all)

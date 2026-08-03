@@ -75,6 +75,137 @@ defmodule DiscordClone.VoiceTest do
       assert :ok = Voice.ensure_room(voice_channel_id)
       assert Voice.room_running?(voice_channel_id)
     end
+
+    test "a RoomServer failure clears its room and preserves an unrelated room" do
+      affected_voice_channel_id = Ecto.UUID.generate()
+      unaffected_voice_channel_id = Ecto.UUID.generate()
+      affected_user_ids = Enum.map(1..2, fn _ -> Ecto.UUID.generate() end)
+
+      for {user_id, number} <- Enum.with_index(affected_user_ids, 1) do
+        assert {:ok, %{occupancy: ^number}} =
+                 Voice.admit(
+                   affected_voice_channel_id,
+                   user_id,
+                   "affected-connection-#{number}",
+                   self()
+                 )
+      end
+
+      assert {:ok, %{occupancy: 1}} =
+               Voice.admit(
+                 unaffected_voice_channel_id,
+                 Ecto.UUID.generate(),
+                 "unaffected-connection-1",
+                 self()
+               )
+
+      room_server = room_server(affected_voice_channel_id)
+      room_ref = Process.monitor(room_server)
+      Process.exit(room_server, :kill)
+
+      assert_receive {:DOWN, ^room_ref, :process, ^room_server, :killed}
+
+      for {user_id, number} <- Enum.with_index(affected_user_ids, 1) do
+        assert {:ok, %{occupancy: ^number}} =
+                 Voice.admit(
+                   affected_voice_channel_id,
+                   user_id,
+                   "rejoin-after-room-failure-#{number}",
+                   self()
+                 )
+      end
+
+      assert {:ok, %{occupancy: 1, capacity: 5}} =
+               Voice.room_occupancy(unaffected_voice_channel_id)
+    end
+
+    test "a Forwarder failure clears its room and preserves an unrelated room" do
+      affected_voice_channel_id = Ecto.UUID.generate()
+      unaffected_voice_channel_id = Ecto.UUID.generate()
+      affected_user_id = Ecto.UUID.generate()
+
+      assert {:ok, %{occupancy: 1}} =
+               Voice.admit(
+                 affected_voice_channel_id,
+                 affected_user_id,
+                 "affected-connection-1",
+                 self()
+               )
+
+      assert {:ok, %{occupancy: 1}} =
+               Voice.admit(
+                 unaffected_voice_channel_id,
+                 Ecto.UUID.generate(),
+                 "unaffected-connection-1",
+                 self()
+               )
+
+      assert :ok = Voice.crash_forwarder(affected_voice_channel_id)
+
+      assert {:ok, %{occupancy: 1}} =
+               Voice.admit(
+                 affected_voice_channel_id,
+                 affected_user_id,
+                 "rejoin-after-forwarder-failure",
+                 self()
+               )
+
+      assert {:ok, %{occupancy: 1, capacity: 5}} =
+               Voice.room_occupancy(unaffected_voice_channel_id)
+    end
+
+    test "late cleanup for a failed room cannot clear a rejoined Voice Session" do
+      voice_channel_id = Ecto.UUID.generate()
+      replacement_voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: old_voice_session_id}} =
+               Voice.admit(voice_channel_id, user_id, "same-signaling-session", self())
+
+      room_server = room_server(voice_channel_id)
+      room_ref = Process.monitor(room_server)
+      Process.exit(room_server, :kill)
+
+      assert_receive {:DOWN, ^room_ref, :process, ^room_server, :killed}
+
+      assert {:ok, %{voice_session_id: new_voice_session_id, occupancy: 1}} =
+               Voice.admit(voice_channel_id, user_id, "same-signaling-session", self())
+
+      refute new_voice_session_id == old_voice_session_id
+      assert :ok = Voice.leave(voice_channel_id, old_voice_session_id)
+
+      assert {:ok, _admission} =
+               Voice.admit(replacement_voice_channel_id, user_id, "replacement-session", self())
+
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+
+      assert {:ok, %{occupancy: 1, capacity: 5}} =
+               Voice.room_occupancy(replacement_voice_channel_id)
+    end
+
+    test "AdmissionServer restart retires old rooms before accepting fresh admissions" do
+      voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: old_voice_session_id}} =
+               Voice.admit(voice_channel_id, user_id, "before-coordinator-restart", self())
+
+      room_server = room_server(voice_channel_id)
+      room_ref = Process.monitor(room_server)
+      admission_server = Process.whereis(DiscordClone.Voice.AdmissionServer)
+      admission_ref = Process.monitor(admission_server)
+
+      assert :ok = Voice.crash_admission_server()
+      assert_receive {:DOWN, ^admission_ref, :process, ^admission_server, :killed}
+      assert_receive {:DOWN, ^room_ref, :process, ^room_server, _reason}
+      assert :ok = Voice.await_admission_recovery()
+      refute Voice.room_running?(voice_channel_id)
+
+      assert {:ok, %{voice_session_id: new_voice_session_id, occupancy: 1}} =
+               Voice.admit(voice_channel_id, user_id, "after-coordinator-restart", self())
+
+      refute new_voice_session_id == old_voice_session_id
+    end
   end
 
   describe "room-local Voice Session admission" do
