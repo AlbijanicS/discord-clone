@@ -6,6 +6,8 @@ defmodule DiscordClone.Voice.AdmissionServer do
   alias DiscordClone.Voice
   alias DiscordClone.Voice.RoomServer
 
+  @recovery_timeout_ms :timer.seconds(5)
+
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, :ok, opts)
 
@@ -23,7 +25,7 @@ defmodule DiscordClone.Voice.AdmissionServer do
   end
 
   @doc false
-  @spec await_ready() :: :ok
+  @spec await_ready() :: :ok | {:error, :recovery_timeout}
   def await_ready, do: GenServer.call(__MODULE__, :await_ready, :infinity)
 
   @doc false
@@ -48,13 +50,16 @@ defmodule DiscordClone.Voice.AdmissionServer do
     room_servers = Voice.running_room_servers()
     recovery_pending = MapSet.new(Enum.map(room_servers, fn {_voice_channel_id, pid} -> pid end))
 
+    admission_status = if(room_servers == [], do: :ready, else: :recovering)
+
     state = %{
-      admission_status: if(room_servers == [], do: :ready, else: :recovering),
+      admission_status: admission_status,
       sessions_by_user: %{},
       rooms_by_channel: %{},
       monitors: %{},
       recovery_pending: recovery_pending,
-      recovery_waiters: []
+      recovery_waiters: [],
+      recovery_timer: recovery_timer(admission_status)
     }
 
     state =
@@ -74,6 +79,9 @@ defmodule DiscordClone.Voice.AdmissionServer do
     {:noreply, %{state | recovery_waiters: [from | state.recovery_waiters]}}
   end
 
+  def handle_call(:await_ready, _from, %{admission_status: :recovery_failed} = state),
+    do: {:reply, {:error, :recovery_timeout}, state}
+
   def handle_call(:await_ready, _from, state), do: {:reply, :ok, state}
 
   def handle_call(
@@ -82,6 +90,14 @@ defmodule DiscordClone.Voice.AdmissionServer do
         %{admission_status: :recovering} = state
       ) do
     {:reply, {:error, :recovering}, state}
+  end
+
+  def handle_call(
+        {:admit, _voice_channel_id, _user_id, _signaling_session_id, _signaling_channel},
+        _from,
+        %{admission_status: :recovery_failed} = state
+      ) do
+    {:reply, {:error, :recovery_timeout}, state}
   end
 
   def handle_call(
@@ -161,6 +177,15 @@ defmodule DiscordClone.Voice.AdmissionServer do
   end
 
   @impl true
+  def handle_info(:recovery_timeout, %{admission_status: :recovering} = state) do
+    Enum.each(state.recovery_waiters, &GenServer.reply(&1, {:error, :recovery_timeout}))
+
+    {:noreply,
+     %{state | admission_status: :recovery_failed, recovery_waiters: [], recovery_timer: nil}}
+  end
+
+  def handle_info(:recovery_timeout, state), do: {:noreply, state}
+
   def handle_info({:DOWN, monitor, :process, _pid, reason}, state) do
     case Map.pop(state.monitors, monitor) do
       {nil, _monitors} ->
@@ -396,8 +421,17 @@ defmodule DiscordClone.Voice.AdmissionServer do
       %{monitor: monitor} ->
         Process.demonitor(monitor, [:flush])
 
+        rooms_by_channel =
+          case Map.get(state.rooms_by_channel, voice_channel_id) |> Map.delete(component_name) do
+            empty_room when map_size(empty_room) == 0 ->
+              Map.delete(state.rooms_by_channel, voice_channel_id)
+
+            room ->
+              Map.put(state.rooms_by_channel, voice_channel_id, room)
+          end
+
         state
-        |> update_in([:rooms_by_channel, voice_channel_id], &Map.delete(&1, component_name))
+        |> Map.put(:rooms_by_channel, rooms_by_channel)
         |> update_in([:monitors], &Map.delete(&1, monitor))
 
       nil ->
@@ -411,11 +445,17 @@ defmodule DiscordClone.Voice.AdmissionServer do
 
     case get_in(state.rooms_by_channel, [voice_channel_id, component.component]) do
       %{pid: ^pid, monitor: ^monitor} ->
-        update_in(
-          state,
-          [:rooms_by_channel, voice_channel_id],
-          &Map.delete(&1, component.component)
-        )
+        rooms_by_channel =
+          case Map.get(state.rooms_by_channel, voice_channel_id)
+               |> Map.delete(component.component) do
+            empty_room when map_size(empty_room) == 0 ->
+              Map.delete(state.rooms_by_channel, voice_channel_id)
+
+            room ->
+              Map.put(state.rooms_by_channel, voice_channel_id, room)
+          end
+
+        Map.put(state, :rooms_by_channel, rooms_by_channel)
 
       _replacement_or_missing ->
         state
@@ -475,10 +515,16 @@ defmodule DiscordClone.Voice.AdmissionServer do
   defp room_failure?(:normal), do: false
   defp room_failure?(_reason), do: true
 
+  defp recovery_timer(:recovering),
+    do: Process.send_after(self(), :recovery_timeout, @recovery_timeout_ms)
+
+  defp recovery_timer(:ready), do: nil
+
   defp maybe_finish_recovery(%{admission_status: :recovering, recovery_pending: pending} = state) do
     if MapSet.size(pending) == 0 do
+      if state.recovery_timer, do: Process.cancel_timer(state.recovery_timer)
       Enum.each(state.recovery_waiters, &GenServer.reply(&1, :ok))
-      %{state | admission_status: :ready, recovery_waiters: []}
+      %{state | admission_status: :ready, recovery_waiters: [], recovery_timer: nil}
     else
       state
     end

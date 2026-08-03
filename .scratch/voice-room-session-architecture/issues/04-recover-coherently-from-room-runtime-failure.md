@@ -28,9 +28,12 @@ Completed 2026-08-03.
   room tree replaces its local membership and Session processes.
 - RoomServer waits for its restarted SessionSupervisor readiness before serving
   admissions, so callers do not observe the transient named-supervisor race.
-- AdmissionServer restart policy is fail-closed: it returns `:recovering`,
-  shuts down every pre-existing ephemeral room, and accepts fresh admissions
-  only after all old RoomServers have stopped. No old Voice Session is
+- AdmissionServer restart policy is fail-closed and bounded: it returns
+  `:recovering`, shuts down every pre-existing ephemeral room, and accepts
+  fresh admissions only after all old RoomServers have stopped. A five-second
+  recovery deadline returns `{:error, :recovery_timeout}` rather than
+  accepting with an untrustworthy index; the coordinator remains fail-closed
+  until it is restarted after that terminal failure. No old Voice Session is
   resurrected.
 - Added public-API OTP coverage for RoomServer failure, Forwarder failure,
   unrelated-room continuity, late old-session cleanup, existing individual

@@ -126,7 +126,7 @@ defmodule DiscordClone.Voice do
   end
 
   @doc false
-  @spec await_admission_recovery() :: :ok
+  @spec await_admission_recovery() :: :ok | {:error, :recovery_timeout}
   def await_admission_recovery, do: AdmissionServer.await_ready()
 
   @doc false
