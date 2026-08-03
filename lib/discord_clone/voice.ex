@@ -8,7 +8,7 @@ defmodule DiscordClone.Voice do
   """
 
   alias DiscordClone.UUIDIdentifier
-  alias DiscordClone.Voice.{RoomRegistry, RoomServer, RoomSupervisor}
+  alias DiscordClone.Voice.{AdmissionServer, RoomRegistry, RoomServer, RoomSupervisor}
 
   @spec ensure_room(term()) :: :ok | {:error, :not_found | term()}
   def ensure_room(voice_channel_id) do
@@ -26,7 +26,7 @@ defmodule DiscordClone.Voice do
     with true <- Process.alive?(signaling_channel),
          {:ok, [voice_channel_id, user_id]} <-
            UUIDIdentifier.cast_all([voice_channel_id, user_id]) do
-      admit(voice_channel_id, user_id, signaling_session_id, signaling_channel, 2)
+      AdmissionServer.admit(voice_channel_id, user_id, signaling_session_id, signaling_channel)
     else
       false -> {:error, :invalid_admission}
       :error -> {:error, :not_found}
@@ -40,10 +40,7 @@ defmodule DiscordClone.Voice do
   def leave(voice_channel_id, voice_session_id) do
     with {:ok, [voice_channel_id, voice_session_id]} <-
            UUIDIdentifier.cast_all([voice_channel_id, voice_session_id]) do
-      case room_server(voice_channel_id) do
-        nil -> :ok
-        room_server -> RoomServer.leave(room_server, voice_session_id)
-      end
+      AdmissionServer.leave(voice_channel_id, voice_session_id)
     else
       :error -> {:error, :not_found}
     end
@@ -114,6 +111,22 @@ defmodule DiscordClone.Voice do
         room_server -> RoomServer.mark_empty(room_server, opts)
       end
     end)
+  end
+
+  @doc false
+  @spec admit_room(Ecto.UUID.t(), Ecto.UUID.t(), binary(), pid()) ::
+          {:ok, map()} | {:error, term()}
+  def admit_room(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
+    admit(voice_channel_id, user_id, signaling_session_id, signaling_channel, 2)
+  end
+
+  @doc false
+  @spec leave_room(Ecto.UUID.t(), Ecto.UUID.t()) :: :ok
+  def leave_room(voice_channel_id, voice_session_id) do
+    case room_server(voice_channel_id) do
+      nil -> :ok
+      room_server -> RoomServer.leave(room_server, voice_session_id)
+    end
   end
 
   defp ensure_room_id(voice_channel_id) do

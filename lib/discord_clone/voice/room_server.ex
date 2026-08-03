@@ -5,7 +5,7 @@ defmodule DiscordClone.Voice.RoomServer do
 
   @idle_timeout_ms :timer.seconds(30)
 
-  alias DiscordClone.Voice.{RoomRegistry, Session, SessionSupervisor}
+  alias DiscordClone.Voice.{AdmissionServer, RoomRegistry, Session, SessionSupervisor}
 
   @capacity 5
 
@@ -190,7 +190,8 @@ defmodule DiscordClone.Voice.RoomServer do
       {%{
          session_pid: session_pid,
          session_monitor: session_monitor,
-         signaling_session_id: signaling_session_id
+         signaling_session_id: signaling_session_id,
+         user_id: user_id
        }, memberships} ->
         if Keyword.get(opts, :terminate_session?, true) and Process.alive?(session_pid) do
           _ =
@@ -208,6 +209,8 @@ defmodule DiscordClone.Voice.RoomServer do
             session_by_signaling: Map.delete(state.session_by_signaling, signaling_session_id),
             session_by_monitor: Map.delete(state.session_by_monitor, session_monitor)
         }
+
+        :ok = AdmissionServer.session_removed(user_id, voice_session_id)
 
         if map_size(memberships) == 0 do
           %{state | idle_timer: schedule_idle_shutdown()}

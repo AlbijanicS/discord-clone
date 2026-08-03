@@ -194,6 +194,148 @@ defmodule DiscordClone.VoiceTest do
     end
   end
 
+  describe "cross-room Voice Session admission" do
+    test "serializes concurrent admission requests for one User into one active Voice Session" do
+      user_id = Ecto.UUID.generate()
+      voice_channel_ids = [Ecto.UUID.generate(), Ecto.UUID.generate()]
+      signaling_channels = Enum.map(1..8, &start_signaling_channel/1)
+
+      results =
+        0..7
+        |> Task.async_stream(
+          fn number ->
+            Voice.admit(
+              Enum.at(voice_channel_ids, rem(number, 2)),
+              user_id,
+              "connection-#{number}",
+              Enum.at(signaling_channels, number)
+            )
+          end,
+          max_concurrency: 8,
+          timeout: :infinity
+        )
+        |> Enum.map(fn {:ok, result} -> result end)
+
+      assert Enum.all?(results, &match?({:ok, %{voice_session_id: _}}, &1))
+
+      total_occupancy =
+        Enum.reduce(voice_channel_ids, 0, fn voice_channel_id, total ->
+          case Voice.room_occupancy(voice_channel_id) do
+            {:ok, %{occupancy: occupancy}} -> total + occupancy
+            {:error, :not_found} -> total
+          end
+        end)
+
+      assert total_occupancy == 1
+    end
+
+    test "moves a User to an available Voice Channel and retires the old Voice Session" do
+      first_voice_channel_id = Ecto.UUID.generate()
+      second_voice_channel_id = Ecto.UUID.generate()
+      third_voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: first_voice_session_id}} =
+               Voice.admit(first_voice_channel_id, user_id, "connection-1", self())
+
+      assert {:ok, %{voice_session_id: second_voice_session_id}} =
+               Voice.admit(second_voice_channel_id, user_id, "connection-2", self())
+
+      refute second_voice_session_id == first_voice_session_id
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(first_voice_channel_id)
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(second_voice_channel_id)
+      assert :ok = Voice.leave(first_voice_channel_id, first_voice_session_id)
+
+      assert {:ok, %{voice_session_id: third_voice_session_id}} =
+               Voice.admit(third_voice_channel_id, user_id, "connection-3", self())
+
+      refute third_voice_session_id == second_voice_session_id
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(second_voice_channel_id)
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(third_voice_channel_id)
+    end
+
+    test "clears an explicitly left Voice Session from global coordination" do
+      first_voice_channel_id = Ecto.UUID.generate()
+      second_voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: voice_session_id}} =
+               Voice.admit(first_voice_channel_id, user_id, "connection-1", self())
+
+      assert :ok = Voice.leave(first_voice_channel_id, voice_session_id)
+
+      assert {:ok, _admission} =
+               Voice.admit(second_voice_channel_id, user_id, "connection-2", self())
+
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(first_voice_channel_id)
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(second_voice_channel_id)
+    end
+
+    test "ignores a leave with the wrong Voice Channel ID" do
+      first_voice_channel_id = Ecto.UUID.generate()
+      wrong_voice_channel_id = Ecto.UUID.generate()
+      second_voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: voice_session_id}} =
+               Voice.admit(first_voice_channel_id, user_id, "connection-1", self())
+
+      assert :ok = Voice.leave(wrong_voice_channel_id, voice_session_id)
+
+      assert {:ok, _admission} =
+               Voice.admit(second_voice_channel_id, user_id, "connection-2", self())
+
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(first_voice_channel_id)
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(second_voice_channel_id)
+    end
+
+    test "preserves the current Voice Session when a move target is full" do
+      first_voice_channel_id = Ecto.UUID.generate()
+      full_voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: current_voice_session_id}} =
+               Voice.admit(first_voice_channel_id, user_id, "connection-1", self())
+
+      full_signaling_channels = Enum.map(1..5, &start_signaling_channel/1)
+
+      for number <- 1..5 do
+        assert {:ok, _admission} =
+                 Voice.admit(
+                   full_voice_channel_id,
+                   Ecto.UUID.generate(),
+                   "full-connection-#{number}",
+                   Enum.at(full_signaling_channels, number - 1)
+                 )
+      end
+
+      assert {:error, %{reason: :room_full, occupancy: 5, capacity: 5}} =
+               Voice.admit(full_voice_channel_id, user_id, "connection-2", self())
+
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(first_voice_channel_id)
+      assert {:ok, %{occupancy: 5, capacity: 5}} = Voice.room_occupancy(full_voice_channel_id)
+      assert :ok = Voice.leave(first_voice_channel_id, current_voice_session_id)
+    end
+
+    test "clears a failed Voice Session from global coordination before a replacement admission" do
+      first_voice_channel_id = Ecto.UUID.generate()
+      second_voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: crashed_voice_session_id}} =
+               Voice.admit(first_voice_channel_id, user_id, "connection-1", self())
+
+      assert :ok = Voice.crash_session(first_voice_channel_id, crashed_voice_session_id)
+
+      assert {:ok, %{voice_session_id: replacement_voice_session_id}} =
+               Voice.admit(second_voice_channel_id, user_id, "connection-2", self())
+
+      refute replacement_voice_session_id == crashed_voice_session_id
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(first_voice_channel_id)
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(second_voice_channel_id)
+    end
+  end
+
   defp room_server(voice_channel_id) do
     {:via, Registry, {DiscordClone.Voice.RoomRegistry, {:room, voice_channel_id}}}
     |> GenServer.whereis()
