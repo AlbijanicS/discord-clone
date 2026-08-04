@@ -119,11 +119,11 @@ full SDP credentials or TURN credentials.
 | --- | --- | --- | --- |
 | 0. Architecture ADR | Complete | 2026-07-27 | `docs/adr/0016-use-exwebrtc-server-routed-voice-channels.md` |
 | 1. Durable Voice Channel model | Complete | 2026-07-27 | Durable schema, scoped Workspaces API, and sidebar management UI. |
-| 2. Browser microphone ownership spike | Not started |  |  |
+| 2. Browser microphone ownership spike | Complete | 2026-07-28 | Browser microphone ownership, lifecycle cleanup, Voice Owner Tab arbitration, and accessible controls are proven by focused JavaScript tests. |
 | 3. Authenticated Phoenix signaling skeleton | Not started |  |  |
 | 4. First browser-to-ExWebRTC PeerConnection | Manual localhost pass in progress | 2026-07-31 | Real signaling and terminal ICE coverage are green. After the voice socket began sending the page CSRF token, Chrome completed microphone permission, signaling, and browser-to-server connection; it also remained connected through app navigation and could be left globally. The required repeated-cycle proof remains. |
 | 5. RTP echo experiment | Not started |  |  |
-| 6. OTP Voice Channel Room and Session architecture | Not started |  |  |
+| 6. OTP Voice Channel Room and Session architecture | Complete | 2026-08-04 | Supervised room/session ownership, cross-room admission coordination, failure recovery, Phoenix delegation, and durable-access cleanup are complete; media remains intentionally scoped to Phases 7/8. |
 | 7. Move echo into supervised `Voice.Session` | Not started |  |  |
 | 8. Two-user server-routed audio | Not started |  |  |
 | 9. Capped 3-5 user room | Not started |  |  |
@@ -284,7 +284,40 @@ Prove:
 Implementation Notes:
 
 ```text
-Not started.
+Completed 2026-07-28.
+
+Files changed:
+- `assets/js/app.js`
+- `assets/js/hooks/voice_controller.js` and `voice_controller_test.mjs`
+- `assets/js/hooks/voice_channels.js` and `voice_channels_test.mjs`
+- `assets/js/hooks/voice_lifecycle.js` and `voice_lifecycle_test.mjs`
+- `assets/js/hooks/voice_channel_indicator.js` and `voice_channel_indicator_test.mjs`
+- `assets/js/hooks/voice_controls.js` and `voice_controls_test.mjs`
+- `assets/js/hooks/voice_workspace_badge.js` and `voice_workspace_badge_test.mjs`
+- `lib/discord_clone_web/components/global_destination_rail.ex`
+- `lib/discord_clone_web/live/direct_messages_live/shell.ex`
+- `lib/discord_clone_web/live/workspace_live/shell.ex`
+- `test/discord_clone_web/live/direct_messages_destination_test.exs`
+- `test/discord_clone_web/live/workspace_live/home_management_test.exs`
+- `mix.exs`
+
+Final architecture/API decisions:
+- Browser capture is owned by a shared external `createVoiceController` and starts only from an explicit Voice Channel gesture.
+- Local mute/unmute uses `MediaStreamTrack.enabled`; leave, teardown, logout, navigation, and stale or failed captures release tracks with `MediaStreamTrack.stop()`.
+- Browser-wide Voice Owner Tab arbitration uses best-effort `BroadcastChannel` claims and is not a server authorization or media-ownership source.
+- External hooks/modules own the browser integration and expose visible permission, error, capture, mute, and ownership states.
+
+Behavior proven:
+- Capture, mute/unmute, leave, page teardown, logout cleanup, and release of the browser microphone indicator.
+- Understandable handling for pending permission, denied permission, no device, insecure context, unsupported browser, and externally ended microphone states.
+- A newer browser tab can take ownership and release the previous tab's capture; same-tab coordination failure remains safe.
+
+Tests run:
+- `mix precommit` passed: 62 JavaScript tests and 929 ExUnit tests.
+- Focused browser ownership coverage is in the `voice_controller`, `voice_channels`, `voice_lifecycle`, `voice_controls`, `voice_channel_indicator`, and `voice_workspace_badge` Node test suites.
+
+Known follow-up work:
+- Phase 3/4 integrate the browser controller with authenticated Phoenix signaling and server-side ExWebRTC.
 ```
 
 ## Phase 3: Authenticated Phoenix Signaling Skeleton
@@ -313,7 +346,42 @@ Prove:
 Implementation Notes:
 
 ```text
-Not started.
+Completed 2026-08-04.
+
+Files changed:
+- `lib/discord_clone/application.ex`
+- `lib/discord_clone/voice.ex`
+- `lib/discord_clone/voice/forwarder.ex`
+- `lib/discord_clone/voice/room_server.ex`
+- `lib/discord_clone/voice/room_supervisor.ex`
+- `lib/discord_clone/voice/session.ex`
+- `lib/discord_clone/voice/session_coordinator.ex`
+- `lib/discord_clone/voice/session_supervisor.ex`
+- `lib/discord_clone/workspaces.ex`
+- `lib/discord_clone_web/voice_channel.ex`
+- `test/discord_clone/voice_test.exs`
+- `test/discord_clone/workspaces_voice_lifecycle_test.exs`
+- `test/discord_clone_web/voice_channel_test.exs`
+- `test/discord_clone_web/voice_signaling/peer_connection_test.exs`
+
+Final architecture/API decisions:
+- `DiscordClone.Voice` is the stateless runtime facade. Dynamically started room trees are isolated per durable Voice Channel and supervise `RoomServer`, `SessionSupervisor`, and the `Forwarder` lifecycle boundary with `:one_for_all` room recovery.
+- `RoomServer` owns canonical room membership, opaque Voice Session IDs, the five-session cap, and idempotent cleanup. Temporary Sessions monitor their signaling channels; empty rooms retire after the 30-second grace period.
+- `SessionCoordinator` serializes one active Voice Session per User across rooms, preserves the current session when a target room is full, and fails closed during coordinator or room recovery.
+- The authenticated Phoenix Voice Channel authorizes durable access and delegates runtime admission/leave to `Voice`. Workspaces sends lifecycle invalidations for revoked access and deleted Voice Channels; Voice does not query Workspaces.
+- `Forwarder` is a supervised lifecycle boundary only. The proven one-peer media path remains unchanged until Phase 7, with multi-user RTP forwarding deferred to Phase 8.
+
+Behavior proven:
+- Dynamic room start/reuse, atomic admission and capacity enforcement, same-connection idempotency, cross-room moves, explicit and duplicate leave, signaling-channel death, Session failure, and idle shutdown.
+- Room-core failure clears affected global membership coherently without resurrecting Sessions; unrelated rooms continue operating and the coordinator remains fail-closed when its index cannot be trusted.
+- Authenticated Phoenix admission rejects unauthorized access, exposes only safe opaque outcomes, and delegates cleanup. Durable membership revocation and Voice Channel deletion terminate only the matching sessions and remove stale room/global state.
+
+Tests run:
+- `mix precommit` passed: 62 JavaScript tests and 929 ExUnit tests.
+- Focused Voice OTP, Phoenix Voice Channel, and Workspaces lifecycle coverage passed, including room recovery, cross-room admission, channel termination, durable-access revocation, deletion cascades, and idle retirement.
+
+Known follow-up work:
+- Phase 7 moves the existing one-peer echo into supervised `Voice.Session`; Phase 8 adds multi-user RTP forwarding. Later phases cover the capped room UI, broader recovery policy, deployment, observability, and final documentation.
 ```
 
 ## Phase 4: First Browser-To-ExWebRTC PeerConnection

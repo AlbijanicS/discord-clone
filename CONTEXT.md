@@ -55,6 +55,11 @@ _Avoid_: Voice Conversation, Voice Room
 An active browser audio connection by one User inside one Voice Channel.
 _Avoid_: Participant, membership
 
+**Voice Session ID**:
+An opaque runtime identifier for one admitted Voice Session. It is neither a
+process identifier nor a Signaling Session ID.
+_Avoid_: Session PID, connection ID
+
 **Signaling Session ID**:
 An opaque, server-generated identifier that binds signaling messages to one admitted Voice Channel connection. It is not a Voice Session.
 _Avoid_: Voice Session ID, socket ID, process ID
@@ -179,7 +184,13 @@ _Avoid_: Unread range
 - A **Voice Session** belongs to one **Voice Channel**
 - A **Voice Session** is runtime state, not durable membership
 - A **Voice Session** represents one browser audio connection
+- A **Voice Session ID** identifies one **Voice Session** without exposing its
+  runtime process
 - A User may have at most one active **Voice Session** across the app
+- When a User joins a different Voice Channel, the new join moves them by
+  ending their existing **Voice Session** before admitting the new one
+- A User's **Voice Session** ends when they lose access to its **Voice Channel**
+  or that **Voice Channel** is deleted
 - A **Voice Session** is controlled by one **Voice Owner Tab**
 - A User may continue using the app from other browser tabs while one
   **Voice Owner Tab** remains connected to voice
