@@ -8,7 +8,7 @@ defmodule DiscordClone.Voice do
   """
 
   alias DiscordClone.UUIDIdentifier
-  alias DiscordClone.Voice.{AdmissionServer, RoomRegistry, RoomServer, RoomSupervisor}
+  alias DiscordClone.Voice.{SessionCoordinator, RoomRegistry, RoomServer, RoomSupervisor}
 
   @spec ensure_room(term()) :: :ok | {:error, :not_found | term()}
   def ensure_room(voice_channel_id) do
@@ -20,20 +20,20 @@ defmodule DiscordClone.Voice do
     UUIDIdentifier.cast_or(voice_channel_id, false, &room_running/1)
   end
 
-  @spec admit(term(), term(), binary(), pid()) :: {:ok, map()} | {:error, term()}
-  def admit(voice_channel_id, user_id, signaling_session_id, signaling_channel)
+  @spec join(term(), term(), binary(), pid()) :: {:ok, map()} | {:error, term()}
+  def join(voice_channel_id, user_id, signaling_session_id, signaling_channel)
       when is_binary(signaling_session_id) and is_pid(signaling_channel) do
     with true <- Process.alive?(signaling_channel),
          {:ok, [voice_channel_id, user_id]} <-
            UUIDIdentifier.cast_all([voice_channel_id, user_id]) do
-      safe_admit(voice_channel_id, user_id, signaling_session_id, signaling_channel)
+      safe_join(voice_channel_id, user_id, signaling_session_id, signaling_channel)
     else
       false -> {:error, :invalid_admission}
       :error -> {:error, :not_found}
     end
   end
 
-  def admit(_voice_channel_id, _user_id, _signaling_session_id, _signaling_channel),
+  def join(_voice_channel_id, _user_id, _signaling_session_id, _signaling_channel),
     do: {:error, :invalid_admission}
 
   @spec leave(term(), term()) :: :ok | {:error, :not_found | term()}
@@ -94,11 +94,11 @@ defmodule DiscordClone.Voice do
   end
 
   @doc false
-  @spec crash_admission_server() :: :ok | {:error, :not_running}
-  def crash_admission_server do
-    case Process.whereis(AdmissionServer) do
-      admission_server when is_pid(admission_server) ->
-        Process.exit(admission_server, :kill)
+  @spec crash_session_coordinator() :: :ok | {:error, :not_running}
+  def crash_session_coordinator do
+    case Process.whereis(SessionCoordinator) do
+      session_coordinator when is_pid(session_coordinator) ->
+        Process.exit(session_coordinator, :kill)
         :ok
 
       nil ->
@@ -126,8 +126,8 @@ defmodule DiscordClone.Voice do
   end
 
   @doc false
-  @spec await_admission_recovery() :: :ok | {:error, :recovery_timeout}
-  def await_admission_recovery, do: AdmissionServer.await_ready()
+  @spec await_session_coordinator_recovery() :: :ok | {:error, :recovery_timeout}
+  def await_session_coordinator_recovery, do: SessionCoordinator.await_ready()
 
   @doc false
   @spec mark_room_in_use(term()) :: :ok | {:error, :not_found | :not_running | term()}
@@ -150,10 +150,10 @@ defmodule DiscordClone.Voice do
   end
 
   @doc false
-  @spec admit_room(Ecto.UUID.t(), Ecto.UUID.t(), binary(), pid()) ::
+  @spec join_room(Ecto.UUID.t(), Ecto.UUID.t(), binary(), pid()) ::
           {:ok, map(), pid()} | {:error, term()}
-  def admit_room(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
-    admit_room(voice_channel_id, user_id, signaling_session_id, signaling_channel, 2)
+  def join_room(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
+    join_room(voice_channel_id, user_id, signaling_session_id, signaling_channel, 2)
   end
 
   @doc false
@@ -207,7 +207,7 @@ defmodule DiscordClone.Voice do
       {:error, :not_running}
   end
 
-  defp admit_room(
+  defp join_room(
          voice_channel_id,
          user_id,
          signaling_session_id,
@@ -216,12 +216,12 @@ defmodule DiscordClone.Voice do
        ) do
     with :ok <- ensure_room_id(voice_channel_id),
          room_server when is_pid(room_server) <- room_server(voice_channel_id) do
-      case RoomServer.admit(room_server, user_id, signaling_session_id, signaling_channel) do
-        {:ok, admission} ->
-          {:ok, admission, room_server}
+      case RoomServer.join(room_server, user_id, signaling_session_id, signaling_channel) do
+        {:ok, join_result} ->
+          {:ok, join_result, room_server}
 
         {:error, :unavailable} when attempts_left > 0 ->
-          admit_room(
+          join_room(
             voice_channel_id,
             user_id,
             signaling_session_id,
@@ -234,7 +234,7 @@ defmodule DiscordClone.Voice do
       end
     else
       nil when attempts_left > 0 ->
-        admit_room(
+        join_room(
           voice_channel_id,
           user_id,
           signaling_session_id,
@@ -246,7 +246,7 @@ defmodule DiscordClone.Voice do
         {:error, :not_found}
 
       {:error, _room_starting} when attempts_left > 0 ->
-        admit_room(
+        join_room(
           voice_channel_id,
           user_id,
           signaling_session_id,
@@ -259,7 +259,7 @@ defmodule DiscordClone.Voice do
     end
   catch
     :exit, _room_stopped when attempts_left > 0 ->
-      admit_room(
+      join_room(
         voice_channel_id,
         user_id,
         signaling_session_id,
@@ -288,16 +288,16 @@ defmodule DiscordClone.Voice do
     :exit, _room_stopped -> :ok
   end
 
-  defp safe_admit(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
-    AdmissionServer.admit(voice_channel_id, user_id, signaling_session_id, signaling_channel)
+  defp safe_join(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
+    SessionCoordinator.join(voice_channel_id, user_id, signaling_session_id, signaling_channel)
   catch
-    :exit, _admission_server_unavailable -> {:error, :recovering}
+    :exit, _session_coordinator_unavailable -> {:error, :recovering}
   end
 
   defp safe_leave(voice_channel_id, voice_session_id) do
-    AdmissionServer.leave(voice_channel_id, voice_session_id)
+    SessionCoordinator.leave(voice_channel_id, voice_session_id)
   catch
-    :exit, _admission_server_unavailable -> :ok
+    :exit, _session_coordinator_unavailable -> :ok
   end
 
   defp safe_room_occupancy(room_server) do

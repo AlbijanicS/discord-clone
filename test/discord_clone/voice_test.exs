@@ -83,7 +83,7 @@ defmodule DiscordClone.VoiceTest do
 
       for {user_id, number} <- Enum.with_index(affected_user_ids, 1) do
         assert {:ok, %{occupancy: ^number}} =
-                 Voice.admit(
+                 Voice.join(
                    affected_voice_channel_id,
                    user_id,
                    "affected-connection-#{number}",
@@ -92,7 +92,7 @@ defmodule DiscordClone.VoiceTest do
       end
 
       assert {:ok, %{occupancy: 1}} =
-               Voice.admit(
+               Voice.join(
                  unaffected_voice_channel_id,
                  Ecto.UUID.generate(),
                  "unaffected-connection-1",
@@ -107,7 +107,7 @@ defmodule DiscordClone.VoiceTest do
 
       for {user_id, number} <- Enum.with_index(affected_user_ids, 1) do
         assert {:ok, %{occupancy: ^number}} =
-                 Voice.admit(
+                 Voice.join(
                    affected_voice_channel_id,
                    user_id,
                    "rejoin-after-room-failure-#{number}",
@@ -125,7 +125,7 @@ defmodule DiscordClone.VoiceTest do
       affected_user_id = Ecto.UUID.generate()
 
       assert {:ok, %{occupancy: 1}} =
-               Voice.admit(
+               Voice.join(
                  affected_voice_channel_id,
                  affected_user_id,
                  "affected-connection-1",
@@ -133,7 +133,7 @@ defmodule DiscordClone.VoiceTest do
                )
 
       assert {:ok, %{occupancy: 1}} =
-               Voice.admit(
+               Voice.join(
                  unaffected_voice_channel_id,
                  Ecto.UUID.generate(),
                  "unaffected-connection-1",
@@ -143,7 +143,7 @@ defmodule DiscordClone.VoiceTest do
       assert :ok = Voice.crash_forwarder(affected_voice_channel_id)
 
       assert {:ok, %{occupancy: 1}} =
-               Voice.admit(
+               Voice.join(
                  affected_voice_channel_id,
                  affected_user_id,
                  "rejoin-after-forwarder-failure",
@@ -160,7 +160,7 @@ defmodule DiscordClone.VoiceTest do
       user_id = Ecto.UUID.generate()
 
       assert {:ok, %{voice_session_id: old_voice_session_id}} =
-               Voice.admit(voice_channel_id, user_id, "same-signaling-session", self())
+               Voice.join(voice_channel_id, user_id, "same-signaling-session", self())
 
       room_server = room_server(voice_channel_id)
       room_ref = Process.monitor(room_server)
@@ -169,13 +169,13 @@ defmodule DiscordClone.VoiceTest do
       assert_receive {:DOWN, ^room_ref, :process, ^room_server, :killed}
 
       assert {:ok, %{voice_session_id: new_voice_session_id, occupancy: 1}} =
-               Voice.admit(voice_channel_id, user_id, "same-signaling-session", self())
+               Voice.join(voice_channel_id, user_id, "same-signaling-session", self())
 
       refute new_voice_session_id == old_voice_session_id
       assert :ok = Voice.leave(voice_channel_id, old_voice_session_id)
 
-      assert {:ok, _admission} =
-               Voice.admit(replacement_voice_channel_id, user_id, "replacement-session", self())
+      assert {:ok, _join_result} =
+               Voice.join(replacement_voice_channel_id, user_id, "replacement-session", self())
 
       assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
 
@@ -183,51 +183,51 @@ defmodule DiscordClone.VoiceTest do
                Voice.room_occupancy(replacement_voice_channel_id)
     end
 
-    test "AdmissionServer restart retires old rooms before accepting fresh admissions" do
+    test "SessionCoordinator restart retires old rooms before accepting fresh joins" do
       voice_channel_id = Ecto.UUID.generate()
       user_id = Ecto.UUID.generate()
 
       assert {:ok, %{voice_session_id: old_voice_session_id}} =
-               Voice.admit(voice_channel_id, user_id, "before-coordinator-restart", self())
+               Voice.join(voice_channel_id, user_id, "before-coordinator-restart", self())
 
       room_server = room_server(voice_channel_id)
       room_ref = Process.monitor(room_server)
-      admission_server = Process.whereis(DiscordClone.Voice.AdmissionServer)
-      admission_ref = Process.monitor(admission_server)
+      session_coordinator = Process.whereis(DiscordClone.Voice.SessionCoordinator)
+      coordinator_ref = Process.monitor(session_coordinator)
 
-      assert :ok = Voice.crash_admission_server()
-      assert_receive {:DOWN, ^admission_ref, :process, ^admission_server, :killed}
+      assert :ok = Voice.crash_session_coordinator()
+      assert_receive {:DOWN, ^coordinator_ref, :process, ^session_coordinator, :killed}
       assert_receive {:DOWN, ^room_ref, :process, ^room_server, _reason}
-      assert :ok = Voice.await_admission_recovery()
+      assert :ok = Voice.await_session_coordinator_recovery()
       refute Voice.room_running?(voice_channel_id)
 
       assert {:ok, %{voice_session_id: new_voice_session_id, occupancy: 1}} =
-               Voice.admit(voice_channel_id, user_id, "after-coordinator-restart", self())
+               Voice.join(voice_channel_id, user_id, "after-coordinator-restart", self())
 
       refute new_voice_session_id == old_voice_session_id
     end
   end
 
-  describe "room-local Voice Session admission" do
-    test "admits a Voice Session with a fresh opaque ID" do
+  describe "room-local Voice Sessions" do
+    test "joins a Voice Session with a fresh opaque ID" do
       voice_channel_id = Ecto.UUID.generate()
       user_id = Ecto.UUID.generate()
 
-      assert {:ok, admission} =
-               Voice.admit(voice_channel_id, user_id, "signaling-connection-1", self())
+      assert {:ok, join_result} =
+               Voice.join(voice_channel_id, user_id, "signaling-connection-1", self())
 
-      assert %{voice_session_id: voice_session_id, occupancy: 1, capacity: 5} = admission
+      assert %{voice_session_id: voice_session_id, occupancy: 1, capacity: 5} = join_result
       assert {:ok, ^voice_session_id} = Ecto.UUID.cast(voice_session_id)
       refute voice_session_id in [voice_channel_id, user_id, "signaling-connection-1"]
-      refute inspect(admission) =~ "#PID"
+      refute inspect(join_result) =~ "#PID"
     end
 
-    test "reuses the existing admission for the same signaling connection" do
+    test "reuses the existing Voice Session for the same signaling connection" do
       voice_channel_id = Ecto.UUID.generate()
       user_id = Ecto.UUID.generate()
 
-      assert {:ok, first} = Voice.admit(voice_channel_id, user_id, "connection-1", self())
-      assert {:ok, repeated} = Voice.admit(voice_channel_id, user_id, "connection-1", self())
+      assert {:ok, first} = Voice.join(voice_channel_id, user_id, "connection-1", self())
+      assert {:ok, repeated} = Voice.join(voice_channel_id, user_id, "connection-1", self())
 
       assert repeated == first
       assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
@@ -242,7 +242,7 @@ defmodule DiscordClone.VoiceTest do
         1..5
         |> Task.async_stream(
           fn number ->
-            Voice.admit(
+            Voice.join(
               voice_channel_id,
               Ecto.UUID.generate(),
               "connection-#{number}",
@@ -257,7 +257,7 @@ defmodule DiscordClone.VoiceTest do
       assert Enum.all?(results, &match?({:ok, %{occupancy: _, capacity: 5}}, &1))
 
       assert {:error, %{reason: :room_full, occupancy: 5, capacity: 5} = room_full} =
-               Voice.admit(
+               Voice.join(
                  voice_channel_id,
                  Ecto.UUID.generate(),
                  "connection-6",
@@ -272,7 +272,7 @@ defmodule DiscordClone.VoiceTest do
       user_id = Ecto.UUID.generate()
 
       assert {:ok, %{voice_session_id: voice_session_id}} =
-               Voice.admit(voice_channel_id, user_id, "connection-1", self())
+               Voice.join(voice_channel_id, user_id, "connection-1", self())
 
       assert :ok = Voice.leave(voice_channel_id, voice_session_id)
       assert :ok = Voice.leave(voice_channel_id, voice_session_id)
@@ -286,17 +286,17 @@ defmodule DiscordClone.VoiceTest do
       voice_channel_id = Ecto.UUID.generate()
 
       assert {:ok, %{voice_session_id: crashed_session_id}} =
-               Voice.admit(voice_channel_id, Ecto.UUID.generate(), "connection-1", self())
+               Voice.join(voice_channel_id, Ecto.UUID.generate(), "connection-1", self())
 
       assert {:ok, %{voice_session_id: healthy_session_id}} =
-               Voice.admit(voice_channel_id, Ecto.UUID.generate(), "connection-2", self())
+               Voice.join(voice_channel_id, Ecto.UUID.generate(), "connection-2", self())
 
       assert :ok = Voice.crash_session(voice_channel_id, crashed_session_id)
 
       assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
 
       assert {:ok, %{voice_session_id: replacement_session_id}} =
-               Voice.admit(voice_channel_id, Ecto.UUID.generate(), "connection-1", self())
+               Voice.join(voice_channel_id, Ecto.UUID.generate(), "connection-1", self())
 
       refute replacement_session_id == crashed_session_id
 
@@ -310,8 +310,8 @@ defmodule DiscordClone.VoiceTest do
 
       signaling_channel = start_signaling_channel(:connection_death)
 
-      assert {:ok, _admission} =
-               Voice.admit(
+      assert {:ok, _join_result} =
+               Voice.join(
                  voice_channel_id,
                  Ecto.UUID.generate(),
                  "connection-1",
@@ -325,8 +325,8 @@ defmodule DiscordClone.VoiceTest do
     end
   end
 
-  describe "cross-room Voice Session admission" do
-    test "serializes concurrent admission requests for one User into one active Voice Session" do
+  describe "cross-room Voice Sessions" do
+    test "serializes concurrent join requests for one User into one active Voice Session" do
       user_id = Ecto.UUID.generate()
       voice_channel_ids = [Ecto.UUID.generate(), Ecto.UUID.generate()]
       signaling_channels = Enum.map(1..8, &start_signaling_channel/1)
@@ -335,7 +335,7 @@ defmodule DiscordClone.VoiceTest do
         0..7
         |> Task.async_stream(
           fn number ->
-            Voice.admit(
+            Voice.join(
               Enum.at(voice_channel_ids, rem(number, 2)),
               user_id,
               "connection-#{number}",
@@ -367,10 +367,10 @@ defmodule DiscordClone.VoiceTest do
       user_id = Ecto.UUID.generate()
 
       assert {:ok, %{voice_session_id: first_voice_session_id}} =
-               Voice.admit(first_voice_channel_id, user_id, "connection-1", self())
+               Voice.join(first_voice_channel_id, user_id, "connection-1", self())
 
       assert {:ok, %{voice_session_id: second_voice_session_id}} =
-               Voice.admit(second_voice_channel_id, user_id, "connection-2", self())
+               Voice.join(second_voice_channel_id, user_id, "connection-2", self())
 
       refute second_voice_session_id == first_voice_session_id
       assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(first_voice_channel_id)
@@ -378,7 +378,7 @@ defmodule DiscordClone.VoiceTest do
       assert :ok = Voice.leave(first_voice_channel_id, first_voice_session_id)
 
       assert {:ok, %{voice_session_id: third_voice_session_id}} =
-               Voice.admit(third_voice_channel_id, user_id, "connection-3", self())
+               Voice.join(third_voice_channel_id, user_id, "connection-3", self())
 
       refute third_voice_session_id == second_voice_session_id
       assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(second_voice_channel_id)
@@ -391,12 +391,12 @@ defmodule DiscordClone.VoiceTest do
       user_id = Ecto.UUID.generate()
 
       assert {:ok, %{voice_session_id: voice_session_id}} =
-               Voice.admit(first_voice_channel_id, user_id, "connection-1", self())
+               Voice.join(first_voice_channel_id, user_id, "connection-1", self())
 
       assert :ok = Voice.leave(first_voice_channel_id, voice_session_id)
 
-      assert {:ok, _admission} =
-               Voice.admit(second_voice_channel_id, user_id, "connection-2", self())
+      assert {:ok, _join_result} =
+               Voice.join(second_voice_channel_id, user_id, "connection-2", self())
 
       assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(first_voice_channel_id)
       assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(second_voice_channel_id)
@@ -409,12 +409,12 @@ defmodule DiscordClone.VoiceTest do
       user_id = Ecto.UUID.generate()
 
       assert {:ok, %{voice_session_id: voice_session_id}} =
-               Voice.admit(first_voice_channel_id, user_id, "connection-1", self())
+               Voice.join(first_voice_channel_id, user_id, "connection-1", self())
 
       assert :ok = Voice.leave(wrong_voice_channel_id, voice_session_id)
 
-      assert {:ok, _admission} =
-               Voice.admit(second_voice_channel_id, user_id, "connection-2", self())
+      assert {:ok, _join_result} =
+               Voice.join(second_voice_channel_id, user_id, "connection-2", self())
 
       assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(first_voice_channel_id)
       assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(second_voice_channel_id)
@@ -426,13 +426,13 @@ defmodule DiscordClone.VoiceTest do
       user_id = Ecto.UUID.generate()
 
       assert {:ok, %{voice_session_id: current_voice_session_id}} =
-               Voice.admit(first_voice_channel_id, user_id, "connection-1", self())
+               Voice.join(first_voice_channel_id, user_id, "connection-1", self())
 
       full_signaling_channels = Enum.map(1..5, &start_signaling_channel/1)
 
       for number <- 1..5 do
-        assert {:ok, _admission} =
-                 Voice.admit(
+        assert {:ok, _join_result} =
+                 Voice.join(
                    full_voice_channel_id,
                    Ecto.UUID.generate(),
                    "full-connection-#{number}",
@@ -441,25 +441,25 @@ defmodule DiscordClone.VoiceTest do
       end
 
       assert {:error, %{reason: :room_full, occupancy: 5, capacity: 5}} =
-               Voice.admit(full_voice_channel_id, user_id, "connection-2", self())
+               Voice.join(full_voice_channel_id, user_id, "connection-2", self())
 
       assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(first_voice_channel_id)
       assert {:ok, %{occupancy: 5, capacity: 5}} = Voice.room_occupancy(full_voice_channel_id)
       assert :ok = Voice.leave(first_voice_channel_id, current_voice_session_id)
     end
 
-    test "clears a failed Voice Session from global coordination before a replacement admission" do
+    test "clears a failed Voice Session from global coordination before a replacement join" do
       first_voice_channel_id = Ecto.UUID.generate()
       second_voice_channel_id = Ecto.UUID.generate()
       user_id = Ecto.UUID.generate()
 
       assert {:ok, %{voice_session_id: crashed_voice_session_id}} =
-               Voice.admit(first_voice_channel_id, user_id, "connection-1", self())
+               Voice.join(first_voice_channel_id, user_id, "connection-1", self())
 
       assert :ok = Voice.crash_session(first_voice_channel_id, crashed_voice_session_id)
 
       assert {:ok, %{voice_session_id: replacement_voice_session_id}} =
-               Voice.admit(second_voice_channel_id, user_id, "connection-2", self())
+               Voice.join(second_voice_channel_id, user_id, "connection-2", self())
 
       refute replacement_voice_session_id == crashed_voice_session_id
       assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(first_voice_channel_id)

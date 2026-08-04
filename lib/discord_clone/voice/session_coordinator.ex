@@ -1,4 +1,4 @@
-defmodule DiscordClone.Voice.AdmissionServer do
+defmodule DiscordClone.Voice.SessionCoordinator do
   @moduledoc false
 
   use GenServer
@@ -11,11 +11,11 @@ defmodule DiscordClone.Voice.AdmissionServer do
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, :ok, opts)
 
-  @spec admit(Ecto.UUID.t(), Ecto.UUID.t(), binary(), pid()) :: {:ok, map()} | {:error, term()}
-  def admit(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
+  @spec join(Ecto.UUID.t(), Ecto.UUID.t(), binary(), pid()) :: {:ok, map()} | {:error, term()}
+  def join(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
     GenServer.call(
       __MODULE__,
-      {:admit, voice_channel_id, user_id, signaling_session_id, signaling_channel}
+      {:join, voice_channel_id, user_id, signaling_session_id, signaling_channel}
     )
   end
 
@@ -50,16 +50,16 @@ defmodule DiscordClone.Voice.AdmissionServer do
     room_servers = Voice.running_room_servers()
     recovery_pending = MapSet.new(Enum.map(room_servers, fn {_voice_channel_id, pid} -> pid end))
 
-    admission_status = if(room_servers == [], do: :ready, else: :recovering)
+    recovery_status = if(room_servers == [], do: :ready, else: :recovering)
 
     state = %{
-      admission_status: admission_status,
+      recovery_status: recovery_status,
       sessions_by_user: %{},
       rooms_by_channel: %{},
       monitors: %{},
       recovery_pending: recovery_pending,
       recovery_waiters: [],
-      recovery_timer: recovery_timer(admission_status)
+      recovery_timer: recovery_timer(recovery_status)
     }
 
     state =
@@ -75,39 +75,39 @@ defmodule DiscordClone.Voice.AdmissionServer do
   end
 
   @impl true
-  def handle_call(:await_ready, from, %{admission_status: :recovering} = state) do
+  def handle_call(:await_ready, from, %{recovery_status: :recovering} = state) do
     {:noreply, %{state | recovery_waiters: [from | state.recovery_waiters]}}
   end
 
-  def handle_call(:await_ready, _from, %{admission_status: :recovery_failed} = state),
+  def handle_call(:await_ready, _from, %{recovery_status: :recovery_failed} = state),
     do: {:reply, {:error, :recovery_timeout}, state}
 
   def handle_call(:await_ready, _from, state), do: {:reply, :ok, state}
 
   def handle_call(
-        {:admit, _voice_channel_id, _user_id, _signaling_session_id, _signaling_channel},
+        {:join, _voice_channel_id, _user_id, _signaling_session_id, _signaling_channel},
         _from,
-        %{admission_status: :recovering} = state
+        %{recovery_status: :recovering} = state
       ) do
     {:reply, {:error, :recovering}, state}
   end
 
   def handle_call(
-        {:admit, _voice_channel_id, _user_id, _signaling_session_id, _signaling_channel},
+        {:join, _voice_channel_id, _user_id, _signaling_session_id, _signaling_channel},
         _from,
-        %{admission_status: :recovery_failed} = state
+        %{recovery_status: :recovery_failed} = state
       ) do
     {:reply, {:error, :recovery_timeout}, state}
   end
 
   def handle_call(
-        {:admit, voice_channel_id, user_id, signaling_session_id, signaling_channel},
+        {:join, voice_channel_id, user_id, signaling_session_id, signaling_channel},
         _from,
         state
       ) do
     case Map.get(state.sessions_by_user, user_id) do
       nil ->
-        admit_new_session(
+        join_new_session(
           state,
           voice_channel_id,
           user_id,
@@ -116,7 +116,7 @@ defmodule DiscordClone.Voice.AdmissionServer do
         )
 
       %{voice_channel_id: ^voice_channel_id, signaling_session_id: ^signaling_session_id} ->
-        admit_existing_session(
+        join_existing_session(
           state,
           voice_channel_id,
           user_id,
@@ -151,7 +151,7 @@ defmodule DiscordClone.Voice.AdmissionServer do
   def handle_cast({:room_server_started, voice_channel_id, room_server}, state) do
     state = track_room_server(state, voice_channel_id, room_server)
 
-    if state.admission_status == :recovering do
+    if state.recovery_status == :recovering do
       RoomServer.shutdown(room_server)
     end
 
@@ -177,11 +177,11 @@ defmodule DiscordClone.Voice.AdmissionServer do
   end
 
   @impl true
-  def handle_info(:recovery_timeout, %{admission_status: :recovering} = state) do
+  def handle_info(:recovery_timeout, %{recovery_status: :recovering} = state) do
     Enum.each(state.recovery_waiters, &GenServer.reply(&1, {:error, :recovery_timeout}))
 
     {:noreply,
-     %{state | admission_status: :recovery_failed, recovery_waiters: [], recovery_timer: nil}}
+     %{state | recovery_status: :recovery_failed, recovery_waiters: [], recovery_timer: nil}}
   end
 
   def handle_info(:recovery_timeout, state), do: {:noreply, state}
@@ -207,29 +207,29 @@ defmodule DiscordClone.Voice.AdmissionServer do
     end
   end
 
-  defp admit_existing_session(
+  defp join_existing_session(
          state,
          voice_channel_id,
          user_id,
          signaling_session_id,
          signaling_channel
        ) do
-    case Voice.admit_room(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
-      {:ok, admission, room_server} ->
+    case Voice.join_room(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
+      {:ok, join_result, room_server} ->
         state =
           put_session(
             state,
             voice_channel_id,
             user_id,
             signaling_session_id,
-            admission,
+            join_result,
             room_server
           )
 
-        {:reply, {:ok, admission}, state}
+        {:reply, {:ok, join_result}, state}
 
       {:error, :unavailable} ->
-        admit_new_session(
+        join_new_session(
           remove_user(state, user_id),
           voice_channel_id,
           user_id,
@@ -255,7 +255,7 @@ defmodule DiscordClone.Voice.AdmissionServer do
        ) do
     with :ok <- target_available?(voice_channel_id, current_voice_channel_id),
          :ok <- Voice.leave_room(current_voice_channel_id, current_voice_session_id) do
-      admit_new_session(
+      join_new_session(
         remove_user(state, user_id),
         voice_channel_id,
         user_id,
@@ -282,26 +282,26 @@ defmodule DiscordClone.Voice.AdmissionServer do
     end
   end
 
-  defp admit_new_session(
+  defp join_new_session(
          state,
          voice_channel_id,
          user_id,
          signaling_session_id,
          signaling_channel
        ) do
-    case Voice.admit_room(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
-      {:ok, %{voice_session_id: _voice_session_id} = admission, room_server} ->
+    case Voice.join_room(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
+      {:ok, %{voice_session_id: _voice_session_id} = join_result, room_server} ->
         state =
           put_session(
             state,
             voice_channel_id,
             user_id,
             signaling_session_id,
-            admission,
+            join_result,
             room_server
           )
 
-        {:reply, {:ok, admission}, state}
+        {:reply, {:ok, join_result}, state}
 
       error ->
         {:reply, error, state}
@@ -462,7 +462,7 @@ defmodule DiscordClone.Voice.AdmissionServer do
     end
   end
 
-  defp add_recovery_pending(%{admission_status: :recovering} = state, room_server) do
+  defp add_recovery_pending(%{recovery_status: :recovering} = state, room_server) do
     Map.update!(state, :recovery_pending, &MapSet.put(&1, room_server))
   end
 
@@ -520,11 +520,11 @@ defmodule DiscordClone.Voice.AdmissionServer do
 
   defp recovery_timer(:ready), do: nil
 
-  defp maybe_finish_recovery(%{admission_status: :recovering, recovery_pending: pending} = state) do
+  defp maybe_finish_recovery(%{recovery_status: :recovering, recovery_pending: pending} = state) do
     if MapSet.size(pending) == 0 do
       if state.recovery_timer, do: Process.cancel_timer(state.recovery_timer)
       Enum.each(state.recovery_waiters, &GenServer.reply(&1, :ok))
-      %{state | admission_status: :ready, recovery_waiters: [], recovery_timer: nil}
+      %{state | recovery_status: :ready, recovery_waiters: [], recovery_timer: nil}
     else
       state
     end

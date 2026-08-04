@@ -15,7 +15,7 @@ defmodule DiscordCloneWeb.VoiceChannel do
            voice_channel_id
          ) do
       {:ok, _voice_channel} ->
-        admit_voice_channel(voice_channel_id, socket)
+        join_voice_channel(voice_channel_id, socket)
 
       {:error, :not_found} ->
         {:error, %{reason: "not_found"}}
@@ -170,7 +170,7 @@ defmodule DiscordCloneWeb.VoiceChannel do
       when is_binary(voice_channel_id) and is_binary(voice_session_id) ->
         Voice.leave(voice_channel_id, voice_session_id)
 
-      _missing_admission ->
+      _missing_join ->
         :ok
     end
   end
@@ -275,18 +275,18 @@ defmodule DiscordCloneWeb.VoiceChannel do
     |> Base.url_encode64(padding: false)
   end
 
-  defp admit_voice_channel(voice_channel_id, socket) do
+  defp join_voice_channel(voice_channel_id, socket) do
     with {:ok, peer_connection} <- PeerConnection.start() do
       signaling_session_id = new_signaling_session_id()
 
-      case Voice.admit(
+      case Voice.join(
              voice_channel_id,
              socket.assigns.current_scope.user.id,
              signaling_session_id,
              self()
            ) do
-        {:ok, admission} ->
-          case admission_payload(admission, signaling_session_id) do
+        {:ok, join_result} ->
+          case join_payload(join_result, signaling_session_id) do
             {:ok, %{voice_session_id: voice_session_id} = payload} ->
               {:ok, payload,
                socket
@@ -300,21 +300,21 @@ defmodule DiscordCloneWeb.VoiceChannel do
                |> assign(:media_counts, empty_media_counts())}
 
             :error ->
-              rollback_voice_admission(voice_channel_id, admission)
+              rollback_voice_join(voice_channel_id, join_result)
               PeerConnection.stop(peer_connection)
               {:error, %{reason: "unavailable"}}
           end
 
         {:error, reason} ->
           PeerConnection.stop(peer_connection)
-          normalize_admission_error(reason)
+          normalize_join_error(reason)
       end
     else
       {:error, :peer_connection_unavailable} -> {:error, %{reason: "unavailable"}}
     end
   end
 
-  defp admission_payload(
+  defp join_payload(
          %{voice_session_id: voice_session_id, occupancy: occupancy, capacity: capacity},
          signaling_session_id
        )
@@ -330,28 +330,28 @@ defmodule DiscordCloneWeb.VoiceChannel do
      }}
   end
 
-  defp admission_payload(_admission, _signaling_session_id), do: :error
+  defp join_payload(_join_result, _signaling_session_id), do: :error
 
-  defp rollback_voice_admission(voice_channel_id, %{voice_session_id: voice_session_id})
+  defp rollback_voice_join(voice_channel_id, %{voice_session_id: voice_session_id})
        when is_binary(voice_session_id) do
     Voice.leave(voice_channel_id, voice_session_id)
   end
 
-  defp rollback_voice_admission(_voice_channel_id, _admission), do: :ok
+  defp rollback_voice_join(_voice_channel_id, _join_result), do: :ok
 
-  defp normalize_admission_error(%{reason: :room_full, occupancy: occupancy, capacity: capacity})
+  defp normalize_join_error(%{reason: :room_full, occupancy: occupancy, capacity: capacity})
        when is_integer(occupancy) and occupancy >= 0 and is_integer(capacity) and capacity > 0 and
               occupancy <= capacity do
     {:error, %{reason: "room_full", occupancy: occupancy, capacity: capacity}}
   end
 
-  defp normalize_admission_error(:not_found), do: {:error, %{reason: "not_found"}}
-  defp normalize_admission_error(:recovering), do: {:error, %{reason: "recovering"}}
+  defp normalize_join_error(:not_found), do: {:error, %{reason: "not_found"}}
+  defp normalize_join_error(:recovering), do: {:error, %{reason: "recovering"}}
 
-  defp normalize_admission_error(:recovery_timeout),
+  defp normalize_join_error(:recovery_timeout),
     do: {:error, %{reason: "recovery_timeout"}}
 
-  defp normalize_admission_error(_reason), do: {:error, %{reason: "unavailable"}}
+  defp normalize_join_error(_reason), do: {:error, %{reason: "unavailable"}}
 
   defp empty_media_counts do
     %{

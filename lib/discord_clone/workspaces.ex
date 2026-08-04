@@ -166,9 +166,9 @@ defmodule DiscordClone.Workspaces do
   @doc """
   Finds a Voice Channel when the scoped User is currently a Workspace Member.
 
-  This is the authorization boundary for ephemeral Voice signaling admission.
+  This is the authorization boundary for ephemeral Voice Channel joins.
   It deliberately returns the same result for malformed, missing, and
-  inaccessible identifiers so callers can keep topic admission non-enumerable.
+  inaccessible identifiers so callers can keep topic joins non-enumerable.
   """
   @spec authorize_voice_channel_for_signaling(Scope.t(), Ecto.UUID.t()) ::
           {:ok, VoiceChannel.t()} | {:error, :not_found}

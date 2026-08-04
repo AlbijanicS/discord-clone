@@ -33,7 +33,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       }
     end
 
-    test "returns opaque signaling and Voice Session admission identities", context do
+    test "returns opaque signaling and Voice Session IDs", context do
       %{join_payload: join_payload, signaling_session_id: signaling_session_id} = context
 
       assert %{
@@ -253,7 +253,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       )
     end
 
-    test "keeps signaling session IDs and server ICE isolated between admitted connections",
+    test "keeps signaling session IDs and server ICE isolated between joined connections",
          context do
       %{channel_socket: first_channel_socket, signaling_session_id: first_id} = context
 
@@ -359,7 +359,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       end
     end
 
-    test "counts admitted, echoed, and dropped media without identifying metadata", context do
+    test "counts accepted, echoed, and dropped media without identifying metadata", context do
       %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
       handler_id = "voice-media-#{System.unique_integer([:positive])}"
       test_pid = self()
@@ -448,7 +448,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
     end
   end
 
-  describe "authenticated Voice admission" do
+  describe "authenticated Voice joins" do
     test "denies unauthorized, missing, and malformed Voice Channels without runtime state" do
       owner = user_fixture()
       unauthorized_user = user_fixture()
@@ -475,14 +475,14 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       refute Voice.room_running?("not-a-uuid")
     end
 
-    test "normalizes room-full admission and releases the unused PeerConnection" do
+    test "normalizes a full-room join and releases the unused PeerConnection" do
       owner = user_fixture()
       voice_channel = create_voice_channel!(owner)
 
       voice_session_ids =
         for number <- 1..5 do
           assert {:ok, %{voice_session_id: voice_session_id, occupancy: ^number, capacity: 5}} =
-                   Voice.admit(
+                   Voice.join(
                      voice_channel.id,
                      Ecto.UUID.generate(),
                      "filler-#{number}",
@@ -541,7 +541,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
     end
   end
 
-  describe "socket admission" do
+  describe "socket joins" do
     test "derives scope from the signed session and denies invalid sessions" do
       user = user_fixture()
       other_user = user_fixture()
@@ -573,7 +573,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
     }
   end
 
-  defp create_voice_channel!(user, workspace_name \\ "Voice admission") do
+  defp create_voice_channel!(user, workspace_name \\ "Voice join") do
     scope = DiscordClone.Accounts.Scope.for_user(user)
     {:ok, workspace} = Workspaces.create_workspace(scope, %{name: workspace_name})
     {:ok, voice_channel} = Workspaces.create_voice_channel(scope, workspace.id, %{name: "lobby"})

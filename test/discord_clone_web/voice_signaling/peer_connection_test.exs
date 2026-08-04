@@ -18,7 +18,7 @@ defmodule DiscordCloneWeb.VoiceSignaling.PeerConnectionTest do
     assert :ok = PeerConnection.stop(peer_connection)
   end
 
-  test "provisions an Opus echo sender and routes only its admitted inbound track" do
+  test "provisions an Opus echo sender and routes only its accepted inbound track" do
     peer_connection = start_supervised_peer_connection()
 
     assert {:ok, _answer, peer_connection} =

@@ -3,7 +3,7 @@ defmodule DiscordClone.Voice.Forwarder do
 
   use GenServer
 
-  alias DiscordClone.Voice.{AdmissionServer, RoomRegistry}
+  alias DiscordClone.Voice.{SessionCoordinator, RoomRegistry}
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -19,7 +19,7 @@ defmodule DiscordClone.Voice.Forwarder do
     voice_channel_id = Keyword.fetch!(opts, :voice_channel_id)
     room_server = room_server(voice_channel_id)
 
-    AdmissionServer.forwarder_started(voice_channel_id, self(), room_server)
+    SessionCoordinator.forwarder_started(voice_channel_id, self(), room_server)
 
     {:ok, %{voice_channel_id: voice_channel_id, room_server: room_server}}
   end

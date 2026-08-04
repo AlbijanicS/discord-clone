@@ -5,7 +5,7 @@ defmodule DiscordClone.Voice.RoomServer do
 
   @idle_timeout_ms :timer.seconds(30)
 
-  alias DiscordClone.Voice.{AdmissionServer, RoomRegistry, Session, SessionSupervisor}
+  alias DiscordClone.Voice.{SessionCoordinator, RoomRegistry, Session, SessionSupervisor}
 
   @capacity 5
 
@@ -28,10 +28,10 @@ defmodule DiscordClone.Voice.RoomServer do
   @spec mark_empty(GenServer.server(), keyword()) :: :ok
   def mark_empty(server, opts \\ []), do: GenServer.call(server, {:mark_empty, opts})
 
-  @spec admit(GenServer.server(), Ecto.UUID.t(), binary(), pid()) ::
+  @spec join(GenServer.server(), Ecto.UUID.t(), binary(), pid()) ::
           {:ok, map()} | {:error, map() | :unavailable}
-  def admit(server, user_id, signaling_session_id, signaling_channel) do
-    GenServer.call(server, {:admit, user_id, signaling_session_id, signaling_channel})
+  def join(server, user_id, signaling_session_id, signaling_channel) do
+    GenServer.call(server, {:join, user_id, signaling_session_id, signaling_channel})
   end
 
   @spec leave(GenServer.server(), Ecto.UUID.t()) :: :ok
@@ -51,7 +51,7 @@ defmodule DiscordClone.Voice.RoomServer do
   @impl true
   def init(opts) do
     voice_channel_id = Keyword.fetch!(opts, :voice_channel_id)
-    AdmissionServer.room_server_started(voice_channel_id, self())
+    SessionCoordinator.room_server_started(voice_channel_id, self())
 
     {:ok,
      %{
@@ -62,7 +62,7 @@ defmodule DiscordClone.Voice.RoomServer do
        session_by_signaling: %{},
        session_by_monitor: %{},
        session_supervisor: nil,
-       pending_admissions: [],
+       pending_joins: [],
        empty_waiters: []
      }}
   end
@@ -83,15 +83,15 @@ defmodule DiscordClone.Voice.RoomServer do
     end
   end
 
-  def handle_call({:admit, user_id, signaling_session_id, signaling_channel}, from, state) do
+  def handle_call({:join, user_id, signaling_session_id, signaling_channel}, from, state) do
     if session_supervisor_ready?(state) do
-      admit_request(state, user_id, signaling_session_id, signaling_channel)
+      join_request(state, user_id, signaling_session_id, signaling_channel)
     else
       {:noreply,
        %{
          state
-         | pending_admissions: [
-             {from, user_id, signaling_session_id, signaling_channel} | state.pending_admissions
+         | pending_joins: [
+             {from, user_id, signaling_session_id, signaling_channel} | state.pending_joins
            ]
        }}
     end
@@ -131,20 +131,20 @@ defmodule DiscordClone.Voice.RoomServer do
   @impl true
   def handle_info({:session_supervisor_started, session_supervisor}, state) do
     state = %{state | session_supervisor: session_supervisor}
-    pending_admissions = Enum.reverse(state.pending_admissions)
+    pending_joins = Enum.reverse(state.pending_joins)
 
     state =
-      Enum.reduce(pending_admissions, state, fn {from, user_id, signaling_session_id,
-                                                 signaling_channel},
-                                                state ->
+      Enum.reduce(pending_joins, state, fn {from, user_id, signaling_session_id,
+                                            signaling_channel},
+                                           state ->
         {:reply, reply, state} =
-          admit_request(state, user_id, signaling_session_id, signaling_channel)
+          join_request(state, user_id, signaling_session_id, signaling_channel)
 
         GenServer.reply(from, reply)
         state
       end)
 
-    {:noreply, %{state | pending_admissions: []}}
+    {:noreply, %{state | pending_joins: []}}
   end
 
   def handle_info({:idle_shutdown, idle_timer}, %{idle_timer: {_timer_ref, idle_timer}} = state) do
@@ -175,16 +175,16 @@ defmodule DiscordClone.Voice.RoomServer do
     {:noreply, state}
   end
 
-  defp admit_request(state, user_id, signaling_session_id, signaling_channel) do
+  defp join_request(state, user_id, signaling_session_id, signaling_channel) do
     case Map.fetch(state.session_by_signaling, signaling_session_id) do
       {:ok, voice_session_id} ->
-        {:reply, {:ok, admission(state.memberships[voice_session_id], state)}, state}
+        {:reply, {:ok, session_details(state.memberships[voice_session_id], state)}, state}
 
       :error when map_size(state.memberships) >= @capacity ->
         {:reply, {:error, room_full(state)}, state}
 
       :error ->
-        admit_new_session(state, user_id, signaling_session_id, signaling_channel)
+        join_new_session(state, user_id, signaling_session_id, signaling_channel)
     end
   end
 
@@ -206,7 +206,7 @@ defmodule DiscordClone.Voice.RoomServer do
     nil
   end
 
-  defp admit_new_session(state, user_id, signaling_session_id, signaling_channel) do
+  defp join_new_session(state, user_id, signaling_session_id, signaling_channel) do
     voice_session_id = Ecto.UUID.generate()
 
     with {:ok, session_pid} <- start_session(state, voice_session_id, signaling_channel) do
@@ -227,7 +227,7 @@ defmodule DiscordClone.Voice.RoomServer do
         |> put_in([:session_by_monitor, session_monitor], voice_session_id)
         |> Map.put(:idle_timer, cancel_idle_shutdown(state.idle_timer))
 
-      {:reply, {:ok, admission(membership, state)}, state}
+      {:reply, {:ok, session_details(membership, state)}, state}
     else
       {:error, _reason} -> {:reply, {:error, :unavailable}, state}
     end
@@ -261,7 +261,7 @@ defmodule DiscordClone.Voice.RoomServer do
             session_by_monitor: Map.delete(state.session_by_monitor, session_monitor)
         }
 
-        :ok = AdmissionServer.session_removed(user_id, voice_session_id)
+        :ok = SessionCoordinator.session_removed(user_id, voice_session_id)
 
         if map_size(memberships) == 0 do
           state =
@@ -318,7 +318,7 @@ defmodule DiscordClone.Voice.RoomServer do
     %{state | empty_waiters: []}
   end
 
-  defp admission(%{voice_session_id: voice_session_id}, state) do
+  defp session_details(%{voice_session_id: voice_session_id}, state) do
     %{voice_session_id: voice_session_id} |> Map.merge(membership_occupancy(state))
   end
 
