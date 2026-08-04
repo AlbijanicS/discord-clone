@@ -5,6 +5,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
   import Phoenix.ChannelTest
 
   alias DiscordClone.Accounts
+  alias DiscordClone.Voice
   alias DiscordClone.Workspaces
   alias DiscordCloneWeb.{VoiceChannel, VoiceSocket}
   import DiscordCloneWeb.VoiceSignalingHelpers
@@ -14,21 +15,43 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
   describe "authenticated Voice Channel negotiation" do
     setup do
       user = user_fixture()
-      scope = DiscordClone.Accounts.Scope.for_user(user)
-      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Voice negotiation"})
-
-      {:ok, voice_channel} =
-        Workspaces.create_voice_channel(scope, workspace.id, %{name: "lobby"})
+      voice_channel = create_voice_channel!(user, "Voice negotiation")
 
       token = Accounts.generate_user_session_token(user)
 
       {:ok, socket} =
         connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
 
-      {:ok, %{signaling_session_id: signaling_session_id}, channel_socket} =
+      {:ok, join_payload, channel_socket} =
         subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}")
 
-      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id}
+      %{
+        channel_socket: channel_socket,
+        join_payload: join_payload,
+        signaling_session_id: join_payload.signaling_session_id,
+        voice_channel_id: voice_channel.id
+      }
+    end
+
+    test "returns opaque signaling and Voice Session admission identities", context do
+      %{join_payload: join_payload, signaling_session_id: signaling_session_id} = context
+
+      assert %{
+               signaling_session_id: ^signaling_session_id,
+               voice_session_id: voice_session_id,
+               occupancy: 1,
+               capacity: 5
+             } = join_payload
+
+      assert {:ok, ^voice_session_id} = Ecto.UUID.cast(voice_session_id)
+      refute voice_session_id == signaling_session_id
+
+      assert Map.keys(join_payload) |> Enum.sort() == [
+               :capacity,
+               :occupancy,
+               :signaling_session_id,
+               :voice_session_id
+             ]
     end
 
     test "returns a correlated real answer and sends server ICE only to its connection",
@@ -232,18 +255,20 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
 
     test "keeps signaling session IDs and server ICE isolated between admitted connections",
          context do
-      %{channel_socket: first_channel, signaling_session_id: first_id} = context
+      %{channel_socket: first_channel_socket, signaling_session_id: first_id} = context
 
-      assert {:ok, %{signaling_session_id: second_id}, second_channel} =
-               subscribe_and_join(first_channel, VoiceChannel, first_channel.topic)
+      assert {:ok, %{signaling_session_id: second_id}, second_channel_socket} =
+               subscribe_and_join(first_channel_socket, VoiceChannel, first_channel_socket.topic)
 
       refute first_id == second_id
 
-      assert_reply push(second_channel, "offer", offer(first_id, "cross-connection")), :error, %{
-        reason: "invalid_request"
-      }
+      assert_reply push(second_channel_socket, "offer", offer(first_id, "cross-connection")),
+                   :error,
+                   %{
+                     reason: "invalid_request"
+                   }
 
-      assert_reply push(first_channel, "offer", offer(first_id, "first-negotiation")), :ok
+      assert_reply push(first_channel_socket, "offer", offer(first_id, "first-negotiation")), :ok
 
       assert_push "ice_candidate", %{signaling_session_id: ^first_id}
       assert_push "ice_candidate", %{signaling_session_id: ^first_id, end_of_candidates: true}
@@ -262,6 +287,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       assert_receive {:DOWN, ^monitor_ref, :process, _, _reason}
 
       refute Enum.any?(ExWebRTC.PeerConnection.get_all_running())
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(context.voice_channel_id)
     end
 
     test "keeps disconnected peers available but releases terminal server peers", context do
@@ -285,6 +311,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
 
       assert_receive {:DOWN, ^monitor_ref, :process, _, :normal}
       refute Enum.any?(ExWebRTC.PeerConnection.get_all_running())
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(context.voice_channel_id)
     end
 
     test "emits metadata-only diagnostics for real descriptions", context do
@@ -421,6 +448,99 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
     end
   end
 
+  describe "authenticated Voice admission" do
+    test "denies unauthorized, missing, and malformed Voice Channels without runtime state" do
+      owner = user_fixture()
+      unauthorized_user = user_fixture()
+      voice_channel = create_voice_channel!(owner)
+
+      {:ok, unauthorized_socket} = connect_voice_socket(unauthorized_user)
+      missing_voice_channel_id = Ecto.UUID.generate()
+
+      assert {:error, %{reason: "not_found"}} =
+               subscribe_and_join(unauthorized_socket, VoiceChannel, "voice:#{voice_channel.id}")
+
+      assert {:error, %{reason: "not_found"}} =
+               subscribe_and_join(
+                 unauthorized_socket,
+                 VoiceChannel,
+                 "voice:#{missing_voice_channel_id}"
+               )
+
+      assert {:error, %{reason: "not_found"}} =
+               subscribe_and_join(unauthorized_socket, VoiceChannel, "voice:not-a-uuid")
+
+      refute Voice.room_running?(voice_channel.id)
+      refute Voice.room_running?(missing_voice_channel_id)
+      refute Voice.room_running?("not-a-uuid")
+    end
+
+    test "normalizes room-full admission and releases the unused PeerConnection" do
+      owner = user_fixture()
+      voice_channel = create_voice_channel!(owner)
+
+      voice_session_ids =
+        for number <- 1..5 do
+          assert {:ok, %{voice_session_id: voice_session_id, occupancy: ^number, capacity: 5}} =
+                   Voice.admit(
+                     voice_channel.id,
+                     Ecto.UUID.generate(),
+                     "filler-#{number}",
+                     self()
+                   )
+
+          voice_session_id
+        end
+
+      on_exit(fn ->
+        Enum.each(voice_session_ids, &Voice.leave(voice_channel.id, &1))
+        Voice.expire_idle_room(voice_channel.id)
+      end)
+
+      running_before_join = ExWebRTC.PeerConnection.get_all_running()
+      {:ok, socket} = connect_voice_socket(owner)
+
+      assert {:error, %{reason: "room_full", occupancy: 5, capacity: 5}} =
+               subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}")
+
+      assert ExWebRTC.PeerConnection.get_all_running() == running_before_join
+      assert {:ok, %{occupancy: 5, capacity: 5}} = Voice.room_occupancy(voice_channel.id)
+    end
+
+    test "an older Channel termination cannot remove a newer Voice Session" do
+      user = user_fixture()
+      voice_channel = create_voice_channel!(user)
+      {:ok, socket} = connect_voice_socket(user)
+
+      assert {:ok, %{voice_session_id: first_voice_session_id}, first_channel_socket} =
+               subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}")
+
+      assert {:ok, %{voice_session_id: second_voice_session_id}, second_channel_socket} =
+               subscribe_and_join(
+                 first_channel_socket,
+                 VoiceChannel,
+                 first_channel_socket.topic
+               )
+
+      refute first_voice_session_id == second_voice_session_id
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel.id)
+
+      Process.unlink(first_channel_socket.channel_pid)
+      monitor_ref = Process.monitor(first_channel_socket.channel_pid)
+      Process.exit(first_channel_socket.channel_pid, :shutdown)
+      assert_receive {:DOWN, ^monitor_ref, :process, _, _reason}
+
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel.id)
+
+      Process.unlink(second_channel_socket.channel_pid)
+      second_monitor_ref = Process.monitor(second_channel_socket.channel_pid)
+      Process.exit(second_channel_socket.channel_pid, :shutdown)
+      assert_receive {:DOWN, ^second_monitor_ref, :process, _, _reason}
+      assert :ok = Voice.await_empty_room(voice_channel.id)
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel.id)
+    end
+  end
+
   describe "socket admission" do
     test "derives scope from the signed session and denies invalid sessions" do
       user = user_fixture()
@@ -451,5 +571,17 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       "sdpMid" => "0",
       "sdpMLineIndex" => 0
     }
+  end
+
+  defp create_voice_channel!(user, workspace_name \\ "Voice admission") do
+    scope = DiscordClone.Accounts.Scope.for_user(user)
+    {:ok, workspace} = Workspaces.create_workspace(scope, %{name: workspace_name})
+    {:ok, voice_channel} = Workspaces.create_voice_channel(scope, workspace.id, %{name: "lobby"})
+    voice_channel
+  end
+
+  defp connect_voice_socket(user) do
+    token = Accounts.generate_user_session_token(user)
+    connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
   end
 end

@@ -1,7 +1,7 @@
 defmodule DiscordCloneWeb.VoiceChannel do
   use DiscordCloneWeb, :channel
 
-  alias DiscordClone.Workspaces
+  alias DiscordClone.{Voice, Workspaces}
   alias DiscordCloneWeb.VoiceSignaling.{Diagnostics, FakeHeartbeat, PeerConnection, RealMessage}
 
   @max_accepted_candidates 64
@@ -15,20 +15,7 @@ defmodule DiscordCloneWeb.VoiceChannel do
            voice_channel_id
          ) do
       {:ok, _voice_channel} ->
-        with {:ok, peer_connection} <- PeerConnection.start() do
-          signaling_session_id = new_signaling_session_id()
-
-          {:ok, %{signaling_session_id: signaling_session_id},
-           socket
-           |> assign(:signaling_session_id, signaling_session_id)
-           |> assign(:peer_connection, peer_connection)
-           |> assign(:negotiation_id, nil)
-           |> assign(:pending_candidates, [])
-           |> assign(:accepted_candidate_count, 0)
-           |> assign(:media_counts, empty_media_counts())}
-        else
-          {:error, :peer_connection_unavailable} -> {:error, %{reason: "unavailable"}}
-        end
+        admit_voice_channel(voice_channel_id, socket)
 
       {:error, :not_found} ->
         {:error, %{reason: "not_found"}}
@@ -168,11 +155,24 @@ defmodule DiscordCloneWeb.VoiceChannel do
 
   @impl true
   def terminate(_reason, socket) do
+    leave_voice_session(socket)
+
     if peer_connection = socket.assigns[:peer_connection] do
       PeerConnection.stop(peer_connection)
     end
 
     :ok
+  end
+
+  defp leave_voice_session(socket) do
+    case {socket.assigns[:voice_channel_id], socket.assigns[:voice_session_id]} do
+      {voice_channel_id, voice_session_id}
+      when is_binary(voice_channel_id) and is_binary(voice_session_id) ->
+        Voice.leave(voice_channel_id, voice_session_id)
+
+      _missing_admission ->
+        :ok
+    end
   end
 
   defp accept_new_negotiation?(%{assigns: %{negotiation_id: nil}}, _negotiation_id), do: :ok
@@ -274,6 +274,84 @@ defmodule DiscordCloneWeb.VoiceChannel do
     |> :crypto.strong_rand_bytes()
     |> Base.url_encode64(padding: false)
   end
+
+  defp admit_voice_channel(voice_channel_id, socket) do
+    with {:ok, peer_connection} <- PeerConnection.start() do
+      signaling_session_id = new_signaling_session_id()
+
+      case Voice.admit(
+             voice_channel_id,
+             socket.assigns.current_scope.user.id,
+             signaling_session_id,
+             self()
+           ) do
+        {:ok, admission} ->
+          case admission_payload(admission, signaling_session_id) do
+            {:ok, %{voice_session_id: voice_session_id} = payload} ->
+              {:ok, payload,
+               socket
+               |> assign(:voice_channel_id, voice_channel_id)
+               |> assign(:signaling_session_id, signaling_session_id)
+               |> assign(:voice_session_id, voice_session_id)
+               |> assign(:peer_connection, peer_connection)
+               |> assign(:negotiation_id, nil)
+               |> assign(:pending_candidates, [])
+               |> assign(:accepted_candidate_count, 0)
+               |> assign(:media_counts, empty_media_counts())}
+
+            :error ->
+              rollback_voice_admission(voice_channel_id, admission)
+              PeerConnection.stop(peer_connection)
+              {:error, %{reason: "unavailable"}}
+          end
+
+        {:error, reason} ->
+          PeerConnection.stop(peer_connection)
+          normalize_admission_error(reason)
+      end
+    else
+      {:error, :peer_connection_unavailable} -> {:error, %{reason: "unavailable"}}
+    end
+  end
+
+  defp admission_payload(
+         %{voice_session_id: voice_session_id, occupancy: occupancy, capacity: capacity},
+         signaling_session_id
+       )
+       when is_binary(voice_session_id) and is_binary(signaling_session_id) and
+              is_integer(occupancy) and occupancy >= 0 and is_integer(capacity) and capacity > 0 and
+              occupancy <= capacity do
+    {:ok,
+     %{
+       signaling_session_id: signaling_session_id,
+       voice_session_id: voice_session_id,
+       occupancy: occupancy,
+       capacity: capacity
+     }}
+  end
+
+  defp admission_payload(_admission, _signaling_session_id), do: :error
+
+  defp rollback_voice_admission(voice_channel_id, %{voice_session_id: voice_session_id})
+       when is_binary(voice_session_id) do
+    Voice.leave(voice_channel_id, voice_session_id)
+  end
+
+  defp rollback_voice_admission(_voice_channel_id, _admission), do: :ok
+
+  defp normalize_admission_error(%{reason: :room_full, occupancy: occupancy, capacity: capacity})
+       when is_integer(occupancy) and occupancy >= 0 and is_integer(capacity) and capacity > 0 and
+              occupancy <= capacity do
+    {:error, %{reason: "room_full", occupancy: occupancy, capacity: capacity}}
+  end
+
+  defp normalize_admission_error(:not_found), do: {:error, %{reason: "not_found"}}
+  defp normalize_admission_error(:recovering), do: {:error, %{reason: "recovering"}}
+
+  defp normalize_admission_error(:recovery_timeout),
+    do: {:error, %{reason: "recovery_timeout"}}
+
+  defp normalize_admission_error(_reason), do: {:error, %{reason: "unavailable"}}
 
   defp empty_media_counts do
     %{
