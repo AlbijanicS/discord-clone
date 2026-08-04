@@ -467,6 +467,88 @@ defmodule DiscordClone.VoiceTest do
     end
   end
 
+  describe "durable Voice lifecycle notifications" do
+    test "ends only the matching user's Voice Session in a Voice Channel" do
+      voice_channel_id = Ecto.UUID.generate()
+      target_user_id = Ecto.UUID.generate()
+      retained_user_id = Ecto.UUID.generate()
+
+      assert {:ok, _target_join} =
+               Voice.join(voice_channel_id, target_user_id, "target-connection", self())
+
+      assert {:ok, _retained_join} =
+               Voice.join(voice_channel_id, retained_user_id, "retained-connection", self())
+
+      assert :ok = Voice.end_user_session(voice_channel_id, target_user_id)
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+
+      assert :ok = Voice.end_user_session(voice_channel_id, target_user_id)
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+    end
+
+    test "does not let a late notification for an old room end a moved Voice Session" do
+      old_voice_channel_id = Ecto.UUID.generate()
+      current_voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+
+      assert {:ok, _old_join} =
+               Voice.join(old_voice_channel_id, user_id, "old-connection", self())
+
+      assert {:ok, _current_join} =
+               Voice.join(current_voice_channel_id, user_id, "current-connection", self())
+
+      assert :ok = Voice.end_user_session(old_voice_channel_id, user_id)
+
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(old_voice_channel_id)
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(current_voice_channel_id)
+    end
+
+    test "ends every Voice Session in one channel and retires only that empty room" do
+      ended_voice_channel_id = Ecto.UUID.generate()
+      unrelated_voice_channel_id = Ecto.UUID.generate()
+
+      for number <- 1..2 do
+        assert {:ok, %{occupancy: ^number}} =
+                 Voice.join(
+                   ended_voice_channel_id,
+                   Ecto.UUID.generate(),
+                   "ended-connection-#{number}",
+                   self()
+                 )
+      end
+
+      assert {:ok, %{occupancy: 1}} =
+               Voice.join(
+                 unrelated_voice_channel_id,
+                 Ecto.UUID.generate(),
+                 "unrelated-connection",
+                 self()
+               )
+
+      assert :ok = Voice.end_channel_sessions(ended_voice_channel_id)
+      assert :ok = Voice.await_empty_room(ended_voice_channel_id)
+
+      assert {:ok, %{occupancy: 0, capacity: 5}} =
+               Voice.room_occupancy(ended_voice_channel_id)
+
+      assert {:ok, %{occupancy: 1, capacity: 5}} =
+               Voice.room_occupancy(unrelated_voice_channel_id)
+
+      assert :ok = Voice.expire_idle_room(ended_voice_channel_id)
+      refute Voice.room_running?(ended_voice_channel_id)
+    end
+
+    test "treats missing and malformed durable cleanup notifications safely" do
+      voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+
+      assert :ok = Voice.end_user_session(voice_channel_id, user_id)
+      assert :ok = Voice.end_channel_sessions(voice_channel_id)
+      assert Voice.end_user_session("not-a-uuid", user_id) == {:error, :not_found}
+      assert Voice.end_channel_sessions("not-a-uuid") == {:error, :not_found}
+    end
+  end
+
   defp room_server(voice_channel_id) do
     {:via, Registry, {DiscordClone.Voice.RoomRegistry, {:room, voice_channel_id}}}
     |> GenServer.whereis()

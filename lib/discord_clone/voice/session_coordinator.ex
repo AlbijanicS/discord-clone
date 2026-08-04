@@ -24,6 +24,16 @@ defmodule DiscordClone.Voice.SessionCoordinator do
     GenServer.call(__MODULE__, {:leave, voice_channel_id, voice_session_id})
   end
 
+  @spec end_user_session(Ecto.UUID.t(), Ecto.UUID.t()) :: :ok
+  def end_user_session(voice_channel_id, user_id) do
+    GenServer.call(__MODULE__, {:end_user_session, voice_channel_id, user_id})
+  end
+
+  @spec end_channel_sessions(Ecto.UUID.t()) :: :ok
+  def end_channel_sessions(voice_channel_id) do
+    GenServer.call(__MODULE__, {:end_channel_sessions, voice_channel_id})
+  end
+
   @doc false
   @spec await_ready() :: :ok | {:error, :recovery_timeout}
   def await_ready, do: GenServer.call(__MODULE__, :await_ready, :infinity)
@@ -145,6 +155,16 @@ defmodule DiscordClone.Voice.SessionCoordinator do
        | sessions_by_user:
            remove_session(state.sessions_by_user, voice_channel_id, voice_session_id)
      }}
+  end
+
+  def handle_call({:end_user_session, voice_channel_id, user_id}, _from, state) do
+    state = end_user_session(state, voice_channel_id, user_id)
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:end_channel_sessions, voice_channel_id}, _from, state) do
+    state = end_channel_sessions(state, voice_channel_id)
+    {:reply, :ok, state}
   end
 
   @impl true
@@ -328,6 +348,39 @@ defmodule DiscordClone.Voice.SessionCoordinator do
 
   defp remove_user(state, user_id),
     do: %{state | sessions_by_user: Map.delete(state.sessions_by_user, user_id)}
+
+  defp end_user_session(state, voice_channel_id, user_id) do
+    case Map.get(state.sessions_by_user, user_id) do
+      %{voice_channel_id: ^voice_channel_id, voice_session_id: voice_session_id} ->
+        :ok = Voice.leave_room(voice_channel_id, voice_session_id)
+        remove_session_for_user(state, user_id, voice_channel_id, voice_session_id)
+
+      _current_or_missing ->
+        state
+    end
+  end
+
+  defp end_channel_sessions(state, voice_channel_id) do
+    Enum.reduce(state.sessions_by_user, state, fn
+      {user_id, %{voice_channel_id: ^voice_channel_id, voice_session_id: voice_session_id}},
+      state ->
+        :ok = Voice.leave_room(voice_channel_id, voice_session_id)
+        remove_session_for_user(state, user_id, voice_channel_id, voice_session_id)
+
+      _current_or_missing, state ->
+        state
+    end)
+  end
+
+  defp remove_session_for_user(state, user_id, voice_channel_id, voice_session_id) do
+    case Map.get(state.sessions_by_user, user_id) do
+      %{voice_channel_id: ^voice_channel_id, voice_session_id: ^voice_session_id} ->
+        remove_user(state, user_id)
+
+      _replacement_or_missing ->
+        state
+    end
+  end
 
   defp remove_session(sessions_by_user, voice_channel_id, voice_session_id) do
     Enum.reduce(sessions_by_user, sessions_by_user, fn {user_id, session}, sessions_by_user ->

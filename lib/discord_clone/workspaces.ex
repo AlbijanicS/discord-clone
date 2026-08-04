@@ -19,7 +19,7 @@ defmodule DiscordClone.Workspaces do
   alias DiscordClone.Activities.ActivityItem
   alias DiscordClone.Chat
   alias DiscordClone.Chat.Conversation
-  alias DiscordClone.{Repo, UUIDIdentifier}
+  alias DiscordClone.{Repo, UUIDIdentifier, Voice}
 
   alias DiscordClone.Workspaces.{
     Channel,
@@ -1002,6 +1002,7 @@ defmodule DiscordClone.Workspaces do
          :ok <- authorize_delete_voice_channel(scope, workspace),
          {:ok, voice_channel} <- get_voice_channel(workspace.id, voice_channel_id),
          {:ok, deleted_voice_channel} <- Repo.delete(voice_channel) do
+      :ok = Voice.end_channel_sessions(deleted_voice_channel.id)
       :ok = broadcast_workspace_voice_channels_changed(deleted_voice_channel.workspace_id)
       {:ok, deleted_voice_channel}
     end
@@ -1021,6 +1022,8 @@ defmodule DiscordClone.Workspaces do
     with {:ok, _workspace} <- get_workspace(workspace_id),
          {:ok, membership} <- get_workspace_membership(workspace_id, user_id),
          :ok <- reject_owner_leave(membership) do
+      voice_channel_ids = voice_channel_ids_for_workspace(workspace_id)
+
       Multi.new()
       |> Multi.run(:channel_reads, fn _repo, _changes ->
         :ok = Chat.delete_workspace_reads_for_user(user_id, workspace_id)
@@ -1034,6 +1037,8 @@ defmodule DiscordClone.Workspaces do
           if removed_count > 0 do
             :ok = Chat.broadcast_activity_removed(user_id, %{workspace_id: workspace_id})
           end
+
+          :ok = end_voice_user_sessions(voice_channel_ids, user_id)
 
           {:ok, membership}
 
@@ -1054,10 +1059,14 @@ defmodule DiscordClone.Workspaces do
 
   def delete_workspace(%Scope{user: %User{}} = scope, workspace_id) do
     with {:ok, workspace} <- get_workspace(workspace_id),
-         :ok <- authorize_delete_workspace(scope, workspace),
-         {:ok, deleted_workspace} <- delete_workspace_with_conversations(workspace) do
-      :ok = Chat.stop_workspace_presence(deleted_workspace.id)
-      {:ok, deleted_workspace}
+         :ok <- authorize_delete_workspace(scope, workspace) do
+      voice_channel_ids = voice_channel_ids_for_workspace(workspace.id)
+
+      with {:ok, deleted_workspace} <- delete_workspace_with_conversations(workspace) do
+        :ok = end_voice_channel_sessions(voice_channel_ids)
+        :ok = Chat.stop_workspace_presence(deleted_workspace.id)
+        {:ok, deleted_workspace}
+      end
     end
   end
 
@@ -1405,6 +1414,30 @@ defmodule DiscordClone.Workspaces do
       order_by: [asc: voice_channel.inserted_at, asc: voice_channel.id]
   end
 
+  defp voice_channel_ids_for_workspace(workspace_id) do
+    Repo.all(
+      from voice_channel in VoiceChannel,
+        where: voice_channel.workspace_id == ^workspace_id,
+        select: voice_channel.id
+    )
+  end
+
+  defp end_voice_user_sessions(voice_channel_ids, user_id) do
+    Enum.each(voice_channel_ids, fn voice_channel_id ->
+      _ = Voice.end_user_session(voice_channel_id, user_id)
+    end)
+
+    :ok
+  end
+
+  defp end_voice_channel_sessions(voice_channel_ids) do
+    Enum.each(voice_channel_ids, fn voice_channel_id ->
+      _ = Voice.end_channel_sessions(voice_channel_id)
+    end)
+
+    :ok
+  end
+
   defp authorize_view_workspace(%Workspace{id: workspace_id}, %User{id: user_id}) do
     authorize_view_workspace(workspace_id, user_id)
   end
@@ -1697,6 +1730,7 @@ defmodule DiscordClone.Workspaces do
          reason
        ) do
     target_user_id = target_membership.user_id
+    voice_channel_ids = voice_channel_ids_for_workspace(workspace.id)
     active_timeouts = active_timeout_moderations(workspace.id, target_user_id)
 
     Multi.new()
@@ -1736,6 +1770,7 @@ defmodule DiscordClone.Workspaces do
 
         :ok = broadcast_workspace_audit_changed(workspace.id)
         :ok = broadcast_workspace_access_revoked(workspace.id, target_user_id)
+        :ok = end_voice_user_sessions(voice_channel_ids, target_user_id)
         {:ok, membership}
 
       {:error, :audit_event, changeset, _changes_so_far} ->
@@ -1754,6 +1789,7 @@ defmodule DiscordClone.Workspaces do
          cleanup_window
        ) do
     target_user_id = target_membership.user_id
+    voice_channel_ids = voice_channel_ids_for_workspace(workspace.id)
     active_timeouts = active_timeout_moderations(workspace.id, target_user_id)
 
     Multi.new()
@@ -1815,6 +1851,7 @@ defmodule DiscordClone.Workspaces do
         :ok = Chat.broadcast_cleaned_messages(cleanup.messages)
         :ok = broadcast_workspace_audit_changed(workspace.id)
         :ok = broadcast_workspace_access_revoked(workspace.id, target_user_id)
+        :ok = end_voice_user_sessions(voice_channel_ids, target_user_id)
         {:ok, ban}
 
       {:error, :ban, changeset, _changes_so_far} ->

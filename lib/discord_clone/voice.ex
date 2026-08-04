@@ -46,6 +46,34 @@ defmodule DiscordClone.Voice do
     end
   end
 
+  @doc """
+  Ends the current Voice Session for a User when it belongs to the given Voice Channel.
+
+  This is a lifecycle notification seam for durable access changes. A missing or
+  already-ended matching session is treated as a successful no-op.
+  """
+  @spec end_user_session(term(), term()) :: :ok | {:error, :not_found | term()}
+  def end_user_session(voice_channel_id, user_id) do
+    with {:ok, [voice_channel_id, user_id]} <-
+           UUIDIdentifier.cast_all([voice_channel_id, user_id]) do
+      safe_end_user_session(voice_channel_id, user_id)
+    else
+      :error -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Ends every current Voice Session in a Voice Channel.
+
+  A missing or already-empty runtime is treated as a successful no-op.
+  """
+  @spec end_channel_sessions(term()) :: :ok | {:error, :not_found | term()}
+  def end_channel_sessions(voice_channel_id) do
+    UUIDIdentifier.cast_or(voice_channel_id, {:error, :not_found}, fn voice_channel_id ->
+      safe_end_channel_sessions(voice_channel_id)
+    end)
+  end
+
   @spec room_occupancy(term()) ::
           {:ok, %{occupancy: non_neg_integer(), capacity: pos_integer()}} | {:error, :not_found}
   def room_occupancy(voice_channel_id) do
@@ -296,6 +324,18 @@ defmodule DiscordClone.Voice do
 
   defp safe_leave(voice_channel_id, voice_session_id) do
     SessionCoordinator.leave(voice_channel_id, voice_session_id)
+  catch
+    :exit, _session_coordinator_unavailable -> :ok
+  end
+
+  defp safe_end_user_session(voice_channel_id, user_id) do
+    SessionCoordinator.end_user_session(voice_channel_id, user_id)
+  catch
+    :exit, _session_coordinator_unavailable -> :ok
+  end
+
+  defp safe_end_channel_sessions(voice_channel_id) do
+    SessionCoordinator.end_channel_sessions(voice_channel_id)
   catch
     :exit, _session_coordinator_unavailable -> :ok
   end
