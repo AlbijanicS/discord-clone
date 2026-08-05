@@ -13,6 +13,9 @@
 # Ignore .fetch files in case you like to edit your project deps locally.
 /.fetch
 
+# Keep project documentation local unless it is already tracked.
+/docs/
+
 # If the VM crashes, it generates a dump, let's ignore it too.
 erl_crash.dump
 
@@ -38,4 +41,3 @@ npm-debug.log
 # Agent skills installed via npx skills
 /.agents/
 skills-lock.json
-
