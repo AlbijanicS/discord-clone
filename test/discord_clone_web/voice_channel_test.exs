@@ -665,6 +665,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       assert_receive {:voice_media_diagnostic,
                       %{media_lifecycle: :inbound_track_admitted} = admitted_metadata}
 
+      assert_media_diagnostic_metadata(admitted_metadata)
       assert admitted_metadata.inbound_packet_count == 0
       assert admitted_metadata.echoed_packet_count == 0
       assert admitted_metadata.dropped_packet_count == 0
@@ -680,28 +681,43 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
                  {:ex_webrtc, peer_connection, {:rtp, inbound_track.id, nil, packet}}
                )
 
-      assert_receive {:voice_media_diagnostic,
-                      %{
-                        media_lifecycle: :rtp_routed,
-                        inbound_packet_count: 1,
-                        echoed_packet_count: 1,
-                        dropped_packet_count: 0,
-                        dropped_media_count: 0
-                      }}
+      assert_receive {:voice_media_diagnostic, %{media_lifecycle: :rtp_routed} = echoed_metadata}
+
+      assert_media_diagnostic_metadata(echoed_metadata)
+      assert echoed_metadata.inbound_packet_count == 1
+      assert echoed_metadata.echoed_packet_count == 1
+      assert echoed_metadata.dropped_packet_count == 0
+      assert echoed_metadata.dropped_media_count == 0
+
+      unsupported_media = [
+        {:track, %ExWebRTC.MediaStreamTrack{id: inbound_track.id + 1, kind: :video}},
+        {:track_muted, inbound_track.id},
+        {:track_ended, inbound_track.id},
+        {:data_channel, %{}},
+        {:data_channel_state_change, make_ref(), :open},
+        {:data, make_ref(), "unsupported"},
+        {:rtcp, []}
+      ]
+
+      for message <- unsupported_media do
+        assert :ok =
+                 Voice.dispatch_test_ex_webrtc(
+                   context.voice_channel_id,
+                   voice_session_id,
+                   {:ex_webrtc, peer_connection, message}
+                 )
+
+        assert_receive {:voice_media_diagnostic,
+                        %{media_lifecycle: :unexpected_media_dropped} = dropped_metadata}
+
+        assert_media_diagnostic_metadata(dropped_metadata)
+      end
 
       assert :ok =
                Voice.dispatch_test_ex_webrtc(
                  context.voice_channel_id,
                  voice_session_id,
-                 {:ex_webrtc, peer_connection,
-                  {:track, %ExWebRTC.MediaStreamTrack{id: inbound_track.id + 1, kind: :video}}}
-               )
-
-      assert :ok =
-               Voice.dispatch_test_ex_webrtc(
-                 context.voice_channel_id,
-                 voice_session_id,
-                 {:ex_webrtc, peer_connection, {:data_channel, %{}}}
+                 {:ex_webrtc, self(), {:rtp, inbound_track.id, nil, packet}}
                )
 
       assert :ok =
@@ -712,19 +728,13 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
                )
 
       assert_receive {:voice_media_diagnostic,
-                      %{media_lifecycle: :unexpected_media_dropped, dropped_media_count: 1}}
+                      %{media_lifecycle: :unexpected_media_dropped} = final_metadata}
 
-      assert_receive {:voice_media_diagnostic,
-                      %{media_lifecycle: :unexpected_media_dropped, dropped_media_count: 2}}
-
-      assert_receive {:voice_media_diagnostic,
-                      %{
-                        media_lifecycle: :unexpected_media_dropped,
-                        inbound_packet_count: 1,
-                        echoed_packet_count: 1,
-                        dropped_packet_count: 1,
-                        dropped_media_count: 2
-                      }}
+      assert_media_diagnostic_metadata(final_metadata)
+      assert final_metadata.inbound_packet_count == 1
+      assert final_metadata.echoed_packet_count == 1
+      assert final_metadata.dropped_packet_count == 1
+      assert final_metadata.dropped_media_count == length(unsupported_media)
     end
   end
 
@@ -843,6 +853,16 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       "negotiation_id" => negotiation_id,
       "description" => browser_offer()
     }
+  end
+
+  defp assert_media_diagnostic_metadata(metadata) do
+    assert Map.keys(metadata) |> Enum.sort() == [
+             :dropped_media_count,
+             :dropped_packet_count,
+             :echoed_packet_count,
+             :inbound_packet_count,
+             :media_lifecycle
+           ]
   end
 
   defp candidate do

@@ -24,8 +24,10 @@ defmodule DiscordClone.Voice.PeerConnectionTest do
     assert MapSet.new(ExWebRTC.PeerConnection.get_all_running()) == running_before
   end
 
-  test "provisions an Opus echo sender and routes only its accepted inbound track" do
-    peer_connection = start_supervised_peer_connection()
+  test "provisions an Opus echo sender and preserves expected RTP on its outbound track" do
+    peer_connection =
+      start_supervised_peer_connection()
+      |> Map.put(:test_rtp_observer, self())
 
     assert {:ok, _answer, peer_connection} =
              PeerConnection.accept_offer(peer_connection, browser_offer())
@@ -55,11 +57,67 @@ defmodule DiscordClone.Voice.PeerConnectionTest do
                {:rtp, inbound_track.id, nil, packet}
              })
 
+    peer_connection_pid = peer_connection.peer_connection
+    outbound_track_id = peer_connection.outbound_track_id
+
+    assert_receive {:peer_connection_rtp_sent, ^peer_connection_pid, ^outbound_track_id, ^packet}
+
+    _ = :sys.get_state(peer_connection.peer_connection)
+
+    assert %{packets_sent: 1, bytes_sent: bytes_sent} =
+             peer_connection.peer_connection
+             |> ExWebRTC.PeerConnection.get_stats()
+             |> Map.values()
+             |> Enum.find(fn stats ->
+               stats.type == :outbound_rtp and
+                 stats.track_identifier == peer_connection.outbound_track_id
+             end)
+
+    assert bytes_sent > byte_size(packet.payload)
+
     assert {:dropped_rtp, ^peer_connection} =
              PeerConnection.route_media(peer_connection, {
                :ex_webrtc,
                peer_connection.peer_connection,
                {:rtp, inbound_track.id + 1, nil, packet}
+             })
+  end
+
+  test "drops unsupported media and ignores RTP from another PeerConnection" do
+    peer_connection = start_supervised_peer_connection()
+
+    packet =
+      ExRTP.Packet.new(<<1, 2, 3>>, payload_type: 111, sequence_number: 1, timestamp: 1, ssrc: 1)
+
+    for message <- [
+          {:track, %ExWebRTC.MediaStreamTrack{id: 1, kind: :video}},
+          {:track_muted, 1},
+          {:track_ended, 1},
+          {:data_channel, %{}},
+          {:data_channel_state_change, make_ref(), :open},
+          {:data, make_ref(), "unsupported"},
+          {:rtcp, []}
+        ] do
+      assert {:dropped_media, ^peer_connection} =
+               PeerConnection.route_media(peer_connection, {
+                 :ex_webrtc,
+                 peer_connection.peer_connection,
+                 message
+               })
+    end
+
+    assert {:dropped_rtp, ^peer_connection} =
+             PeerConnection.route_media(peer_connection, {
+               :ex_webrtc,
+               peer_connection.peer_connection,
+               {:rtp, 1, nil, packet}
+             })
+
+    assert {:ignore, ^peer_connection} =
+             PeerConnection.route_media(peer_connection, {
+               :ex_webrtc,
+               self(),
+               {:rtp, 1, nil, packet}
              })
   end
 

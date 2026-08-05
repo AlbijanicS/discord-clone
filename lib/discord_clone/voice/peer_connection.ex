@@ -13,6 +13,7 @@ defmodule DiscordClone.Voice.PeerConnection do
     :expected_inbound_track_id,
     :outbound_track_id,
     :test_candidate_observer,
+    :test_rtp_observer,
     remote_description?: false
   ]
 
@@ -21,6 +22,7 @@ defmodule DiscordClone.Voice.PeerConnection do
           expected_inbound_track_id: integer() | nil,
           outbound_track_id: integer() | nil,
           test_candidate_observer: pid() | nil,
+          test_rtp_observer: pid() | nil,
           remote_description?: boolean()
         }
 
@@ -272,6 +274,7 @@ defmodule DiscordClone.Voice.PeerConnection do
          {:rtp, expected_track_id, _rid, packet}
        )
        when not is_nil(expected_track_id) and not is_nil(outbound_track_id) do
+    notify_test_rtp_observer(state, outbound_track_id, packet)
     :ok = PeerConnection.send_rtp(peer_connection, outbound_track_id, packet)
     {:echoed_rtp, state}
   end
@@ -289,4 +292,15 @@ defmodule DiscordClone.Voice.PeerConnection do
   defp route_peer_media(state, {:data, _channel_ref, _data}), do: {:dropped_media, state}
   defp route_peer_media(state, {:rtcp, _packets}), do: {:dropped_media, state}
   defp route_peer_media(state, _message), do: {:ignore, state}
+
+  defp notify_test_rtp_observer(
+         %{test_rtp_observer: observer, peer_connection: peer_connection},
+         track_id,
+         packet
+       )
+       when is_pid(observer) do
+    send(observer, {:peer_connection_rtp_sent, peer_connection, track_id, packet})
+  end
+
+  defp notify_test_rtp_observer(_state, _track_id, _packet), do: :ok
 end
