@@ -573,6 +573,28 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(context.voice_channel_id)
     end
 
+    test "closes the owning Channel for a closed server peer", context do
+      %{channel_socket: channel_socket, join_payload: %{voice_session_id: voice_session_id}} =
+        context
+
+      [peer_connection] = ExWebRTC.PeerConnection.get_all_running()
+      peer_connection_monitor = Process.monitor(peer_connection)
+
+      Process.unlink(channel_socket.channel_pid)
+      channel_monitor = Process.monitor(channel_socket.channel_pid)
+
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 context.voice_channel_id,
+                 voice_session_id,
+                 {:ex_webrtc, peer_connection, {:connection_state_change, :closed}}
+               )
+
+      assert_receive {:DOWN, ^channel_monitor, :process, _, :normal}
+      assert_receive {:DOWN, ^peer_connection_monitor, :process, ^peer_connection, _reason}
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(context.voice_channel_id)
+    end
+
     test "emits metadata-only diagnostics for real descriptions", context do
       %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
       handler_id = "voice-signaling-#{System.unique_integer([:positive])}"

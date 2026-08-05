@@ -124,7 +124,7 @@ full SDP credentials or TURN credentials.
 | 4. First browser-to-ExWebRTC PeerConnection | Manual localhost pass in progress | 2026-07-31 | Real signaling and terminal ICE coverage are green. After the voice socket began sending the page CSRF token, Chrome completed microphone permission, signaling, and browser-to-server connection; it also remained connected through app navigation and could be left globally. The required repeated-cycle proof remains. |
 | 5. RTP echo experiment | Not started |  |  |
 | 6. OTP Voice Channel Room and Session architecture | Complete | 2026-08-04 | Supervised room/session ownership, cross-room admission coordination, failure recovery, Phoenix delegation, and durable-access cleanup are complete; media remains intentionally scoped to Phases 7/8. |
-| 7. Move echo into supervised `Voice.Session` | In progress | 2026-08-05 | Tickets 01–04 are complete; Tickets 05–06 remain before Phase 7 can close. |
+| 7. Move echo into supervised `Voice.Session` | Complete | 2026-08-05 | The Session-owned peer lifecycle, private signaling adapter, bounded commands, one-peer RTP echo, terminal cleanup, and browser-compatibility certification are complete. |
 | 8. Two-user server-routed audio | Not started |  |  |
 | 9. Capped 3-5 user room | Not started |  |  |
 | 10. Voice controls and UI polish | Not started |  |  |
@@ -603,7 +603,29 @@ Prove:
 Implementation Notes:
 
 ```text
-Not started.
+Phase 7 completed on 2026-08-05.
+
+- `923b473` moved PeerConnection ownership, negotiation state, ICE buffering,
+  media routing, and aggregate counters from the Phoenix Channel into the
+  temporary supervised `Voice.Session`.
+- `d3b3980` and `238a320` certified the existing offer and ICE wire contract
+  through the Voice facade and canonical RoomServer membership.
+- `8ff825b` certified the Session-owned one-peer RTP echo and metadata-only
+  diagnostics.
+- Ticket 05 certification confirms `:disconnected` remains non-terminal,
+  while `:failed` and `:closed` close the owning Channel normally, stop the
+  linked PeerConnection, and converge on idempotent RoomServer cleanup.
+  Expired command budgets retire the ambiguous Voice Session and cannot leave
+  its PeerConnection running; stale lifecycle events cannot remove a
+  replacement Session.
+- Ticket 06 certification confirms the authenticated join, readiness, offer,
+  early ICE, private server ICE/end-marker delivery, RTP echo, leave, capacity,
+  cross-room coordination, durable access cleanup, and browser JavaScript
+  compatibility seams.
+
+The browser continues to use the existing Phoenix signaling transport and its
+normal close path for `connection_lost`; Phase 7 adds no terminal wire event,
+reconnect protocol, ICE restart, roster, or multi-user forwarding.
 ```
 
 ## Phase 8: Two-User Server-Routed Audio

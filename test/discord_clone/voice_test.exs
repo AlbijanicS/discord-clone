@@ -404,6 +404,21 @@ defmodule DiscordClone.VoiceTest do
       assert_receive {:DOWN, ^peer_connection_monitor, :process, ^peer_connection, _reason}
     end
 
+    test "an active room shutdown stops every Session-owned PeerConnection" do
+      voice_channel_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: _voice_session_id}} =
+               Voice.join(voice_channel_id, Ecto.UUID.generate(), "connection-1", self())
+
+      room_server = room_server(voice_channel_id)
+      assert [peer_connection] = ExWebRTC.PeerConnection.get_all_running()
+      peer_connection_monitor = Process.monitor(peer_connection)
+
+      assert :ok = RoomServer.shutdown(room_server)
+      assert_receive {:DOWN, ^peer_connection_monitor, :process, ^peer_connection, _reason}
+      assert :ok = Voice.await_empty_room(voice_channel_id)
+    end
+
     test "a crashed PeerConnection removes its Voice Session without affecting another room" do
       affected_voice_channel_id = Ecto.UUID.generate()
       healthy_voice_channel_id = Ecto.UUID.generate()
