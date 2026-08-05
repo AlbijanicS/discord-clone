@@ -299,6 +299,80 @@ defmodule DiscordClone.VoiceTest do
       assert_receive {:DOWN, ^peer_connection_monitor, :process, ^peer_connection, _reason}
     end
 
+    test "applies buffered client ICE to the PeerConnection in arrival order" do
+      voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+      room_supervisor = start_signaling_channel(:candidate_order_room_supervisor)
+
+      room_server =
+        start_supervised!(
+          {RoomServer,
+           voice_channel_id: voice_channel_id,
+           room_supervisor: room_supervisor,
+           test_peer_connection_opts: [test_candidate_observer: self()]}
+        )
+
+      _session_supervisor =
+        start_supervised!({SessionSupervisor, voice_channel_id: voice_channel_id})
+
+      assert {:ok, %{voice_session_id: voice_session_id}} =
+               RoomServer.join(room_server, user_id, "connection-1", self())
+
+      negotiation_id = "current-negotiation"
+      first_candidate = runtime_candidate(1)
+      stale_negotiation_id = "stale-negotiation"
+      stale_candidate = %{runtime_candidate(99) | negotiation_id: stale_negotiation_id}
+      second_candidate = runtime_candidate(2)
+
+      assert {:ok, %{negotiation_id: ^stale_negotiation_id}} =
+               RoomServer.add_ice_candidate(
+                 room_server,
+                 user_id,
+                 voice_session_id,
+                 stale_negotiation_id,
+                 stale_candidate,
+                 command_deadline()
+               )
+
+      assert {:ok, %{negotiation_id: ^negotiation_id}} =
+               RoomServer.add_ice_candidate(
+                 room_server,
+                 user_id,
+                 voice_session_id,
+                 negotiation_id,
+                 first_candidate,
+                 command_deadline()
+               )
+
+      assert {:ok, %{negotiation_id: ^negotiation_id}} =
+               RoomServer.add_ice_candidate(
+                 room_server,
+                 user_id,
+                 voice_session_id,
+                 negotiation_id,
+                 second_candidate,
+                 command_deadline()
+               )
+
+      assert {:ok, %{"type" => "answer"}} =
+               RoomServer.accept_offer(
+                 room_server,
+                 user_id,
+                 voice_session_id,
+                 negotiation_id,
+                 browser_offer(),
+                 command_deadline()
+               )
+
+      first_candidate_value = first_candidate.candidate
+      stale_candidate_value = stale_candidate.candidate
+      second_candidate_value = second_candidate.candidate
+
+      assert_receive {:peer_connection_candidate_applied, ^first_candidate_value}
+      assert_receive {:peer_connection_candidate_applied, ^second_candidate_value}
+      refute_receive {:peer_connection_candidate_applied, ^stale_candidate_value}, 0
+    end
+
     test "admits a Voice Session only after its Session-owned PeerConnection is ready" do
       voice_channel_id = Ecto.UUID.generate()
 
@@ -614,6 +688,156 @@ defmodule DiscordClone.VoiceTest do
                  offer
                )
     end
+
+    test "routes early and current client ICE through the owning Voice Session" do
+      user = user_fixture()
+      current_scope = Scope.for_user(user)
+      voice_channel_id = Ecto.UUID.generate()
+      negotiation_id = "current-negotiation"
+
+      assert {:ok, %{voice_session_id: voice_session_id}} =
+               Voice.join(voice_channel_id, user.id, "connection-1", self())
+
+      assert {:ok, %{negotiation_id: ^negotiation_id}} =
+               Voice.add_ice_candidate(
+                 current_scope,
+                 voice_channel_id,
+                 voice_session_id,
+                 negotiation_id,
+                 runtime_candidate(1)
+               )
+
+      assert {:ok, %{"type" => "answer"}} =
+               Voice.accept_offer(
+                 current_scope,
+                 voice_channel_id,
+                 voice_session_id,
+                 negotiation_id,
+                 browser_offer()
+               )
+
+      assert {:ok, %{negotiation_id: ^negotiation_id}} =
+               Voice.add_ice_candidate(
+                 current_scope,
+                 voice_channel_id,
+                 voice_session_id,
+                 negotiation_id,
+                 runtime_candidate(3)
+               )
+    end
+
+    test "rejects client ICE for a stale runtime Negotiation" do
+      user = user_fixture()
+      current_scope = Scope.for_user(user)
+      voice_channel_id = Ecto.UUID.generate()
+      negotiation_id = "current-negotiation"
+
+      assert {:ok, %{voice_session_id: voice_session_id}} =
+               Voice.join(voice_channel_id, user.id, "connection-1", self())
+
+      assert {:ok, %{"type" => "answer"}} =
+               Voice.accept_offer(
+                 current_scope,
+                 voice_channel_id,
+                 voice_session_id,
+                 negotiation_id,
+                 browser_offer()
+               )
+
+      assert {:error, :invalid_negotiation} =
+               Voice.add_ice_candidate(
+                 current_scope,
+                 voice_channel_id,
+                 voice_session_id,
+                 "stale-negotiation",
+                 runtime_candidate(2)
+               )
+    end
+
+    test "retains the unsupported browser end-marker runtime contract" do
+      user = user_fixture()
+      current_scope = Scope.for_user(user)
+      voice_channel_id = Ecto.UUID.generate()
+      negotiation_id = "current-negotiation"
+
+      assert {:ok, %{voice_session_id: voice_session_id}} =
+               Voice.join(voice_channel_id, user.id, "connection-1", self())
+
+      assert {:ok, %{"type" => "answer"}} =
+               Voice.accept_offer(
+                 current_scope,
+                 voice_channel_id,
+                 voice_session_id,
+                 negotiation_id,
+                 browser_offer()
+               )
+
+      assert {:error, :end_of_candidates_unsupported} =
+               Voice.end_of_candidates(
+                 current_scope,
+                 voice_channel_id,
+                 voice_session_id,
+                 negotiation_id
+               )
+    end
+
+    test "rejects ICE commands for mismatched runtime membership" do
+      user = user_fixture()
+      other_user = user_fixture()
+      current_scope = Scope.for_user(user)
+      other_scope = Scope.for_user(other_user)
+      voice_channel_id = Ecto.UUID.generate()
+      other_voice_channel_id = Ecto.UUID.generate()
+      negotiation_id = "current-negotiation"
+
+      assert {:ok, %{voice_session_id: voice_session_id}} =
+               Voice.join(voice_channel_id, user.id, "connection-1", self())
+
+      assert {:ok, %{voice_session_id: _other_voice_session_id}} =
+               Voice.join(
+                 other_voice_channel_id,
+                 other_user.id,
+                 "connection-2",
+                 self()
+               )
+
+      candidate = runtime_candidate(1)
+
+      assert {:error, :invalid_session} =
+               Voice.add_ice_candidate(
+                 other_scope,
+                 voice_channel_id,
+                 voice_session_id,
+                 negotiation_id,
+                 candidate
+               )
+
+      assert {:error, :invalid_session} =
+               Voice.add_ice_candidate(
+                 current_scope,
+                 other_voice_channel_id,
+                 voice_session_id,
+                 negotiation_id,
+                 candidate
+               )
+
+      assert {:error, :invalid_session} =
+               Voice.add_ice_candidate(
+                 current_scope,
+                 voice_channel_id,
+                 Ecto.UUID.generate(),
+                 negotiation_id,
+                 candidate
+               )
+
+      assert {:error, :invalid_session} =
+               Voice.end_of_candidates(
+                 current_scope,
+                 other_voice_channel_id,
+                 voice_session_id,
+                 negotiation_id
+               )
+    end
   end
 
   describe "cross-room Voice Sessions" do
@@ -844,6 +1068,27 @@ defmodule DiscordClone.VoiceTest do
     {:via, Registry, {DiscordClone.Voice.RoomRegistry, {:room, voice_channel_id}}}
     |> GenServer.whereis()
   end
+
+  defp runtime_candidate(number, options \\ []) do
+    address = Keyword.get(options, :address, "127.0.0.1")
+    priority = Keyword.get(options, :priority, 1)
+    port = Keyword.get(options, :port, 10_000 + number)
+
+    candidate = %{
+      "candidate" => "candidate:#{number} 1 udp #{priority} #{address} #{port} typ host",
+      "sdpMid" => "0",
+      "sdpMLineIndex" => 0,
+      "usernameFragment" => nil
+    }
+
+    %{
+      negotiation_id: "current-negotiation",
+      candidate: candidate,
+      byte_count: byte_size(Jason.encode!(candidate))
+    }
+  end
+
+  defp command_deadline, do: System.monotonic_time(:millisecond) + 5_000
 
   defp start_signaling_channel(id) do
     start_supervised!(%{

@@ -152,7 +152,38 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       assert_receive {:DOWN, ^monitor_ref, :process, _, :normal}
     end
 
-    test "requires the current negotiation for safely bounded client ICE", context do
+    test "rejects client ICE from a stale Signaling Session", context do
+      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
+      negotiation_id = "first-negotiation"
+      assert_reply push(channel_socket, "offer", offer(signaling_session_id, negotiation_id)), :ok
+
+      assert_reply(
+        push(channel_socket, "ice_candidate", %{
+          "signaling_session_id" => "stale-signaling-session",
+          "negotiation_id" => negotiation_id,
+          "candidate" => candidate()
+        }),
+        :error,
+        %{reason: "invalid_request"}
+      )
+    end
+
+    test "rejects malformed client ICE at the Channel boundary", context do
+      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
+      negotiation_id = "first-negotiation"
+
+      assert_reply(
+        push(channel_socket, "ice_candidate", %{
+          "signaling_session_id" => signaling_session_id,
+          "negotiation_id" => negotiation_id,
+          "candidate" => Map.delete(candidate(), "sdpMid")
+        }),
+        :error,
+        %{reason: "invalid_candidate"}
+      )
+    end
+
+    test "rejects client ICE from a stale Negotiation", context do
       %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
       negotiation_id = "first-negotiation"
       assert_reply push(channel_socket, "offer", offer(signaling_session_id, negotiation_id)), :ok
@@ -166,6 +197,11 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
         :error,
         %{reason: "invalid_negotiation"}
       )
+    end
+
+    test "rejects oversized client ICE at the Channel boundary", context do
+      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
+      negotiation_id = "first-negotiation"
 
       assert_reply(
         push(channel_socket, "ice_candidate", %{
@@ -227,6 +263,39 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       )
     end
 
+    test "bounds early ICE by total decoded candidate bytes before the count limit", context do
+      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
+      negotiation_id = "first-negotiation"
+
+      # Edge validation sees 8,177 bytes. Runtime normalization adds usernameFragment,
+      # making each queued candidate 8,201 bytes and the sixteenth exceed 16 * 8 KiB.
+      near_limit_candidate =
+        candidate()
+        |> Map.put("candidate", String.duplicate("x", 8_130))
+
+      for _number <- 1..15 do
+        assert_reply(
+          push(channel_socket, "ice_candidate", %{
+            "signaling_session_id" => signaling_session_id,
+            "negotiation_id" => negotiation_id,
+            "candidate" => near_limit_candidate
+          }),
+          :ok,
+          %{negotiation_id: ^negotiation_id}
+        )
+      end
+
+      assert_reply(
+        push(channel_socket, "ice_candidate", %{
+          "signaling_session_id" => signaling_session_id,
+          "negotiation_id" => negotiation_id,
+          "candidate" => near_limit_candidate
+        }),
+        :error,
+        %{reason: "pending_candidate_limit_reached"}
+      )
+    end
+
     test "rejects the sixty-fifth accepted ICE candidate", context do
       %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
       negotiation_id = "first-negotiation"
@@ -260,34 +329,200 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       )
     end
 
-    test "keeps signaling session IDs and server ICE isolated between joined connections",
+    test "keeps server ICE events isolated between two joined connections",
          context do
       %{
         channel_socket: first_channel_socket,
-        signaling_session_id: first_id,
+        signaling_session_id: first_signaling_session_id,
+        join_payload: %{voice_session_id: first_voice_session_id},
         voice_channel_id: voice_channel_id
       } = context
+
+      [first_peer_connection] = ExWebRTC.PeerConnection.get_all_running()
 
       second_user = user_fixture()
       add_workspace_member!(voice_channel_id, second_user)
       {:ok, second_socket} = connect_voice_socket(second_user)
 
-      assert {:ok, %{signaling_session_id: second_id}, second_channel_socket} =
+      assert {:ok,
+              %{
+                signaling_session_id: second_signaling_session_id,
+                voice_session_id: second_voice_session_id
+              }, second_channel_socket} =
                subscribe_and_join(second_socket, VoiceChannel, first_channel_socket.topic)
 
-      refute first_id == second_id
+      refute first_signaling_session_id == second_signaling_session_id
 
-      assert_reply push(second_channel_socket, "offer", offer(first_id, "cross-connection")),
-                   :error,
-                   %{
-                     reason: "invalid_request"
-                   }
+      [second_peer_connection] =
+        ExWebRTC.PeerConnection.get_all_running() -- [first_peer_connection]
 
-      assert_reply push(first_channel_socket, "offer", offer(first_id, "first-negotiation")), :ok
+      negotiation_id = "shared-negotiation"
 
-      assert_push "ice_candidate", %{signaling_session_id: ^first_id}
-      assert_push "ice_candidate", %{signaling_session_id: ^first_id, end_of_candidates: true}
+      assert_reply push(
+                     first_channel_socket,
+                     "offer",
+                     offer(first_signaling_session_id, negotiation_id)
+                   ),
+                   :ok
+
+      assert_push "ice_candidate", %{signaling_session_id: ^first_signaling_session_id}
+
+      assert_push "ice_candidate", %{
+        signaling_session_id: ^first_signaling_session_id,
+        end_of_candidates: true
+      }
+
+      assert_reply push(
+                     second_channel_socket,
+                     "offer",
+                     offer(second_signaling_session_id, negotiation_id)
+                   ),
+                   :ok
+
+      assert_push "ice_candidate", %{signaling_session_id: ^second_signaling_session_id}
+
+      assert_push "ice_candidate", %{
+        signaling_session_id: ^second_signaling_session_id,
+        end_of_candidates: true
+      }
+
       refute_push "ice_candidate", _payload
+
+      first_candidate_value = "candidate:101 1 udp 1 127.0.0.1 10001 typ host"
+
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 voice_channel_id,
+                 first_voice_session_id,
+                 {:ex_webrtc, first_peer_connection,
+                  {:ice_candidate, server_candidate(first_candidate_value)}}
+               )
+
+      assert_push "ice_candidate", %{
+        signaling_session_id: ^first_signaling_session_id,
+        negotiation_id: ^negotiation_id,
+        candidate: %{"candidate" => ^first_candidate_value}
+      }
+
+      refute_push "ice_candidate", %{
+        signaling_session_id: ^second_signaling_session_id,
+        candidate: %{"candidate" => ^first_candidate_value}
+      }
+
+      second_candidate_value = "candidate:202 1 udp 1 127.0.0.1 10002 typ host"
+
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 voice_channel_id,
+                 second_voice_session_id,
+                 {:ex_webrtc, second_peer_connection,
+                  {:ice_candidate, server_candidate(second_candidate_value)}}
+               )
+
+      assert_push "ice_candidate", %{
+        signaling_session_id: ^second_signaling_session_id,
+        negotiation_id: ^negotiation_id,
+        candidate: %{"candidate" => ^second_candidate_value}
+      }
+
+      refute_push "ice_candidate", %{
+        signaling_session_id: ^first_signaling_session_id,
+        candidate: %{"candidate" => ^second_candidate_value}
+      }
+
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 voice_channel_id,
+                 first_voice_session_id,
+                 {:ex_webrtc, first_peer_connection, {:ice_gathering_state_change, :complete}}
+               )
+
+      assert_push "ice_candidate", %{
+        signaling_session_id: ^first_signaling_session_id,
+        negotiation_id: ^negotiation_id,
+        end_of_candidates: true
+      }
+
+      refute_push "ice_candidate", %{
+        signaling_session_id: ^second_signaling_session_id,
+        end_of_candidates: true
+      }
+
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 voice_channel_id,
+                 second_voice_session_id,
+                 {:ex_webrtc, second_peer_connection, {:ice_gathering_state_change, :complete}}
+               )
+
+      assert_push "ice_candidate", %{
+        signaling_session_id: ^second_signaling_session_id,
+        negotiation_id: ^negotiation_id,
+        end_of_candidates: true
+      }
+
+      refute_push "ice_candidate", %{
+        signaling_session_id: ^first_signaling_session_id,
+        end_of_candidates: true
+      }
+    end
+
+    test "ignores stale Voice Session and Negotiation events before serializing server ICE",
+         context do
+      %{
+        channel_socket: channel_socket,
+        signaling_session_id: signaling_session_id,
+        join_payload: %{voice_session_id: voice_session_id}
+      } = context
+
+      negotiation_id = "current-negotiation"
+      assert_reply push(channel_socket, "offer", offer(signaling_session_id, negotiation_id)), :ok
+      assert_push "ice_candidate", %{signaling_session_id: ^signaling_session_id}
+
+      assert_push "ice_candidate", %{
+        signaling_session_id: ^signaling_session_id,
+        end_of_candidates: true
+      }
+
+      stale_session_candidate = %{"candidate" => "stale-session-candidate"}
+      stale_negotiation_candidate = %{"candidate" => "stale-negotiation-candidate"}
+
+      send(
+        channel_socket.channel_pid,
+        {:voice_session_event, Ecto.UUID.generate(),
+         {:ice_candidate, negotiation_id, stale_session_candidate}}
+      )
+
+      send(
+        channel_socket.channel_pid,
+        {:voice_session_event, voice_session_id,
+         {:ice_candidate, "stale-negotiation", stale_negotiation_candidate}}
+      )
+
+      send(
+        channel_socket.channel_pid,
+        {:voice_session_event, voice_session_id, {:end_of_candidates, "stale-negotiation"}}
+      )
+
+      _ = :sys.get_state(channel_socket.channel_pid)
+
+      refute_push "ice_candidate", %{candidate: ^stale_session_candidate}
+      refute_push "ice_candidate", %{candidate: ^stale_negotiation_candidate}
+      refute_push "ice_candidate", %{negotiation_id: "stale-negotiation"}
+
+      current_candidate = %{"candidate" => "current-candidate"}
+
+      send(
+        channel_socket.channel_pid,
+        {:voice_session_event, voice_session_id,
+         {:ice_candidate, negotiation_id, current_candidate}}
+      )
+
+      assert_push "ice_candidate", %{
+        signaling_session_id: ^signaling_session_id,
+        negotiation_id: ^negotiation_id,
+        candidate: ^current_candidate
+      }
     end
 
     test "stops the Session-owned peer connection when the topic leaves", context do
@@ -615,6 +850,14 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       "candidate" => "candidate:1 1 udp 1 127.0.0.1 9 typ host",
       "sdpMid" => "0",
       "sdpMLineIndex" => 0
+    }
+  end
+
+  defp server_candidate(candidate_value) do
+    %ExWebRTC.ICECandidate{
+      candidate: candidate_value,
+      sdp_mid: "0",
+      sdp_m_line_index: 0
     }
   end
 

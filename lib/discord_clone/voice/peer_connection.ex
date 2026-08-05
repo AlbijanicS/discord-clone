@@ -12,6 +12,7 @@ defmodule DiscordClone.Voice.PeerConnection do
     :peer_connection,
     :expected_inbound_track_id,
     :outbound_track_id,
+    :test_candidate_observer,
     remote_description?: false
   ]
 
@@ -19,6 +20,7 @@ defmodule DiscordClone.Voice.PeerConnection do
           peer_connection: pid(),
           expected_inbound_track_id: integer() | nil,
           outbound_track_id: integer() | nil,
+          test_candidate_observer: pid() | nil,
           remote_description?: boolean()
         }
 
@@ -33,7 +35,11 @@ defmodule DiscordClone.Voice.PeerConnection do
       {:ok, peer_connection} ->
         case await_ready(peer_connection, options) do
           :ok ->
-            {:ok, %__MODULE__{peer_connection: peer_connection}}
+            {:ok,
+             %__MODULE__{
+               peer_connection: peer_connection,
+               test_candidate_observer: test_candidate_observer(options)
+             }}
 
           {:error, _reason} ->
             stop(%__MODULE__{peer_connection: peer_connection})
@@ -136,8 +142,12 @@ defmodule DiscordClone.Voice.PeerConnection do
            {:add_ice_candidate, ICECandidate.from_json(candidate)},
            deadline
          ) do
-      :ok -> :ok
-      {:error, _reason} -> {:error, :candidate_rejected}
+      :ok ->
+        notify_test_candidate_observer(state, candidate)
+        :ok
+
+      {:error, _reason} ->
+        {:error, :candidate_rejected}
     end
   rescue
     _error -> {:error, :candidate_rejected}
@@ -218,6 +228,19 @@ defmodule DiscordClone.Voice.PeerConnection do
 
   defp deadline(:infinity), do: :infinity
   defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
+
+  defp test_candidate_observer(options) do
+    if @test_environment do
+      Keyword.get(options, :test_candidate_observer)
+    end
+  end
+
+  defp notify_test_candidate_observer(%{test_candidate_observer: observer}, candidate)
+       when is_pid(observer) do
+    send(observer, {:peer_connection_candidate_applied, candidate})
+  end
+
+  defp notify_test_candidate_observer(_state, _candidate), do: :ok
 
   defp compatible_audio?(%{kind: :audio, direction: direction, codecs: codecs})
        when direction in [:recvonly, :sendrecv] do
