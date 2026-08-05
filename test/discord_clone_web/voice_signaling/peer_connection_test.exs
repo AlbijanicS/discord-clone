@@ -18,6 +18,15 @@ defmodule DiscordCloneWeb.VoiceSignaling.PeerConnectionTest do
     assert :ok = PeerConnection.stop(peer_connection)
   end
 
+  test "rejects startup failure without leaving a PeerConnection process behind" do
+    running_before = MapSet.new(ExWebRTC.PeerConnection.get_all_running())
+
+    assert {:error, :peer_connection_unavailable} =
+             PeerConnection.start(audio_codecs: [:invalid])
+
+    assert MapSet.new(ExWebRTC.PeerConnection.get_all_running()) == running_before
+  end
+
   test "provisions an Opus echo sender and routes only its accepted inbound track" do
     peer_connection = start_supervised_peer_connection()
 

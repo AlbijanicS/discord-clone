@@ -7,6 +7,8 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
   alias DiscordClone.Accounts
   alias DiscordClone.Voice
   alias DiscordClone.Workspaces
+  alias DiscordClone.Workspaces.VoiceChannel, as: VoiceChannelSchema
+  alias DiscordClone.Workspaces.WorkspaceMembership
   alias DiscordCloneWeb.{VoiceChannel, VoiceSocket}
   import DiscordCloneWeb.VoiceSignalingHelpers
 
@@ -57,9 +59,6 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
     test "returns a correlated real answer and sends server ICE only to its connection",
          context do
       %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
-
-      assert {:ok, _reply, _other_channel_socket} =
-               subscribe_and_join(channel_socket, VoiceChannel, channel_socket.topic)
 
       negotiation_id = "first-negotiation"
 
@@ -255,10 +254,18 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
 
     test "keeps signaling session IDs and server ICE isolated between joined connections",
          context do
-      %{channel_socket: first_channel_socket, signaling_session_id: first_id} = context
+      %{
+        channel_socket: first_channel_socket,
+        signaling_session_id: first_id,
+        voice_channel_id: voice_channel_id
+      } = context
+
+      second_user = user_fixture()
+      add_workspace_member!(voice_channel_id, second_user)
+      {:ok, second_socket} = connect_voice_socket(second_user)
 
       assert {:ok, %{signaling_session_id: second_id}, second_channel_socket} =
-               subscribe_and_join(first_channel_socket, VoiceChannel, first_channel_socket.topic)
+               subscribe_and_join(second_socket, VoiceChannel, first_channel_socket.topic)
 
       refute first_id == second_id
 
@@ -275,39 +282,48 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       refute_push "ice_candidate", _payload
     end
 
-    test "stops the Channel-owned peer connection when the topic leaves", context do
+    test "stops the Session-owned peer connection when the topic leaves", context do
       %{channel_socket: channel_socket} = context
       running_before_leave = ExWebRTC.PeerConnection.get_all_running()
 
       assert Enum.any?(running_before_leave)
+      [peer_connection] = running_before_leave
+      peer_connection_ref = Process.monitor(peer_connection)
 
       Process.unlink(channel_socket.channel_pid)
       monitor_ref = Process.monitor(channel_socket.channel_pid)
       assert_reply leave(channel_socket), :ok
       assert_receive {:DOWN, ^monitor_ref, :process, _, _reason}
+      assert_receive {:DOWN, ^peer_connection_ref, :process, ^peer_connection, _reason}
 
       refute Enum.any?(ExWebRTC.PeerConnection.get_all_running())
       assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(context.voice_channel_id)
     end
 
     test "keeps disconnected peers available but releases terminal server peers", context do
-      %{channel_socket: channel_socket} = context
+      %{channel_socket: channel_socket, join_payload: %{voice_session_id: voice_session_id}} =
+        context
+
       [peer_connection] = ExWebRTC.PeerConnection.get_all_running()
 
-      send(
-        channel_socket.channel_pid,
-        {:ex_webrtc, peer_connection, {:connection_state_change, :disconnected}}
-      )
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 context.voice_channel_id,
+                 voice_session_id,
+                 {:ex_webrtc, peer_connection, {:connection_state_change, :disconnected}}
+               )
 
       _ = :sys.get_state(channel_socket.channel_pid)
 
       Process.unlink(channel_socket.channel_pid)
       monitor_ref = Process.monitor(channel_socket.channel_pid)
 
-      send(
-        channel_socket.channel_pid,
-        {:ex_webrtc, peer_connection, {:connection_state_change, :failed}}
-      )
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 context.voice_channel_id,
+                 voice_session_id,
+                 {:ex_webrtc, peer_connection, {:connection_state_change, :failed}}
+               )
 
       assert_receive {:DOWN, ^monitor_ref, :process, _, :normal}
       refute Enum.any?(ExWebRTC.PeerConnection.get_all_running())
@@ -360,7 +376,12 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
     end
 
     test "counts accepted, echoed, and dropped media without identifying metadata", context do
-      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
+      %{
+        channel_socket: channel_socket,
+        signaling_session_id: signaling_session_id,
+        join_payload: %{voice_session_id: voice_session_id}
+      } = context
+
       handler_id = "voice-media-#{System.unique_integer([:positive])}"
       test_pid = self()
 
@@ -391,7 +412,12 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
 
       on_exit(fn -> :telemetry.detach(handler_id) end)
 
-      send(channel_socket.channel_pid, {:ex_webrtc, peer_connection, {:track, inbound_track}})
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 context.voice_channel_id,
+                 voice_session_id,
+                 {:ex_webrtc, peer_connection, {:track, inbound_track}}
+               )
 
       assert_receive {:voice_media_diagnostic,
                       %{media_lifecycle: :inbound_track_admitted} = admitted_metadata}
@@ -404,10 +430,12 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       packet =
         ExRTP.Packet.new(<<>>, payload_type: 111, sequence_number: 1, timestamp: 1, ssrc: 1)
 
-      send(
-        channel_socket.channel_pid,
-        {:ex_webrtc, peer_connection, {:rtp, inbound_track.id, nil, packet}}
-      )
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 context.voice_channel_id,
+                 voice_session_id,
+                 {:ex_webrtc, peer_connection, {:rtp, inbound_track.id, nil, packet}}
+               )
 
       assert_receive {:voice_media_diagnostic,
                       %{
@@ -418,18 +446,27 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
                         dropped_media_count: 0
                       }}
 
-      send(
-        channel_socket.channel_pid,
-        {:ex_webrtc, peer_connection,
-         {:track, %ExWebRTC.MediaStreamTrack{id: inbound_track.id + 1, kind: :video}}}
-      )
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 context.voice_channel_id,
+                 voice_session_id,
+                 {:ex_webrtc, peer_connection,
+                  {:track, %ExWebRTC.MediaStreamTrack{id: inbound_track.id + 1, kind: :video}}}
+               )
 
-      send(channel_socket.channel_pid, {:ex_webrtc, peer_connection, {:data_channel, %{}}})
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 context.voice_channel_id,
+                 voice_session_id,
+                 {:ex_webrtc, peer_connection, {:data_channel, %{}}}
+               )
 
-      send(
-        channel_socket.channel_pid,
-        {:ex_webrtc, peer_connection, {:rtp, inbound_track.id + 2, nil, packet}}
-      )
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 context.voice_channel_id,
+                 voice_session_id,
+                 {:ex_webrtc, peer_connection, {:rtp, inbound_track.id + 2, nil, packet}}
+               )
 
       assert_receive {:voice_media_diagnostic,
                       %{media_lifecycle: :unexpected_media_dropped, dropped_media_count: 1}}
@@ -583,5 +620,17 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
   defp connect_voice_socket(user) do
     token = Accounts.generate_user_session_token(user)
     connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
+  end
+
+  defp add_workspace_member!(voice_channel_id, user) do
+    voice_channel = Repo.get!(VoiceChannelSchema, voice_channel_id)
+
+    %WorkspaceMembership{}
+    |> WorkspaceMembership.changeset(%{
+      workspace_id: voice_channel.workspace_id,
+      user_id: user.id,
+      role: "member"
+    })
+    |> Repo.insert!()
   end
 end

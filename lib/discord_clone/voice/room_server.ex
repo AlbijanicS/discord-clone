@@ -8,6 +8,7 @@ defmodule DiscordClone.Voice.RoomServer do
   alias DiscordClone.Voice.{SessionCoordinator, RoomRegistry, Session, SessionSupervisor}
 
   @capacity 5
+  @test_environment Code.ensure_loaded?(Mix) and Mix.env() == :test
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -37,6 +38,70 @@ defmodule DiscordClone.Voice.RoomServer do
   @spec leave(GenServer.server(), Ecto.UUID.t()) :: :ok
   def leave(server, voice_session_id), do: GenServer.call(server, {:leave, voice_session_id})
 
+  @spec accept_offer(
+          GenServer.server(),
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          binary(),
+          map(),
+          non_neg_integer()
+        ) ::
+          {:ok, map()} | {:error, atom()}
+  def accept_offer(
+        server,
+        user_id,
+        voice_session_id,
+        negotiation_id,
+        description,
+        deadline
+      ) do
+    GenServer.call(
+      server,
+      {:accept_offer, user_id, voice_session_id, negotiation_id, description, deadline},
+      remaining_timeout(deadline)
+    )
+  end
+
+  @spec add_ice_candidate(
+          GenServer.server(),
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          binary(),
+          map(),
+          non_neg_integer()
+        ) ::
+          {:ok, map()} | {:error, atom()}
+  def add_ice_candidate(
+        server,
+        user_id,
+        voice_session_id,
+        negotiation_id,
+        candidate,
+        deadline
+      ) do
+    GenServer.call(
+      server,
+      {:add_ice_candidate, user_id, voice_session_id, negotiation_id, candidate, deadline},
+      remaining_timeout(deadline)
+    )
+  end
+
+  @spec end_of_candidates(
+          GenServer.server(),
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          binary(),
+          non_neg_integer()
+        ) ::
+          {:error, atom()}
+  def end_of_candidates(server, user_id, voice_session_id, negotiation_id, deadline) do
+    GenServer.call(
+      server,
+      {:end_of_candidates, user_id, voice_session_id, negotiation_id, deadline},
+      remaining_timeout(deadline)
+    )
+  end
+
   @spec occupancy(GenServer.server()) ::
           {:ok, %{occupancy: non_neg_integer(), capacity: pos_integer()}}
   def occupancy(server), do: GenServer.call(server, :occupancy)
@@ -47,6 +112,12 @@ defmodule DiscordClone.Voice.RoomServer do
   @spec crash_session(GenServer.server(), Ecto.UUID.t()) :: :ok
   def crash_session(server, voice_session_id),
     do: GenServer.call(server, {:crash_session, voice_session_id})
+
+  @doc false
+  @spec dispatch_test_ex_webrtc(GenServer.server(), Ecto.UUID.t(), term()) ::
+          :ok | {:error, :not_found | :unavailable}
+  def dispatch_test_ex_webrtc(server, voice_session_id, message),
+    do: GenServer.call(server, {:dispatch_test_ex_webrtc, voice_session_id, message})
 
   @impl true
   def init(opts) do
@@ -62,6 +133,8 @@ defmodule DiscordClone.Voice.RoomServer do
        session_by_signaling: %{},
        session_by_monitor: %{},
        session_supervisor: nil,
+       test_admission_observer: test_admission_observer(opts),
+       test_peer_connection_opts: test_peer_connection_opts(opts),
        pending_joins: [],
        empty_waiters: []
      }}
@@ -101,6 +174,48 @@ defmodule DiscordClone.Voice.RoomServer do
     {:reply, :ok, remove_membership(state, voice_session_id)}
   end
 
+  def handle_call(
+        {:accept_offer, user_id, voice_session_id, negotiation_id, description, deadline},
+        _from,
+        state
+      ) do
+    route_session_command(
+      state,
+      user_id,
+      voice_session_id,
+      {:accept_offer, negotiation_id, description},
+      deadline
+    )
+  end
+
+  def handle_call(
+        {:add_ice_candidate, user_id, voice_session_id, negotiation_id, candidate, deadline},
+        _from,
+        state
+      ) do
+    route_session_command(
+      state,
+      user_id,
+      voice_session_id,
+      {:add_ice_candidate, negotiation_id, candidate},
+      deadline
+    )
+  end
+
+  def handle_call(
+        {:end_of_candidates, user_id, voice_session_id, negotiation_id, deadline},
+        _from,
+        state
+      ) do
+    route_session_command(
+      state,
+      user_id,
+      voice_session_id,
+      {:end_of_candidates, negotiation_id},
+      deadline
+    )
+  end
+
   def handle_call(:occupancy, _from, state),
     do: {:reply, {:ok, membership_occupancy(state)}, state}
 
@@ -126,6 +241,21 @@ defmodule DiscordClone.Voice.RoomServer do
 
     state = wait_for_session_crash(state, session_monitor)
     {:reply, :ok, remove_membership(state, voice_session_id, terminate_session?: false)}
+  end
+
+  def handle_call({:dispatch_test_ex_webrtc, voice_session_id, message}, _from, state) do
+    if @test_environment do
+      case state.memberships do
+        %{^voice_session_id => %{session_pid: session_pid}} when is_pid(session_pid) ->
+          send(session_pid, message)
+          {:reply, :ok, state}
+
+        _missing_session ->
+          {:reply, {:error, :not_found}, state}
+      end
+    else
+      {:reply, {:error, :unavailable}, state}
+    end
   end
 
   @impl true
@@ -227,10 +357,73 @@ defmodule DiscordClone.Voice.RoomServer do
         |> put_in([:session_by_monitor, session_monitor], voice_session_id)
         |> Map.put(:idle_timer, cancel_idle_shutdown(state.idle_timer))
 
+      notify_test_admission(state, voice_session_id)
       {:reply, {:ok, session_details(membership, state)}, state}
     else
       {:error, _reason} -> {:reply, {:error, :unavailable}, state}
     end
+  end
+
+  defp route_session_command(state, user_id, voice_session_id, command, deadline) do
+    case Map.get(state.memberships, voice_session_id) do
+      nil ->
+        {:reply, {:error, :invalid_session}, state}
+
+      %{user_id: ^user_id, session_pid: session_pid} ->
+        if deadline_expired?(deadline) do
+          {:reply, {:error, :unavailable}, remove_membership(state, voice_session_id)}
+        else
+          session_timeout = remaining_timeout(deadline)
+
+          result =
+            call_session(
+              session_pid,
+              add_command_timeout(command, deadline),
+              session_timeout
+            )
+
+          if deadline_expired?(deadline) do
+            {:reply, {:error, :unavailable}, remove_membership(state, voice_session_id)}
+          else
+            case result do
+              {:ok, {:error, :negotiation_failed} = error} ->
+                {:reply, error, remove_membership(state, voice_session_id)}
+
+              {:ok, reply} ->
+                {:reply, reply, state}
+
+              {:error, :unavailable} = error ->
+                {:reply, error, remove_membership(state, voice_session_id)}
+            end
+          end
+        end
+
+      _mismatched_user ->
+        {:reply, {:error, :invalid_session}, state}
+    end
+  end
+
+  defp call_session(session_pid, command, timeout) do
+    {:ok, GenServer.call(session_pid, command, timeout)}
+  catch
+    :exit, _reason -> {:error, :unavailable}
+  end
+
+  defp add_command_timeout({:accept_offer, negotiation_id, description}, timeout),
+    do: {:accept_offer, negotiation_id, description, timeout}
+
+  defp add_command_timeout({:add_ice_candidate, negotiation_id, candidate}, timeout),
+    do: {:add_ice_candidate, negotiation_id, candidate, timeout}
+
+  defp add_command_timeout({:end_of_candidates, negotiation_id}, timeout),
+    do: {:end_of_candidates, negotiation_id, timeout}
+
+  defp remaining_timeout(deadline) do
+    max(deadline - System.monotonic_time(:millisecond), 1)
+  end
+
+  defp deadline_expired?(deadline) do
+    deadline <= System.monotonic_time(:millisecond)
   end
 
   defp remove_membership(state, voice_session_id, opts \\ []) do
@@ -288,7 +481,8 @@ defmodule DiscordClone.Voice.RoomServer do
           {Session,
            room_server: self(),
            voice_session_id: voice_session_id,
-           signaling_channel: signaling_channel}
+           signaling_channel: signaling_channel,
+           test_peer_connection_opts: state.test_peer_connection_opts}
         )
       catch
         :exit, _session_supervisor_stopped -> {:error, :unavailable}
@@ -297,6 +491,27 @@ defmodule DiscordClone.Voice.RoomServer do
       {:error, :unavailable}
     end
   end
+
+  defp test_peer_connection_opts(opts) do
+    if @test_environment do
+      Keyword.get(opts, :test_peer_connection_opts, [])
+    else
+      []
+    end
+  end
+
+  defp test_admission_observer(opts) do
+    if @test_environment do
+      Keyword.get(opts, :test_admission_observer)
+    end
+  end
+
+  defp notify_test_admission(%{test_admission_observer: observer}, voice_session_id)
+       when is_pid(observer) do
+    send(observer, {:voice_session_membership_committed, voice_session_id})
+  end
+
+  defp notify_test_admission(_state, _voice_session_id), do: :ok
 
   defp wait_for_session_crash(state, nil), do: state
 

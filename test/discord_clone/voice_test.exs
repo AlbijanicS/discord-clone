@@ -2,6 +2,19 @@ defmodule DiscordClone.VoiceTest do
   use DiscordClone.DataCase, async: false
 
   alias DiscordClone.Voice
+  alias DiscordClone.Voice.{RoomServer, SessionSupervisor}
+
+  setup do
+    on_exit(fn ->
+      DiscordClone.Voice.running_room_servers()
+      |> Enum.each(fn {voice_channel_id, _room_server} ->
+        :ok = Voice.end_channel_sessions(voice_channel_id)
+        :ok = Voice.expire_idle_room(voice_channel_id)
+      end)
+    end)
+
+    :ok
+  end
 
   describe "room runtime lifecycle" do
     test "starts a room for a durable Voice Channel ID without exposing its process" do
@@ -209,6 +222,140 @@ defmodule DiscordClone.VoiceTest do
   end
 
   describe "room-local Voice Sessions" do
+    test "does not commit membership when Session PeerConnection startup fails" do
+      voice_channel_id = Ecto.UUID.generate()
+      room_supervisor = start_signaling_channel(:failed_room_supervisor)
+
+      room_server =
+        start_supervised!(
+          {RoomServer,
+           voice_channel_id: voice_channel_id,
+           room_supervisor: room_supervisor,
+           test_peer_connection_opts: [audio_codecs: [:invalid]]}
+        )
+
+      _session_supervisor =
+        start_supervised!({SessionSupervisor, voice_channel_id: voice_channel_id})
+
+      running_before = MapSet.new(ExWebRTC.PeerConnection.get_all_running())
+
+      assert {:error, :unavailable} =
+               RoomServer.join(room_server, Ecto.UUID.generate(), "connection-1", self())
+
+      assert {:ok, %{occupancy: 0, capacity: 5}} = RoomServer.occupancy(room_server)
+      assert MapSet.new(ExWebRTC.PeerConnection.get_all_running()) == running_before
+    end
+
+    test "does not commit membership until the Session-owned PeerConnection is ready" do
+      voice_channel_id = Ecto.UUID.generate()
+      room_supervisor = start_signaling_channel(:readiness_room_supervisor)
+      readiness_reference = make_ref()
+
+      room_server =
+        start_supervised!(
+          {RoomServer,
+           voice_channel_id: voice_channel_id,
+           room_supervisor: room_supervisor,
+           test_admission_observer: self(),
+           test_peer_connection_opts: [
+             test_readiness_gate: {self(), readiness_reference}
+           ]}
+        )
+
+      _session_supervisor =
+        start_supervised!({SessionSupervisor, voice_channel_id: voice_channel_id})
+
+      test_pid = self()
+
+      join_task =
+        Task.async(fn ->
+          RoomServer.join(room_server, Ecto.UUID.generate(), "connection-1", test_pid)
+        end)
+
+      assert_receive {:peer_connection_starting, ^readiness_reference, session_pid}
+      refute_receive {:voice_session_membership_committed, _voice_session_id}, 0
+
+      send(session_pid, {:release_peer_connection_start, readiness_reference})
+
+      assert {:ok, %{voice_session_id: voice_session_id}} = Task.await(join_task)
+      assert_receive {:voice_session_membership_committed, ^voice_session_id}
+      assert {:ok, %{occupancy: 1, capacity: 5}} = RoomServer.occupancy(room_server)
+
+      assert [peer_connection] = ExWebRTC.PeerConnection.get_all_running()
+      peer_connection_monitor = Process.monitor(peer_connection)
+      assert :ok = RoomServer.leave(room_server, voice_session_id)
+      assert_receive {:DOWN, ^peer_connection_monitor, :process, ^peer_connection, _reason}
+    end
+
+    test "admits a Voice Session only after its Session-owned PeerConnection is ready" do
+      voice_channel_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: voice_session_id, occupancy: 1}} =
+               Voice.join(voice_channel_id, Ecto.UUID.generate(), "connection-1", self())
+
+      assert [peer_connection] = ExWebRTC.PeerConnection.get_all_running()
+      assert ExWebRTC.PeerConnection.get_transceivers(peer_connection) == []
+      peer_connection_monitor = Process.monitor(peer_connection)
+
+      assert :ok = Voice.leave(voice_channel_id, voice_session_id)
+      assert_receive {:DOWN, ^peer_connection_monitor, :process, ^peer_connection, _reason}
+
+      assert :ok = Voice.leave(voice_channel_id, voice_session_id)
+      refute_receive {:DOWN, ^peer_connection_monitor, :process, ^peer_connection, _reason}, 0
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+    end
+
+    test "a crashed Voice Session takes its linked PeerConnection down" do
+      voice_channel_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: voice_session_id}} =
+               Voice.join(voice_channel_id, Ecto.UUID.generate(), "connection-1", self())
+
+      assert [peer_connection] = ExWebRTC.PeerConnection.get_all_running()
+      peer_connection_monitor = Process.monitor(peer_connection)
+
+      assert :ok = Voice.crash_session(voice_channel_id, voice_session_id)
+      assert_receive {:DOWN, ^peer_connection_monitor, :process, ^peer_connection, _reason}
+    end
+
+    test "an expired runtime command retires the Voice Session and its PeerConnection" do
+      voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: voice_session_id}} =
+               Voice.join(voice_channel_id, user_id, "connection-1", self())
+
+      room_server = room_server(voice_channel_id)
+      assert [peer_connection] = ExWebRTC.PeerConnection.get_all_running()
+      peer_connection_monitor = Process.monitor(peer_connection)
+
+      assert {:error, :invalid_session} =
+               RoomServer.accept_offer(
+                 room_server,
+                 Ecto.UUID.generate(),
+                 voice_session_id,
+                 "other-user-negotiation",
+                 %{},
+                 System.monotonic_time(:millisecond) + 5_000
+               )
+
+      assert {:ok, %{occupancy: 1, capacity: 5}} = RoomServer.occupancy(room_server)
+      expired_deadline = System.monotonic_time(:millisecond) - 1
+
+      assert {:error, :unavailable} =
+               RoomServer.accept_offer(
+                 room_server,
+                 user_id,
+                 voice_session_id,
+                 "expired-negotiation",
+                 %{},
+                 expired_deadline
+               )
+
+      assert_receive {:DOWN, ^peer_connection_monitor, :process, ^peer_connection, _reason}
+      assert {:ok, %{occupancy: 0, capacity: 5}} = RoomServer.occupancy(room_server)
+    end
+
     test "joins a Voice Session with a fresh opaque ID" do
       voice_channel_id = Ecto.UUID.generate()
       user_id = Ecto.UUID.generate()

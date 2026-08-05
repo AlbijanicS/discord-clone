@@ -7,8 +7,11 @@ defmodule DiscordClone.Voice do
   Voice Channel ID.
   """
 
+  alias DiscordClone.Accounts.Scope
   alias DiscordClone.UUIDIdentifier
   alias DiscordClone.Voice.{SessionCoordinator, RoomRegistry, RoomServer, RoomSupervisor}
+
+  @command_timeout_ms 5_000
 
   @spec ensure_room(term()) :: :ok | {:error, :not_found | term()}
   def ensure_room(voice_channel_id) do
@@ -45,6 +48,111 @@ defmodule DiscordClone.Voice do
       :error -> {:error, :not_found}
     end
   end
+
+  @spec accept_offer(Scope.t(), term(), term(), binary(), map()) ::
+          {:ok, map()} | {:error, atom()}
+  def accept_offer(
+        %Scope{user: %{id: user_id}},
+        voice_channel_id,
+        voice_session_id,
+        negotiation_id,
+        description
+      )
+      when is_binary(user_id) and is_binary(negotiation_id) and is_map(description) do
+    deadline = command_deadline()
+
+    with {:ok, [voice_channel_id, voice_session_id]} <-
+           UUIDIdentifier.cast_all([voice_channel_id, voice_session_id]),
+         room_server when is_pid(room_server) <- room_server(voice_channel_id) do
+      safe_accept_offer(
+        room_server,
+        user_id,
+        voice_session_id,
+        negotiation_id,
+        description,
+        deadline
+      )
+    else
+      nil -> {:error, :unavailable}
+      :error -> {:error, :invalid_session}
+    end
+  end
+
+  def accept_offer(
+        _current_scope,
+        _voice_channel_id,
+        _voice_session_id,
+        _negotiation_id,
+        _description
+      ),
+      do: {:error, :invalid_session}
+
+  @spec add_ice_candidate(Scope.t(), term(), term(), binary(), map()) ::
+          {:ok, map()} | {:error, atom()}
+  def add_ice_candidate(
+        %Scope{user: %{id: user_id}},
+        voice_channel_id,
+        voice_session_id,
+        negotiation_id,
+        candidate
+      )
+      when is_binary(user_id) and is_binary(negotiation_id) and is_map(candidate) do
+    deadline = command_deadline()
+
+    with {:ok, [voice_channel_id, voice_session_id]} <-
+           UUIDIdentifier.cast_all([voice_channel_id, voice_session_id]),
+         room_server when is_pid(room_server) <- room_server(voice_channel_id) do
+      safe_add_ice_candidate(
+        room_server,
+        user_id,
+        voice_session_id,
+        negotiation_id,
+        candidate,
+        deadline
+      )
+    else
+      nil -> {:error, :unavailable}
+      :error -> {:error, :invalid_session}
+    end
+  end
+
+  def add_ice_candidate(
+        _current_scope,
+        _voice_channel_id,
+        _voice_session_id,
+        _negotiation_id,
+        _candidate
+      ),
+      do: {:error, :invalid_session}
+
+  @spec end_of_candidates(Scope.t(), term(), term(), binary()) :: {:error, atom()}
+  def end_of_candidates(
+        %Scope{user: %{id: user_id}},
+        voice_channel_id,
+        voice_session_id,
+        negotiation_id
+      )
+      when is_binary(user_id) and is_binary(negotiation_id) do
+    deadline = command_deadline()
+
+    with {:ok, [voice_channel_id, voice_session_id]} <-
+           UUIDIdentifier.cast_all([voice_channel_id, voice_session_id]),
+         room_server when is_pid(room_server) <- room_server(voice_channel_id) do
+      safe_end_of_candidates(
+        room_server,
+        user_id,
+        voice_session_id,
+        negotiation_id,
+        deadline
+      )
+    else
+      nil -> {:error, :unavailable}
+      :error -> {:error, :invalid_session}
+    end
+  end
+
+  def end_of_candidates(_current_scope, _voice_channel_id, _voice_session_id, _negotiation_id),
+    do: {:error, :invalid_session}
 
   @doc """
   Ends the current Voice Session for a User when it belongs to the given Voice Channel.
@@ -95,6 +203,19 @@ defmodule DiscordClone.Voice do
         room_server -> RoomServer.crash_session(room_server, voice_session_id)
       end
     else
+      :error -> {:error, :not_found}
+    end
+  end
+
+  @doc false
+  @spec dispatch_test_ex_webrtc(term(), term(), term()) :: :ok | {:error, :not_found}
+  def dispatch_test_ex_webrtc(voice_channel_id, voice_session_id, message) do
+    with {:ok, [voice_channel_id, voice_session_id]} <-
+           UUIDIdentifier.cast_all([voice_channel_id, voice_session_id]),
+         room_server when is_pid(room_server) <- room_server(voice_channel_id) do
+      safe_dispatch_test_ex_webrtc(room_server, voice_session_id, message)
+    else
+      nil -> {:error, :not_found}
       :error -> {:error, :not_found}
     end
   end
@@ -326,6 +447,68 @@ defmodule DiscordClone.Voice do
     SessionCoordinator.leave(voice_channel_id, voice_session_id)
   catch
     :exit, _session_coordinator_unavailable -> :ok
+  end
+
+  defp safe_dispatch_test_ex_webrtc(room_server, voice_session_id, message) do
+    RoomServer.dispatch_test_ex_webrtc(room_server, voice_session_id, message)
+  catch
+    :exit, _room_stopped -> {:error, :not_found}
+  end
+
+  defp safe_accept_offer(
+         room_server,
+         user_id,
+         voice_session_id,
+         negotiation_id,
+         description,
+         timeout
+       ) do
+    RoomServer.accept_offer(
+      room_server,
+      user_id,
+      voice_session_id,
+      negotiation_id,
+      description,
+      timeout
+    )
+  catch
+    :exit, _room_stopped -> {:error, :unavailable}
+  end
+
+  defp safe_add_ice_candidate(
+         room_server,
+         user_id,
+         voice_session_id,
+         negotiation_id,
+         candidate,
+         timeout
+       ) do
+    RoomServer.add_ice_candidate(
+      room_server,
+      user_id,
+      voice_session_id,
+      negotiation_id,
+      candidate,
+      timeout
+    )
+  catch
+    :exit, _room_stopped -> {:error, :unavailable}
+  end
+
+  defp safe_end_of_candidates(room_server, user_id, voice_session_id, negotiation_id, timeout) do
+    RoomServer.end_of_candidates(
+      room_server,
+      user_id,
+      voice_session_id,
+      negotiation_id,
+      timeout
+    )
+  catch
+    :exit, _room_stopped -> {:error, :unavailable}
+  end
+
+  defp command_deadline do
+    System.monotonic_time(:millisecond) + @command_timeout_ms
   end
 
   defp safe_end_user_session(voice_channel_id, user_id) do
