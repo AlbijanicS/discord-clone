@@ -124,7 +124,7 @@ full SDP credentials or TURN credentials.
 | 4. First browser-to-ExWebRTC PeerConnection | Manual localhost pass in progress | 2026-07-31 | Real signaling and terminal ICE coverage are green. After the voice socket began sending the page CSRF token, Chrome completed microphone permission, signaling, and browser-to-server connection; it also remained connected through app navigation and could be left globally. The required repeated-cycle proof remains. |
 | 5. RTP echo experiment | Not started |  |  |
 | 6. OTP Voice Channel Room and Session architecture | Complete | 2026-08-04 | Supervised room/session ownership, cross-room admission coordination, failure recovery, Phoenix delegation, and durable-access cleanup are complete; media remains intentionally scoped to Phases 7/8. |
-| 7. Move echo into supervised `Voice.Session` | Not started |  |  |
+| 7. Move echo into supervised `Voice.Session` | In progress | 2026-08-05 | Tickets 01–04 are complete; Tickets 05–06 remain before Phase 7 can close. |
 | 8. Two-user server-routed audio | Not started |  |  |
 | 9. Capped 3-5 user room | Not started |  |  |
 | 10. Voice controls and UI polish | Not started |  |  |
@@ -552,7 +552,32 @@ Prove:
 Implementation Notes:
 
 ```text
-Not started.
+In progress as of 2026-08-05.
+
+Completed Tickets 01–04:
+- `923b473` moved PeerConnection ownership, negotiation, and media state into
+  `Voice.Session`.
+- `d3b3980` and `238a320` certified Session-routed offers and ICE.
+- `8ff825b` certified the Session-owned one-peer RTP echo: the negotiated
+  outbound track carries the accepted RTP packet, unsupported media is safely
+  dropped, media counters remain Session-owned, and diagnostics are
+  metadata-only.
+
+Behavior proven:
+- The authenticated browser signaling path remains a thin transport adapter;
+  raw RTP, ExWebRTC media messages, track identity, and media counters do not
+  cross into `DiscordCloneWeb.VoiceChannel`.
+- Wrapper and authenticated Channel tests prove accepted Opus RTP routing,
+  expected safe drops, counter accumulation, foreign-peer isolation, and
+  telemetry allow-listing.
+
+Tests run:
+- Focused media/runtime suite: 70 tests, 0 failures with `--max-cases 1`.
+- `mix precommit`: 62 JavaScript and 949 Elixir tests passed.
+
+Known follow-up work:
+- Complete Tickets 05 and 06 in `.scratch/voice-channel-phase-7/issues/`.
+- Mark Phase 7 Complete only after those tickets pass their final certification.
 ```
 
 ## Phase 7: Move Echo Into Supervised `Voice.Session`
