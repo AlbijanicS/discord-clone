@@ -461,7 +461,7 @@ defmodule DiscordClone.Voice do
          voice_session_id,
          negotiation_id,
          description,
-         timeout
+         deadline
        ) do
     RoomServer.accept_offer(
       room_server,
@@ -469,7 +469,7 @@ defmodule DiscordClone.Voice do
       voice_session_id,
       negotiation_id,
       description,
-      timeout
+      deadline
     )
   catch
     :exit, _room_stopped -> {:error, :unavailable}
@@ -481,7 +481,7 @@ defmodule DiscordClone.Voice do
          voice_session_id,
          negotiation_id,
          candidate,
-         timeout
+         deadline
        ) do
     RoomServer.add_ice_candidate(
       room_server,
@@ -489,19 +489,19 @@ defmodule DiscordClone.Voice do
       voice_session_id,
       negotiation_id,
       candidate,
-      timeout
+      deadline
     )
   catch
     :exit, _room_stopped -> {:error, :unavailable}
   end
 
-  defp safe_end_of_candidates(room_server, user_id, voice_session_id, negotiation_id, timeout) do
+  defp safe_end_of_candidates(room_server, user_id, voice_session_id, negotiation_id, deadline) do
     RoomServer.end_of_candidates(
       room_server,
       user_id,
       voice_session_id,
       negotiation_id,
-      timeout
+      deadline
     )
   catch
     :exit, _room_stopped -> {:error, :unavailable}

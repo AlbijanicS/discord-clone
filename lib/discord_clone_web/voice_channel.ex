@@ -2,7 +2,8 @@ defmodule DiscordCloneWeb.VoiceChannel do
   use DiscordCloneWeb, :channel
 
   alias DiscordClone.{Voice, Workspaces}
-  alias DiscordCloneWeb.VoiceSignaling.{Diagnostics, FakeHeartbeat, RealMessage}
+  alias DiscordClone.Voice.Diagnostics
+  alias DiscordCloneWeb.VoiceSignaling.{FakeHeartbeat, RealMessage}
 
   @impl true
   def join("voice:" <> voice_channel_id, _params, socket) do

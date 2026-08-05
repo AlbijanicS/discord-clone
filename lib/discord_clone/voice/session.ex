@@ -14,7 +14,7 @@ defmodule DiscordClone.Voice.Session do
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
-  @spec accept_offer(pid(), binary(), map(), non_neg_integer()) ::
+  @spec accept_offer(pid(), binary(), map(), integer()) ::
           {:ok, map()} | {:error, atom()}
   def accept_offer(session, negotiation_id, description) do
     accept_offer(session, negotiation_id, description, command_deadline())
@@ -28,7 +28,7 @@ defmodule DiscordClone.Voice.Session do
     )
   end
 
-  @spec add_ice_candidate(pid(), binary(), map(), non_neg_integer()) ::
+  @spec add_ice_candidate(pid(), binary(), map(), integer()) ::
           {:ok, map()} | {:error, atom()}
   def add_ice_candidate(session, negotiation_id, candidate) do
     add_ice_candidate(session, negotiation_id, candidate, command_deadline())
@@ -42,7 +42,7 @@ defmodule DiscordClone.Voice.Session do
     )
   end
 
-  @spec end_of_candidates(pid(), binary(), non_neg_integer()) :: {:error, atom()}
+  @spec end_of_candidates(pid(), binary(), integer()) :: {:error, atom()}
   def end_of_candidates(session, negotiation_id) do
     end_of_candidates(session, negotiation_id, command_deadline())
   end

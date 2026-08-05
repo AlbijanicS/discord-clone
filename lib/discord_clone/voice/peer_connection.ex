@@ -81,7 +81,7 @@ defmodule DiscordClone.Voice.PeerConnection do
     accept_offer_until(state, description, deadline(timeout))
   end
 
-  @spec accept_offer_until(t(), map(), non_neg_integer()) ::
+  @spec accept_offer_until(t(), map(), integer()) ::
           {:ok, map(), t()} | {:error, :negotiation_failed}
   def accept_offer_until(%__MODULE__{} = state, description, deadline) do
     with :ok <-
@@ -124,7 +124,7 @@ defmodule DiscordClone.Voice.PeerConnection do
   def add_ice_candidate(state, candidate, timeout),
     do: add_ice_candidate_until(state, candidate, deadline(timeout))
 
-  @spec add_ice_candidate_until(t(), map(), non_neg_integer()) ::
+  @spec add_ice_candidate_until(t(), map(), integer()) ::
           :ok | {:error, :candidate_rejected}
   def add_ice_candidate_until(
         %__MODULE__{remote_description?: true} = state,

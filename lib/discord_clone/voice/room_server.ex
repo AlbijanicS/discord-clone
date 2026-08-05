@@ -44,7 +44,7 @@ defmodule DiscordClone.Voice.RoomServer do
           Ecto.UUID.t(),
           binary(),
           map(),
-          non_neg_integer()
+          integer()
         ) ::
           {:ok, map()} | {:error, atom()}
   def accept_offer(
@@ -68,7 +68,7 @@ defmodule DiscordClone.Voice.RoomServer do
           Ecto.UUID.t(),
           binary(),
           map(),
-          non_neg_integer()
+          integer()
         ) ::
           {:ok, map()} | {:error, atom()}
   def add_ice_candidate(
@@ -91,7 +91,7 @@ defmodule DiscordClone.Voice.RoomServer do
           Ecto.UUID.t(),
           Ecto.UUID.t(),
           binary(),
-          non_neg_integer()
+          integer()
         ) ::
           {:error, atom()}
   def end_of_candidates(server, user_id, voice_session_id, negotiation_id, deadline) do
@@ -409,14 +409,14 @@ defmodule DiscordClone.Voice.RoomServer do
     :exit, _reason -> {:error, :unavailable}
   end
 
-  defp add_command_timeout({:accept_offer, negotiation_id, description}, timeout),
-    do: {:accept_offer, negotiation_id, description, timeout}
+  defp add_command_timeout({:accept_offer, negotiation_id, description}, deadline),
+    do: {:accept_offer, negotiation_id, description, deadline}
 
-  defp add_command_timeout({:add_ice_candidate, negotiation_id, candidate}, timeout),
-    do: {:add_ice_candidate, negotiation_id, candidate, timeout}
+  defp add_command_timeout({:add_ice_candidate, negotiation_id, candidate}, deadline),
+    do: {:add_ice_candidate, negotiation_id, candidate, deadline}
 
-  defp add_command_timeout({:end_of_candidates, negotiation_id}, timeout),
-    do: {:end_of_candidates, negotiation_id, timeout}
+  defp add_command_timeout({:end_of_candidates, negotiation_id}, deadline),
+    do: {:end_of_candidates, negotiation_id, deadline}
 
   defp remaining_timeout(deadline) do
     max(deadline - System.monotonic_time(:millisecond), 1)

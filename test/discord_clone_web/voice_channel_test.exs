@@ -62,13 +62,21 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
 
       negotiation_id = "first-negotiation"
 
-      assert_reply push(channel_socket, "offer", offer(signaling_session_id, negotiation_id)),
-                   :ok,
-                   %{
-                     signaling_session_id: ^signaling_session_id,
-                     negotiation_id: ^negotiation_id,
-                     description: %{"type" => "answer", "sdp" => answer_sdp}
-                   }
+      offer_ref = push(channel_socket, "offer", offer(signaling_session_id, negotiation_id))
+
+      assert_reply offer_ref, :ok, reply
+
+      assert %{
+               signaling_session_id: ^signaling_session_id,
+               negotiation_id: ^negotiation_id,
+               description: %{"type" => "answer", "sdp" => answer_sdp}
+             } = reply
+
+      assert Map.keys(reply) |> Enum.sort() == [
+               :description,
+               :negotiation_id,
+               :signaling_session_id
+             ]
 
       assert is_binary(answer_sdp)
       assert byte_size(answer_sdp) > 0
