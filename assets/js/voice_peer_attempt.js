@@ -2,9 +2,12 @@ const ICE_SERVERS = []
 const MAX_PENDING_SERVER_CANDIDATES = 16
 const MAX_PENDING_SERVER_CANDIDATE_BYTES = MAX_PENDING_SERVER_CANDIDATES * 8 * 1024
 const OFFER_REPLY_TIMEOUT_MS = 10_000
+const AUDIO_OUTPUT_SLOT_COUNT = 4
+const INCOMPATIBLE_AUDIO_OUTPUT_SLOTS = "incompatible_audio_output_slots"
 
 export function createVoicePeerAttempt({
   PeerConnection = globalThis.RTCPeerConnection,
+  MediaStream = globalThis.MediaStream,
   negotiationId = createNegotiationId,
   onFailure = () => {},
   onPlayback = () => {},
@@ -16,10 +19,13 @@ export function createVoicePeerAttempt({
 } = {}) {
   let active = false
   let answerApplied = false
+  let aggregatePlaybackStream = null
+  let audioOutputSlots = []
   let peerConnection = null
   let pendingServerCandidates = []
   let pendingServerCandidateBytes = 0
   let signalingSessionId = null
+  let signalingActive = false
   let currentNegotiationId = null
 
   function fail(error = "connection_failed") {
@@ -37,7 +43,8 @@ export function createVoicePeerAttempt({
     releaseRemoteAudio()
     peerConnection?.close()
     peerConnection = null
-    signaling?.leave()
+    if (signalingActive) signaling?.leave()
+    signalingActive = false
   }
 
   async function playRemoteAudio() {
@@ -52,22 +59,72 @@ export function createVoicePeerAttempt({
   }
 
   function receiveRemoteTrack(event) {
-    if (!active || !remoteAudio) return
+    if (!active || !aggregatePlaybackStream || event?.track?.kind !== "audio") return
 
-    const stream = event?.streams?.[0] || createRemoteStream(event?.track)
-    if (!stream) return
+    const slot = audioOutputSlots.find(candidate =>
+      candidate.transceiver === event.transceiver ||
+      candidate.transceiver.receiver?.track === event.track
+    )
+    if (!slot || slot.track === event.track) return
 
-    remoteAudio.autoplay = true
-    remoteAudio.playsInline = true
-    remoteAudio.srcObject = stream
+    releaseSlotTrack(slot)
+    slot.track = event.track
+    slot.onEnded = () => releaseSlotTrack(slot, event.track)
+    event.track.addEventListener?.("ended", slot.onEnded)
+    aggregatePlaybackStream.addTrack(event.track)
     playRemoteAudio()
   }
 
   function releaseRemoteAudio() {
+    audioOutputSlots.forEach(slot => releaseSlotTrack(slot))
+    audioOutputSlots = []
+    aggregatePlaybackStream = null
+
     if (!remoteAudio?.srcObject) return
 
     remoteAudio.pause?.()
     remoteAudio.srcObject = null
+  }
+
+  function releaseSlotTrack(slot, expectedTrack = slot.track) {
+    if (!slot.track || slot.track !== expectedTrack) return
+
+    slot.track.removeEventListener?.("ended", slot.onEnded)
+    aggregatePlaybackStream?.removeTrack(slot.track)
+    slot.track = null
+    slot.onEnded = null
+  }
+
+  function preflight(track) {
+    try {
+      if (!PeerConnection || !MediaStream) throw new Error("required WebRTC APIs are unavailable")
+
+      peerConnection = new PeerConnection({iceServers: ICE_SERVERS})
+      if (typeof peerConnection.addTransceiver !== "function") {
+        throw new Error("audio transceivers are unavailable")
+      }
+
+      peerConnection.addTransceiver(track, {direction: "sendonly"})
+      audioOutputSlots = Array.from({length: AUDIO_OUTPUT_SLOT_COUNT}, (_unused, index) => {
+        const transceiver = peerConnection.addTransceiver("audio", {direction: "recvonly"})
+        if (!transceiver?.receiver?.track || transceiver.receiver.track.kind !== "audio") {
+          throw new Error(`audio output slot ${index} is unavailable`)
+        }
+
+        return {index, onEnded: null, track: null, transceiver}
+      })
+
+      aggregatePlaybackStream = new MediaStream()
+      if (remoteAudio) {
+        remoteAudio.autoplay = true
+        remoteAudio.playsInline = true
+        remoteAudio.srcObject = aggregatePlaybackStream
+      }
+    } catch (error) {
+      const compatibilityError = new Error("four Audio Output Slots are required", {cause: error})
+      compatibilityError.voiceFailure = INCOMPATIBLE_AUDIO_OUTPUT_SLOTS
+      throw compatibilityError
+    }
   }
 
   async function addServerCandidate(candidate) {
@@ -133,18 +190,19 @@ export function createVoicePeerAttempt({
       onState("joining")
 
       try {
+        preflight(track)
+        peerConnection.addEventListener("icecandidate", sendLocalIce)
+        peerConnection.addEventListener("connectionstatechange", handleConnectionStateChange)
+        peerConnection.addEventListener("track", receiveRemoteTrack)
+
+        signalingActive = true
         const joined = await signaling.joinVoiceChannel(channelId)
         ensureActive()
         signalingSessionId = joined?.signaling_session_id
         if (!signalingSessionId) throw new Error("missing signaling session")
 
-        peerConnection = new PeerConnection({iceServers: ICE_SERVERS})
-        peerConnection.addEventListener("icecandidate", sendLocalIce)
-        peerConnection.addEventListener("connectionstatechange", handleConnectionStateChange)
-        peerConnection.addEventListener("track", receiveRemoteTrack)
         signaling.onServerIce(receiveServerIce)
         signaling.onClose(() => fail("connection_lost"))
-        peerConnection.addTrack(track)
 
         const offer = await peerConnection.createOffer()
         ensureActive()
@@ -179,7 +237,7 @@ export function createVoicePeerAttempt({
         pendingServerCandidates = []
         pendingServerCandidateBytes = 0
       } catch (error) {
-        if (active) fail()
+        if (active) fail(voiceFailure(error))
         throw error
       }
     },
@@ -194,9 +252,10 @@ export function createVoicePeerAttempt({
   }
 }
 
-function createRemoteStream(track) {
-  if (!track || typeof globalThis.MediaStream !== "function") return null
-  return new globalThis.MediaStream([track])
+function voiceFailure(error) {
+  if (error?.voiceFailure === INCOMPATIBLE_AUDIO_OUTPUT_SLOTS) return error.voiceFailure
+  if (error?.reason === INCOMPATIBLE_AUDIO_OUTPUT_SLOTS) return error.reason
+  return "connection_failed"
 }
 
 function candidateByteSize(candidate) {

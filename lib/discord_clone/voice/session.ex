@@ -128,8 +128,9 @@ defmodule DiscordClone.Voice.Session do
             :ok = Forwarder.receive_ready(state.forwarder, state.voice_session_id, self(), :opus)
             {:reply, {:ok, answer}, state}
 
-          {:error, :negotiation_failed} ->
-            {:stop, :normal, {:error, :negotiation_failed}, state}
+          {:error, error}
+          when error in [:incompatible_audio_output_slots, :negotiation_failed] ->
+            {:stop, :normal, {:error, error}, state}
         end
 
       _active_negotiation ->

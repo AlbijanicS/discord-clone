@@ -293,8 +293,10 @@ defmodule DiscordClone.VoiceTest do
 
       second_peer_connection = negotiated_server_peer_connection([first_peer_connection])
 
-      [first_transceiver] = ExWebRTC.PeerConnection.get_transceivers(first_peer_connection)
-      [second_transceiver] = ExWebRTC.PeerConnection.get_transceivers(second_peer_connection)
+      first_transceiver = inbound_audio_transceiver(first_peer_connection)
+      second_transceiver = inbound_audio_transceiver(second_peer_connection)
+      first_output_transceiver = first_audio_output_transceiver(first_peer_connection)
+      second_output_transceiver = first_audio_output_transceiver(second_peer_connection)
 
       assert :ok =
                RoomServer.dispatch_test_ex_webrtc(
@@ -329,7 +331,7 @@ defmodule DiscordClone.VoiceTest do
       assert_receive {:peer_connection_rtp_sent, ^second_peer_connection,
                       second_outbound_track_id, ^first_packet}
 
-      assert second_outbound_track_id == second_transceiver.sender.track.id
+      assert second_outbound_track_id == second_output_transceiver.sender.track.id
       refute_receive {:peer_connection_rtp_sent, ^first_peer_connection, _, ^first_packet}, 0
 
       assert :ok =
@@ -343,7 +345,7 @@ defmodule DiscordClone.VoiceTest do
       assert_receive {:peer_connection_rtp_sent, ^first_peer_connection, first_outbound_track_id,
                       ^second_packet}
 
-      assert first_outbound_track_id == first_transceiver.sender.track.id
+      assert first_outbound_track_id == first_output_transceiver.sender.track.id
       refute_receive {:peer_connection_rtp_sent, ^second_peer_connection, _, ^second_packet}, 0
 
       assert :ok =
@@ -463,8 +465,8 @@ defmodule DiscordClone.VoiceTest do
                )
 
       first_peer_connection = negotiated_server_peer_connection([second_peer_connection])
-      [first_transceiver] = ExWebRTC.PeerConnection.get_transceivers(first_peer_connection)
-      [second_transceiver] = ExWebRTC.PeerConnection.get_transceivers(second_peer_connection)
+      first_transceiver = inbound_audio_transceiver(first_peer_connection)
+      second_transceiver = inbound_audio_transceiver(second_peer_connection)
 
       for {voice_session_id, peer_connection, track} <- [
             {second_voice_session_id, second_peer_connection, second_transceiver.receiver.track},
@@ -558,10 +560,8 @@ defmodule DiscordClone.VoiceTest do
 
       healthy_peer_connection = negotiated_server_peer_connection([departing_peer_connection])
 
-      [departing_transceiver] =
-        ExWebRTC.PeerConnection.get_transceivers(departing_peer_connection)
-
-      [healthy_transceiver] = ExWebRTC.PeerConnection.get_transceivers(healthy_peer_connection)
+      departing_transceiver = inbound_audio_transceiver(departing_peer_connection)
+      healthy_transceiver = inbound_audio_transceiver(healthy_peer_connection)
 
       for {voice_session_id, peer_connection, track} <- [
             {departing_voice_session_id, departing_peer_connection,
@@ -617,8 +617,7 @@ defmodule DiscordClone.VoiceTest do
       replacement_peer_connection =
         negotiated_server_peer_connection([healthy_peer_connection])
 
-      [replacement_transceiver] =
-        ExWebRTC.PeerConnection.get_transceivers(replacement_peer_connection)
+      replacement_transceiver = inbound_audio_transceiver(replacement_peer_connection)
 
       assert :ok =
                RoomServer.dispatch_test_ex_webrtc(
@@ -1572,8 +1571,21 @@ defmodule DiscordClone.VoiceTest do
     |> Enum.find(fn peer_connection ->
       peer_connection
       |> ExWebRTC.PeerConnection.get_transceivers()
-      |> Enum.any?(& &1.sender.track)
+      |> Enum.count(&(&1.current_direction == :sendonly))
+      |> Kernel.==(4)
     end)
+  end
+
+  defp inbound_audio_transceiver(peer_connection) do
+    peer_connection
+    |> ExWebRTC.PeerConnection.get_transceivers()
+    |> Enum.find(&(&1.current_direction == :recvonly))
+  end
+
+  defp first_audio_output_transceiver(peer_connection) do
+    peer_connection
+    |> ExWebRTC.PeerConnection.get_transceivers()
+    |> Enum.find(&(&1.current_direction == :sendonly))
   end
 
   defp start_signaling_channel(id) do

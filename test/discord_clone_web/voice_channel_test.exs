@@ -152,6 +152,32 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       assert_receive {:DOWN, ^monitor_ref, :process, _, :normal}
     end
 
+    test "reports a retryable four-slot compatibility failure and removes the attempted Session",
+         context do
+      %{
+        channel_socket: channel_socket,
+        signaling_session_id: signaling_session_id,
+        voice_channel_id: voice_channel_id
+      } = context
+
+      incomplete_offer = %{
+        "signaling_session_id" => signaling_session_id,
+        "negotiation_id" => "first-negotiation",
+        "description" => browser_offer(3)
+      }
+
+      Process.unlink(channel_socket.channel_pid)
+      monitor_ref = Process.monitor(channel_socket.channel_pid)
+
+      assert_reply push(channel_socket, "offer", incomplete_offer), :error, %{
+        reason: "incompatible_audio_output_slots"
+      }
+
+      assert_receive {:DOWN, ^monitor_ref, :process, _, :normal}
+      assert :ok = Voice.await_empty_room(voice_channel_id)
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+    end
+
     test "rejects client ICE from a stale Signaling Session", context do
       %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
       negotiation_id = "first-negotiation"
@@ -661,10 +687,15 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
         Enum.filter(ExWebRTC.PeerConnection.get_all_running(), fn peer_connection ->
           peer_connection
           |> ExWebRTC.PeerConnection.get_transceivers()
-          |> Enum.any?(& &1.sender.track)
+          |> Enum.count(&(&1.current_direction == :sendonly))
+          |> Kernel.==(4)
         end)
 
-      [transceiver] = ExWebRTC.PeerConnection.get_transceivers(peer_connection)
+      transceiver =
+        peer_connection
+        |> ExWebRTC.PeerConnection.get_transceivers()
+        |> Enum.find(&(&1.current_direction == :recvonly))
+
       inbound_track = transceiver.receiver.track
 
       :ok =

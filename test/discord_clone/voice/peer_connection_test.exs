@@ -1,5 +1,5 @@
 defmodule DiscordClone.Voice.PeerConnectionTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias DiscordClone.Voice.PeerConnection
   alias DiscordCloneWeb.VoiceSignaling.RealMessage
@@ -9,10 +9,31 @@ defmodule DiscordClone.Voice.PeerConnectionTest do
     offer = browser_offer()
     peer_connection = start_supervised_peer_connection()
 
-    assert {:ok, answer, _peer_connection} = PeerConnection.accept_offer(peer_connection, offer)
+    assert {:ok, answer, peer_connection} = PeerConnection.accept_offer(peer_connection, offer)
     assert %{"type" => "answer", "sdp" => sdp} = answer
     assert is_binary(sdp)
     assert byte_size(sdp) > 0
+
+    transceivers =
+      ExWebRTC.PeerConnection.get_transceivers(peer_connection.peer_connection)
+
+    assert Enum.count(transceivers, &(&1.current_direction == :recvonly)) == 1
+    assert Enum.count(transceivers, &(&1.current_direction == :sendonly)) == 4
+
+    outbound_track_ids =
+      transceivers
+      |> Enum.filter(&(&1.current_direction == :sendonly))
+      |> Enum.map(& &1.sender.track.id)
+
+    assert outbound_track_ids ==
+             Enum.map(0..3, &Map.fetch!(peer_connection.audio_output_slot_track_ids, &1))
+  end
+
+  test "rejects an offer that cannot provide all four Audio Output Slots" do
+    peer_connection = start_supervised_peer_connection()
+
+    assert {:error, :incompatible_audio_output_slots} =
+             PeerConnection.accept_offer(peer_connection, browser_offer(3))
   end
 
   test "rejects startup failure without leaving a PeerConnection process behind" do
@@ -32,10 +53,12 @@ defmodule DiscordClone.Voice.PeerConnectionTest do
     assert {:ok, _answer, peer_connection} =
              PeerConnection.accept_offer(peer_connection, browser_offer())
 
-    [transceiver] = ExWebRTC.PeerConnection.get_transceivers(peer_connection.peer_connection)
+    transceivers = ExWebRTC.PeerConnection.get_transceivers(peer_connection.peer_connection)
+    transceiver = Enum.find(transceivers, &(&1.current_direction == :recvonly))
+    first_output_slot = Enum.find(transceivers, &(&1.current_direction == :sendonly))
+
     assert transceiver.kind == :audio
-    assert transceiver.direction == :sendrecv
-    assert transceiver.sender.track.id == peer_connection.outbound_track_id
+    assert first_output_slot.sender.track.id == peer_connection.outbound_track_id
     assert Enum.any?(transceiver.codecs, &(&1.mime_type == "audio/opus"))
 
     inbound_track = transceiver.receiver.track

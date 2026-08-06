@@ -100,6 +100,15 @@ test("the rail renders a browser failure and delegates its explicit retry", () =
   mounted.hook.destroyed()
 })
 
+test("the rail explains a retryable four-slot compatibility failure", () => {
+  const mounted = mountVoiceControls({channelId: "voice-1", channelName: "lobby", error: "incompatible_audio_output_slots", retryable: true, status: "incompatible_audio_output_slots", workspaceId: "workspace-1"})
+
+  assert.equal(mounted.status.textContent, "This browser could not prepare group audio. Try again after checking browser support.")
+  assert.equal(mounted.retry.hidden, false)
+  assert.equal(mounted.popover.hidden, false)
+  mounted.hook.destroyed()
+})
+
 test("the rail announces blocked remote playback and delegates Enable audio without retrying microphone capture", () => {
   const mounted = mountVoiceControls({audioPlayback: "blocked", channelId: "voice-1", channelName: "lobby", status: "connected", workspaceId: "workspace-1"})
 

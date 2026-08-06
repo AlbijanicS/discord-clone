@@ -47,7 +47,14 @@ defmodule DiscordCloneWeb.VoiceChannel do
         reject("offer", "invalid_request", decoded_request_byte_count(params), socket)
 
       {:error, :negotiation_failed} ->
-        reject_terminal_offer(decoded_request_byte_count(params), socket)
+        reject_terminal_offer("negotiation_failed", decoded_request_byte_count(params), socket)
+
+      {:error, :incompatible_audio_output_slots} ->
+        reject_terminal_offer(
+          "incompatible_audio_output_slots",
+          decoded_request_byte_count(params),
+          socket
+        )
 
       {:error, error_code} ->
         reject("offer", error_code, decoded_request_byte_count(params), socket)
@@ -206,13 +213,13 @@ defmodule DiscordCloneWeb.VoiceChannel do
     {:reply, {:error, %{reason: error_code}}, socket}
   end
 
-  defp reject_terminal_offer(byte_count, socket) do
+  defp reject_terminal_offer(error_code, byte_count, socket) do
     Diagnostics.emit("offer", :rejected,
-      error_code: "negotiation_failed",
+      error_code: error_code,
       decoded_request_byte_count: byte_count
     )
 
-    {:stop, :normal, {:error, %{reason: "negotiation_failed"}}, socket}
+    {:stop, :normal, {:error, %{reason: error_code}}, socket}
   end
 
   defp decoded_request_byte_count(params) do

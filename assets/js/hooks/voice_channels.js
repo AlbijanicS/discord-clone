@@ -73,6 +73,7 @@ function statusMessage(state) {
   if (state.status === "connected" || state.status === "muted") return "Connected"
   if (state.status === "connection_failed") return "Couldn’t connect — try again"
   if (state.status === "connection_lost") return "Connection lost — try again"
+  if (state.status === "incompatible_audio_output_slots") return "This browser could not prepare group audio. Try again after checking browser support."
   if (state.status === "permission_denied") return "Microphone permission was denied. Check your browser settings, then retry."
   if (state.status === "no_device") return "No microphone was found. Connect or select an input device, then retry."
   if (state.status === "insecure_context") return "Microphone capture needs a secure connection. Use HTTPS outside localhost."

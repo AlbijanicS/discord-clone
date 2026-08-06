@@ -151,6 +151,9 @@ test("the Voice Channel UI renders its controller lifecycle and sends a Voice Ch
   emit({channelId: "voice-1", channelName: "lobby", error: "connection_lost", retryable: true, status: "connection_lost", workspaceId: "workspace-1"})
   assert.equal(status.textContent, "Connection lost — try again")
 
+  emit({channelId: "voice-1", channelName: "lobby", error: "incompatible_audio_output_slots", retryable: true, status: "incompatible_audio_output_slots", workspaceId: "workspace-1"})
+  assert.equal(status.textContent, "This browser could not prepare group audio. Try again after checking browser support.")
+
   emit({channelId: "voice-1", channelName: "lobby", status: "muted", workspaceId: "workspace-1"})
   assert.equal(status.textContent, "Connected")
   assert.equal(muteButton.textContent, "Unmute")

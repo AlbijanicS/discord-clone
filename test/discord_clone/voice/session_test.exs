@@ -39,10 +39,15 @@ defmodule DiscordClone.Voice.SessionTest do
       Enum.filter(ExWebRTC.PeerConnection.get_all_running(), fn peer_connection ->
         peer_connection
         |> ExWebRTC.PeerConnection.get_transceivers()
-        |> Enum.any?(& &1.sender.track)
+        |> Enum.count(&(&1.current_direction == :sendonly))
+        |> Kernel.==(4)
       end)
 
-    [transceiver] = ExWebRTC.PeerConnection.get_transceivers(peer_connection)
+    transceiver =
+      peer_connection
+      |> ExWebRTC.PeerConnection.get_transceivers()
+      |> Enum.find(&(&1.current_direction == :recvonly))
+
     inbound_track = transceiver.receiver.track
 
     send(session, {:ex_webrtc, peer_connection, {:track, inbound_track}})

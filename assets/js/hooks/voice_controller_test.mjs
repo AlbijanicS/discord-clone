@@ -8,6 +8,23 @@ const controllerSource = await readFile(new URL("./voice_controller.js", import.
 const controllerModuleUrl = `data:text/javascript;base64,${Buffer.from(controllerSource).toString("base64")}`
 const {createVoiceController} = await import(controllerModuleUrl)
 
+globalThis.MediaStream = class {
+  constructor() { this.tracks = [] }
+  addTrack(track) { this.tracks.push(track) }
+  getTracks() { return [...this.tracks] }
+  removeTrack(track) { this.tracks = this.tracks.filter(candidate => candidate !== track) }
+}
+
+let nextRemoteTrackId = 0
+
+function addTransceiver(kindOrTrack, init) {
+  return {
+    direction: init.direction,
+    receiver: {track: {id: `remote-${nextRemoteTrackId++}`, kind: "audio"}},
+    sender: {track: typeof kindOrTrack === "string" ? null : kindOrTrack},
+  }
+}
+
 function deferred() {
   let resolve
   let reject
@@ -208,7 +225,7 @@ test("local mute and unmute keep the established Voice connection and capture re
   const handlers = new Map()
   const peer = {
     addEventListener(event, callback) { handlers.set(event, callback) },
-    addTrack() {},
+    addTransceiver,
     close() {},
     connectionState: "new",
     createOffer() { offers += 1; return Promise.resolve({type: "offer", sdp: "browser-offer"}) },
@@ -303,7 +320,7 @@ test("takeover and teardown release the active remote audio attempt exactly once
     const handlers = new Map()
     const peer = {
       addEventListener(event, callback) { handlers.set(event, callback) },
-      addTrack() {},
+      addTransceiver,
       close() { this.closed = true },
       connectionState: "new",
       createOffer() { return Promise.resolve({type: "offer", sdp: "browser-offer"}) },

@@ -2,7 +2,9 @@ defmodule DiscordClone.Voice.PeerConnection do
   @moduledoc false
 
   alias ExWebRTC.{ICECandidate, MediaStreamTrack, PeerConnection, SessionDescription}
+  alias ExWebRTC.SDPUtils
 
+  @audio_output_slot_count 4
   @command_timeout_ms 5_000
   @startup_timeout_ms 5_000
   @ice_servers []
@@ -11,6 +13,7 @@ defmodule DiscordClone.Voice.PeerConnection do
   defstruct [
     :peer_connection,
     :expected_inbound_track_id,
+    :audio_output_slot_track_ids,
     :outbound_track_id,
     :test_candidate_observer,
     :test_rtp_observer,
@@ -20,6 +23,7 @@ defmodule DiscordClone.Voice.PeerConnection do
   @type t :: %__MODULE__{
           peer_connection: pid(),
           expected_inbound_track_id: integer() | nil,
+          audio_output_slot_track_ids: %{optional(non_neg_integer()) => integer()} | nil,
           outbound_track_id: integer() | nil,
           test_candidate_observer: pid() | nil,
           test_rtp_observer: pid() | nil,
@@ -40,6 +44,7 @@ defmodule DiscordClone.Voice.PeerConnection do
             {:ok,
              %__MODULE__{
                peer_connection: peer_connection,
+               audio_output_slot_track_ids: %{},
                test_candidate_observer: test_candidate_observer(options),
                test_rtp_observer: test_rtp_observer(options)
              }}
@@ -85,27 +90,25 @@ defmodule DiscordClone.Voice.PeerConnection do
   end
 
   @spec accept_offer(t(), map(), timeout()) ::
-          {:ok, map(), t()} | {:error, :negotiation_failed}
+          {:ok, map(), t()}
+          | {:error, :incompatible_audio_output_slots | :negotiation_failed}
   def accept_offer(%__MODULE__{} = state, description, timeout \\ @command_timeout_ms) do
     accept_offer_until(state, description, deadline(timeout))
   end
 
   @spec accept_offer_until(t(), map(), integer()) ::
-          {:ok, map(), t()} | {:error, :negotiation_failed}
+          {:ok, map(), t()}
+          | {:error, :incompatible_audio_output_slots | :negotiation_failed}
   def accept_offer_until(%__MODULE__{} = state, description, deadline) do
-    with :ok <-
+    with {:ok, audio_topology} <- compatible_audio_topology(description),
+         :ok <-
            peer_call(
              state.peer_connection,
              {:set_remote_description, SessionDescription.from_json(description)},
              deadline
            ),
-         {:ok, inbound_track_id} <- compatible_inbound_track_id(state.peer_connection, deadline),
-         {:ok, sender} <-
-           peer_call(
-             state.peer_connection,
-             {:add_track, MediaStreamTrack.new(:audio)},
-             deadline
-           ),
+         {:ok, inbound_track_id, output_slot_track_ids} <-
+           provision_audio_topology(state.peer_connection, audio_topology, deadline),
          {:ok, answer} <- peer_call(state.peer_connection, :create_answer, deadline),
          :ok <-
            peer_call(
@@ -117,10 +120,12 @@ defmodule DiscordClone.Voice.PeerConnection do
        %{
          state
          | expected_inbound_track_id: inbound_track_id,
-           outbound_track_id: sender.track.id,
+           audio_output_slot_track_ids: output_slot_track_ids,
+           outbound_track_id: Map.fetch!(output_slot_track_ids, 0),
            remote_description?: true
        }}
     else
+      {:error, :incompatible_audio_output_slots} = error -> error
       {:error, _reason} -> {:error, :negotiation_failed}
     end
   rescue
@@ -227,15 +232,102 @@ defmodule DiscordClone.Voice.PeerConnection do
     :exit, _reason -> :ok
   end
 
-  defp compatible_inbound_track_id(peer_connection, deadline) do
-    case Enum.filter(
-           peer_call(peer_connection, :get_transceivers, deadline),
-           &compatible_audio?/1
-         ) do
-      [transceiver] -> {:ok, transceiver.receiver.track.id}
-      _other -> {:error, :incompatible_media}
+  defp compatible_audio_topology(%{"type" => "offer", "sdp" => raw_sdp})
+       when is_binary(raw_sdp) do
+    with {:ok, sdp} <- ExSDP.parse(raw_sdp) do
+      compatible_audio_mlines = Enum.filter(sdp.media, &compatible_audio_mline?/1)
+
+      source_mlines =
+        Enum.filter(
+          compatible_audio_mlines,
+          &(SDPUtils.get_media_direction(&1) in [:sendonly, :sendrecv])
+        )
+
+      output_slot_mlines =
+        Enum.filter(compatible_audio_mlines, &(SDPUtils.get_media_direction(&1) == :recvonly))
+
+      case {source_mlines, output_slot_mlines} do
+        {[source_mline], output_slot_mlines}
+        when length(output_slot_mlines) == @audio_output_slot_count ->
+          {:ok,
+           %{
+             source_mid: media_mid(source_mline),
+             output_slot_mids: Enum.map(output_slot_mlines, &media_mid/1)
+           }}
+
+        {[_source_mline], _wrong_output_slot_count} ->
+          {:error, :incompatible_audio_output_slots}
+
+        _incompatible_source ->
+          {:error, :incompatible_media}
+      end
     end
   end
+
+  defp compatible_audio_topology(_description), do: {:error, :incompatible_media}
+
+  defp provision_audio_topology(peer_connection, audio_topology, deadline) do
+    transceivers = peer_call(peer_connection, :get_transceivers, deadline)
+    transceivers_by_mid = Map.new(transceivers, &{&1.mid, &1})
+
+    with %{receiver: %{track: %{id: inbound_track_id}}} <-
+           Map.get(transceivers_by_mid, audio_topology.source_mid),
+         {:ok, output_slot_track_ids} <-
+           provision_audio_output_slots(
+             peer_connection,
+             transceivers_by_mid,
+             audio_topology.output_slot_mids,
+             deadline
+           ) do
+      {:ok, inbound_track_id, output_slot_track_ids}
+    else
+      _missing_transceiver -> {:error, :incompatible_media}
+    end
+  end
+
+  defp provision_audio_output_slots(
+         peer_connection,
+         transceivers_by_mid,
+         output_slot_mids,
+         deadline
+       ) do
+    output_slot_mids
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, %{}}, fn {mid, slot}, {:ok, track_ids} ->
+      with %{id: transceiver_id, sender: %{id: sender_id}} <-
+             Map.get(transceivers_by_mid, mid),
+           :ok <-
+             peer_call(
+               peer_connection,
+               {:set_transceiver_direction, transceiver_id, :sendonly},
+               deadline
+             ),
+           track = MediaStreamTrack.new(:audio),
+           :ok <-
+             peer_call(
+               peer_connection,
+               {:replace_track, sender_id, track},
+               deadline
+             ) do
+        {:cont, {:ok, Map.put(track_ids, slot, track.id)}}
+      else
+        _error -> {:halt, {:error, :audio_output_slot_unavailable}}
+      end
+    end)
+  end
+
+  defp media_mid(mline) do
+    {:mid, mid} = ExSDP.get_attribute(mline, :mid)
+    mid
+  end
+
+  defp compatible_audio_mline?(%{type: :audio, port: port} = mline) when port != 0 do
+    mline
+    |> SDPUtils.get_rtp_codec_parameters()
+    |> Enum.any?(&opus?/1)
+  end
+
+  defp compatible_audio_mline?(_mline), do: false
 
   defp peer_call(peer_connection, request, :infinity),
     do: GenServer.call(peer_connection, request, :infinity)
@@ -271,13 +363,6 @@ defmodule DiscordClone.Voice.PeerConnection do
   end
 
   defp notify_test_candidate_observer(_state, _candidate), do: :ok
-
-  defp compatible_audio?(%{kind: :audio, direction: direction, codecs: codecs})
-       when direction in [:recvonly, :sendrecv] do
-    Enum.any?(codecs, &opus?/1)
-  end
-
-  defp compatible_audio?(_transceiver), do: false
 
   defp opus?(%{mime_type: "audio/opus", clock_rate: 48_000, channels: channels})
        when channels in [1, 2],
