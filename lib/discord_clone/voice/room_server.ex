@@ -119,6 +119,10 @@ defmodule DiscordClone.Voice.RoomServer do
   def dispatch_test_ex_webrtc(server, voice_session_id, message),
     do: GenServer.call(server, {:dispatch_test_ex_webrtc, voice_session_id, message})
 
+  @doc false
+  @spec sync_test_media(GenServer.server()) :: :ok | {:error, :unavailable}
+  def sync_test_media(server), do: GenServer.call(server, :sync_test_media)
+
   @impl true
   def init(opts) do
     voice_channel_id = Keyword.fetch!(opts, :voice_channel_id)
@@ -133,6 +137,7 @@ defmodule DiscordClone.Voice.RoomServer do
        session_by_signaling: %{},
        session_by_monitor: %{},
        session_supervisor: nil,
+       forwarder: nil,
        test_admission_observer: test_admission_observer(opts),
        test_peer_connection_opts: test_peer_connection_opts(opts),
        pending_joins: [],
@@ -258,23 +263,32 @@ defmodule DiscordClone.Voice.RoomServer do
     end
   end
 
-  @impl true
-  def handle_info({:session_supervisor_started, session_supervisor}, state) do
-    state = %{state | session_supervisor: session_supervisor}
-    pending_joins = Enum.reverse(state.pending_joins)
-
-    state =
-      Enum.reduce(pending_joins, state, fn {from, user_id, signaling_session_id,
-                                            signaling_channel},
-                                           state ->
-        {:reply, reply, state} =
-          join_request(state, user_id, signaling_session_id, signaling_channel)
-
-        GenServer.reply(from, reply)
-        state
+  def handle_call(:sync_test_media, _from, state) do
+    if @test_environment do
+      Enum.each(state.memberships, fn {_voice_session_id, membership} ->
+        _ = :sys.get_state(membership.session_pid)
       end)
 
-    {:noreply, %{state | pending_joins: []}}
+      reply =
+        if is_pid(state.forwarder) and Process.alive?(state.forwarder) do
+          DiscordClone.Voice.Forwarder.sync(state.forwarder)
+        else
+          {:error, :unavailable}
+        end
+
+      {:reply, reply, state}
+    else
+      {:reply, {:error, :unavailable}, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:session_supervisor_started, session_supervisor}, state) do
+    {:noreply, maybe_start_pending_joins(%{state | session_supervisor: session_supervisor})}
+  end
+
+  def handle_info({:forwarder_started, forwarder}, state) do
+    {:noreply, maybe_start_pending_joins(%{state | forwarder: forwarder})}
   end
 
   def handle_info({:idle_shutdown, idle_timer}, %{idle_timer: {_timer_ref, idle_timer}} = state) do
@@ -305,6 +319,31 @@ defmodule DiscordClone.Voice.RoomServer do
     {:noreply, state}
   end
 
+  defp maybe_start_pending_joins(state) do
+    if runtime_components_ready?(state) do
+      start_pending_joins(state)
+    else
+      state
+    end
+  end
+
+  defp start_pending_joins(state) do
+    pending_joins = Enum.reverse(state.pending_joins)
+
+    state =
+      Enum.reduce(pending_joins, state, fn {from, user_id, signaling_session_id,
+                                            signaling_channel},
+                                           state ->
+        {:reply, reply, state} =
+          join_request(state, user_id, signaling_session_id, signaling_channel)
+
+        GenServer.reply(from, reply)
+        state
+      end)
+
+    %{state | pending_joins: []}
+  end
+
   defp join_request(state, user_id, signaling_session_id, signaling_channel) do
     case Map.fetch(state.session_by_signaling, signaling_session_id) do
       {:ok, voice_session_id} ->
@@ -318,8 +357,11 @@ defmodule DiscordClone.Voice.RoomServer do
     end
   end
 
-  defp session_supervisor_ready?(state) do
-    is_pid(state.session_supervisor) and Process.alive?(state.session_supervisor)
+  defp session_supervisor_ready?(state), do: runtime_components_ready?(state)
+
+  defp runtime_components_ready?(state) do
+    is_pid(state.session_supervisor) and Process.alive?(state.session_supervisor) and
+      is_pid(state.forwarder) and Process.alive?(state.forwarder)
   end
 
   defp schedule_idle_shutdown(timeout \\ @idle_timeout_ms)
@@ -480,6 +522,7 @@ defmodule DiscordClone.Voice.RoomServer do
           session_supervisor,
           {Session,
            room_server: self(),
+           forwarder: state.forwarder,
            voice_session_id: voice_session_id,
            signaling_channel: signaling_channel,
            test_peer_connection_opts: state.test_peer_connection_opts}

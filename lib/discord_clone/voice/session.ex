@@ -3,7 +3,7 @@ defmodule DiscordClone.Voice.Session do
 
   use GenServer, restart: :temporary
 
-  alias DiscordClone.Voice.{Diagnostics, PeerConnection}
+  alias DiscordClone.Voice.{Diagnostics, Forwarder, PeerConnection}
 
   @command_timeout_ms 5_000
   @test_environment Code.ensure_loaded?(Mix) and Mix.env() == :test
@@ -79,10 +79,15 @@ defmodule DiscordClone.Voice.Session do
 
     case PeerConnection.start(peer_connection_opts) do
       {:ok, peer_connection} ->
+        forwarder = Keyword.get(opts, :forwarder)
+        voice_session_id = Keyword.fetch!(opts, :voice_session_id)
+        :ok = Forwarder.session_started(forwarder, voice_session_id, self())
+
         {:ok,
          %{
            room_server: Keyword.fetch!(opts, :room_server),
-           voice_session_id: Keyword.fetch!(opts, :voice_session_id),
+           forwarder: forwarder,
+           voice_session_id: voice_session_id,
            signaling_channel: signaling_channel,
            signaling_channel_monitor: Process.monitor(signaling_channel),
            peer_connection: peer_connection,
@@ -111,14 +116,17 @@ defmodule DiscordClone.Voice.Session do
                 deadline
               )
 
-            {:reply, {:ok, answer},
-             %{
-               state
-               | peer_connection: peer_connection,
-                 negotiation_id: negotiation_id,
-                 pending_candidates: [],
-                 accepted_candidate_count: accepted_candidate_count
-             }}
+            state =
+              %{
+                state
+                | peer_connection: peer_connection,
+                  negotiation_id: negotiation_id,
+                  pending_candidates: [],
+                  accepted_candidate_count: accepted_candidate_count
+              }
+
+            :ok = Forwarder.receive_ready(state.forwarder, state.voice_session_id, self(), :opus)
+            {:reply, {:ok, answer}, state}
 
           {:error, :negotiation_failed} ->
             {:stop, :normal, {:error, :negotiation_failed}, state}
@@ -279,15 +287,19 @@ defmodule DiscordClone.Voice.Session do
     send(state.signaling_channel, {:voice_session_event, state.voice_session_id, event})
   end
 
-  defp record_media_outcome(state, peer_connection, {:accepted_inbound_track, _track_id}) do
+  defp record_media_outcome(state, peer_connection, {:accepted_inbound_track, track_id}) do
+    :ok =
+      Forwarder.send_ready(state.forwarder, state.voice_session_id, self(), track_id, :opus)
+
     record_media(state, peer_connection, :inbound_track_admitted, [])
   end
 
   defp record_media_outcome(
          state,
          peer_connection,
-         {:accepted_inbound_rtp, _track_id, _packet}
+         {:accepted_inbound_rtp, track_id, packet}
        ) do
+    :ok = Forwarder.forward_rtp(state.forwarder, state.voice_session_id, track_id, packet)
     record_media(state, peer_connection, :rtp_received, [:inbound_packet_count])
   end
 

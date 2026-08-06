@@ -6,7 +6,7 @@ defmodule DiscordClone.VoiceTest do
 
   alias DiscordClone.Accounts.Scope
   alias DiscordClone.Voice
-  alias DiscordClone.Voice.{RoomServer, SessionSupervisor}
+  alias DiscordClone.Voice.{Forwarder, RoomServer, SessionSupervisor}
 
   setup do
     on_exit(fn ->
@@ -226,6 +226,110 @@ defmodule DiscordClone.VoiceTest do
   end
 
   describe "room-local Voice Sessions" do
+    test "routes accepted RTP only to the other ready Session's real outbound track" do
+      voice_channel_id = Ecto.UUID.generate()
+      room_supervisor = start_signaling_channel(:routing_room_supervisor)
+
+      room_server =
+        start_supervised!(
+          {RoomServer,
+           voice_channel_id: voice_channel_id,
+           room_supervisor: room_supervisor,
+           test_peer_connection_opts: [test_rtp_observer: self()]}
+        )
+
+      _session_supervisor =
+        start_supervised!({SessionSupervisor, voice_channel_id: voice_channel_id})
+
+      _forwarder = start_supervised!({Forwarder, voice_channel_id: voice_channel_id})
+
+      first_user_id = Ecto.UUID.generate()
+      second_user_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: first_voice_session_id}} =
+               RoomServer.join(room_server, first_user_id, "connection-1", self())
+
+      assert {:ok, %{voice_session_id: second_voice_session_id}} =
+               RoomServer.join(room_server, second_user_id, "connection-2", self())
+
+      assert {:ok, _answer} =
+               RoomServer.accept_offer(
+                 room_server,
+                 first_user_id,
+                 first_voice_session_id,
+                 "negotiation-1",
+                 browser_offer(),
+                 command_deadline()
+               )
+
+      first_peer_connection = negotiated_server_peer_connection([])
+
+      assert {:ok, _answer} =
+               RoomServer.accept_offer(
+                 room_server,
+                 second_user_id,
+                 second_voice_session_id,
+                 "negotiation-2",
+                 browser_offer(),
+                 command_deadline()
+               )
+
+      second_peer_connection = negotiated_server_peer_connection([first_peer_connection])
+
+      [first_transceiver] = ExWebRTC.PeerConnection.get_transceivers(first_peer_connection)
+      [second_transceiver] = ExWebRTC.PeerConnection.get_transceivers(second_peer_connection)
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 first_voice_session_id,
+                 {:ex_webrtc, first_peer_connection, {:track, first_transceiver.receiver.track}}
+               )
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 second_voice_session_id,
+                 {:ex_webrtc, second_peer_connection, {:track, second_transceiver.receiver.track}}
+               )
+
+      assert :ok = RoomServer.sync_test_media(room_server)
+
+      first_packet =
+        ExRTP.Packet.new(<<1>>, payload_type: 111, sequence_number: 1, timestamp: 1, ssrc: 1)
+
+      second_packet =
+        ExRTP.Packet.new(<<2>>, payload_type: 111, sequence_number: 2, timestamp: 2, ssrc: 2)
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 first_voice_session_id,
+                 {:ex_webrtc, first_peer_connection,
+                  {:rtp, first_transceiver.receiver.track.id, nil, first_packet}}
+               )
+
+      assert_receive {:peer_connection_rtp_sent, ^second_peer_connection,
+                      second_outbound_track_id, ^first_packet}
+
+      assert second_outbound_track_id == second_transceiver.sender.track.id
+      refute_receive {:peer_connection_rtp_sent, ^first_peer_connection, _, ^first_packet}, 0
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 second_voice_session_id,
+                 {:ex_webrtc, second_peer_connection,
+                  {:rtp, second_transceiver.receiver.track.id, nil, second_packet}}
+               )
+
+      assert_receive {:peer_connection_rtp_sent, ^first_peer_connection, first_outbound_track_id,
+                      ^second_packet}
+
+      assert first_outbound_track_id == first_transceiver.sender.track.id
+      refute_receive {:peer_connection_rtp_sent, ^second_peer_connection, _, ^second_packet}, 0
+    end
+
     test "does not commit membership when Session PeerConnection startup fails" do
       voice_channel_id = Ecto.UUID.generate()
       room_supervisor = start_signaling_channel(:failed_room_supervisor)
@@ -240,6 +344,8 @@ defmodule DiscordClone.VoiceTest do
 
       _session_supervisor =
         start_supervised!({SessionSupervisor, voice_channel_id: voice_channel_id})
+
+      _forwarder = start_supervised!({Forwarder, voice_channel_id: voice_channel_id})
 
       running_before = MapSet.new(ExWebRTC.PeerConnection.get_all_running())
 
@@ -268,6 +374,8 @@ defmodule DiscordClone.VoiceTest do
 
       _session_supervisor =
         start_supervised!({SessionSupervisor, voice_channel_id: voice_channel_id})
+
+      _forwarder = start_supervised!({Forwarder, voice_channel_id: voice_channel_id})
 
       test_pid = self()
 
@@ -314,6 +422,8 @@ defmodule DiscordClone.VoiceTest do
 
       _session_supervisor =
         start_supervised!({SessionSupervisor, voice_channel_id: voice_channel_id})
+
+      _forwarder = start_supervised!({Forwarder, voice_channel_id: voice_channel_id})
 
       assert {:ok, %{voice_session_id: voice_session_id}} =
                RoomServer.join(room_server, user_id, "connection-1", self())
@@ -1104,6 +1214,16 @@ defmodule DiscordClone.VoiceTest do
   end
 
   defp command_deadline, do: System.monotonic_time(:millisecond) + 5_000
+
+  defp negotiated_server_peer_connection(excluded) do
+    ExWebRTC.PeerConnection.get_all_running()
+    |> Enum.reject(&(&1 in excluded))
+    |> Enum.find(fn peer_connection ->
+      peer_connection
+      |> ExWebRTC.PeerConnection.get_transceivers()
+      |> Enum.any?(& &1.sender.track)
+    end)
+  end
 
   defp start_signaling_channel(id) do
     start_supervised!(%{
