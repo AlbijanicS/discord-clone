@@ -69,6 +69,20 @@ The browser tab that owns a User's active Voice Session and continues playing
 voice audio while that tab remains connected.
 _Avoid_: Voice browser, active tab
 
+**Audio Route**:
+The room-local, directed permission for accepted inbound RTP from one Voice
+Session to be delivered to another Voice Session's outbound track.
+_Avoid_: RTP route, forwarding edge, media pipe
+
+**Audio Source**:
+A Voice Session whose accepted inbound audio track supplies RTP to an Audio
+Route.
+_Avoid_: Sender, publisher
+
+**Audio Destination**:
+A Voice Session whose outbound audio track receives RTP through an Audio Route.
+_Avoid_: Receiver, subscriber
+
 **Direct Conversation**:
 A private conversation between exactly two Friends that does not belong to a Workspace.
 _Avoid_: DM Channel, private Channel, private chat
