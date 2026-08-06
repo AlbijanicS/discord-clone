@@ -7,7 +7,7 @@ defmodule DiscordClone.Voice.Diagnostics do
 
   @type media_counts :: %{
           inbound_packet_count: non_neg_integer(),
-          echoed_packet_count: non_neg_integer(),
+          forwarded_packet_count: non_neg_integer(),
           dropped_packet_count: non_neg_integer(),
           dropped_media_count: non_neg_integer()
         }
@@ -26,12 +26,17 @@ defmodule DiscordClone.Voice.Diagnostics do
   end
 
   @spec emit_media(
-          :inbound_track_admitted | :unexpected_media_dropped | :rtp_routed,
+          :inbound_track_admitted | :unexpected_media_dropped | :rtp_received | :rtp_routed,
           media_counts()
         ) ::
           :ok
   def emit_media(lifecycle, counts)
-      when lifecycle in [:inbound_track_admitted, :unexpected_media_dropped, :rtp_routed] do
+      when lifecycle in [
+             :inbound_track_admitted,
+             :unexpected_media_dropped,
+             :rtp_received,
+             :rtp_routed
+           ] do
     :telemetry.execute(@event, %{}, Map.put(counts, :media_lifecycle, lifecycle))
   end
 

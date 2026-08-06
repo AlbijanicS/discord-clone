@@ -640,7 +640,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       end
     end
 
-    test "counts accepted, echoed, and dropped media without identifying metadata", context do
+    test "counts accepted and dropped media without self-echo or identifying metadata", context do
       %{
         channel_socket: channel_socket,
         signaling_session_id: signaling_session_id,
@@ -689,7 +689,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
 
       assert_media_diagnostic_metadata(admitted_metadata)
       assert admitted_metadata.inbound_packet_count == 0
-      assert admitted_metadata.echoed_packet_count == 0
+      assert admitted_metadata.forwarded_packet_count == 0
       assert admitted_metadata.dropped_packet_count == 0
       assert admitted_metadata.dropped_media_count == 0
 
@@ -703,13 +703,14 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
                  {:ex_webrtc, peer_connection, {:rtp, inbound_track.id, nil, packet}}
                )
 
-      assert_receive {:voice_media_diagnostic, %{media_lifecycle: :rtp_routed} = echoed_metadata}
+      assert_receive {:voice_media_diagnostic,
+                      %{media_lifecycle: :rtp_received} = received_metadata}
 
-      assert_media_diagnostic_metadata(echoed_metadata)
-      assert echoed_metadata.inbound_packet_count == 1
-      assert echoed_metadata.echoed_packet_count == 1
-      assert echoed_metadata.dropped_packet_count == 0
-      assert echoed_metadata.dropped_media_count == 0
+      assert_media_diagnostic_metadata(received_metadata)
+      assert received_metadata.inbound_packet_count == 1
+      assert received_metadata.forwarded_packet_count == 0
+      assert received_metadata.dropped_packet_count == 0
+      assert received_metadata.dropped_media_count == 0
 
       unsupported_media = [
         {:track, %ExWebRTC.MediaStreamTrack{id: inbound_track.id + 1, kind: :video}},
@@ -754,7 +755,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
 
       assert_media_diagnostic_metadata(final_metadata)
       assert final_metadata.inbound_packet_count == 1
-      assert final_metadata.echoed_packet_count == 1
+      assert final_metadata.forwarded_packet_count == 0
       assert final_metadata.dropped_packet_count == 1
       assert final_metadata.dropped_media_count == length(unsupported_media)
     end
@@ -881,7 +882,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
     assert Map.keys(metadata) |> Enum.sort() == [
              :dropped_media_count,
              :dropped_packet_count,
-             :echoed_packet_count,
+             :forwarded_packet_count,
              :inbound_packet_count,
              :media_lifecycle
            ]

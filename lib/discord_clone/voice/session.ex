@@ -55,6 +55,11 @@ defmodule DiscordClone.Voice.Session do
     )
   end
 
+  @spec deliver_rtp(pid(), Ecto.UUID.t(), ExRTP.Packet.t()) :: :ok
+  def deliver_rtp(session, voice_session_id, packet) do
+    GenServer.cast(session, {:deliver_rtp, voice_session_id, packet})
+  end
+
   @spec crash(pid()) :: :ok
   def crash(session) do
     Process.exit(session, :kill)
@@ -138,6 +143,25 @@ defmodule DiscordClone.Voice.Session do
     else
       {:reply, {:error, :invalid_negotiation}, state}
     end
+  end
+
+  @impl true
+  def handle_cast(
+        {:deliver_rtp, voice_session_id, packet},
+        %{voice_session_id: voice_session_id} = state
+      ) do
+    case PeerConnection.send_rtp(state.peer_connection, packet) do
+      :ok ->
+        {:noreply,
+         record_media(state, state.peer_connection, :rtp_routed, [:forwarded_packet_count])}
+
+      {:error, :outbound_track_unavailable} ->
+        {:noreply, record_dropped_rtp(state)}
+    end
+  end
+
+  def handle_cast({:deliver_rtp, _stale_voice_session_id, _packet}, state) do
+    {:noreply, record_dropped_rtp(state)}
   end
 
   @impl true
@@ -255,15 +279,16 @@ defmodule DiscordClone.Voice.Session do
     send(state.signaling_channel, {:voice_session_event, state.voice_session_id, event})
   end
 
-  defp record_media_outcome(state, peer_connection, :accepted_inbound_track) do
+  defp record_media_outcome(state, peer_connection, {:accepted_inbound_track, _track_id}) do
     record_media(state, peer_connection, :inbound_track_admitted, [])
   end
 
-  defp record_media_outcome(state, peer_connection, :echoed_rtp) do
-    record_media(state, peer_connection, :rtp_routed, [
-      :inbound_packet_count,
-      :echoed_packet_count
-    ])
+  defp record_media_outcome(
+         state,
+         peer_connection,
+         {:accepted_inbound_rtp, _track_id, _packet}
+       ) do
+    record_media(state, peer_connection, :rtp_received, [:inbound_packet_count])
   end
 
   defp record_media_outcome(state, peer_connection, :dropped_rtp) do
@@ -272,6 +297,12 @@ defmodule DiscordClone.Voice.Session do
 
   defp record_media_outcome(state, peer_connection, :dropped_media) do
     record_media(state, peer_connection, :unexpected_media_dropped, [:dropped_media_count])
+  end
+
+  defp record_dropped_rtp(state) do
+    record_media(state, state.peer_connection, :unexpected_media_dropped, [
+      :dropped_packet_count
+    ])
   end
 
   defp record_media(state, peer_connection, lifecycle, count_names) do
@@ -290,7 +321,7 @@ defmodule DiscordClone.Voice.Session do
   defp empty_media_counts do
     %{
       inbound_packet_count: 0,
-      echoed_packet_count: 0,
+      forwarded_packet_count: 0,
       dropped_packet_count: 0,
       dropped_media_count: 0
     }

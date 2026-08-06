@@ -24,7 +24,7 @@ defmodule DiscordClone.Voice.PeerConnectionTest do
     assert MapSet.new(ExWebRTC.PeerConnection.get_all_running()) == running_before
   end
 
-  test "provisions an Opus echo sender and preserves expected RTP on its outbound track" do
+  test "returns accepted source media without echoing and sends through its destination track" do
     peer_connection =
       start_supervised_peer_connection()
       |> Map.put(:test_rtp_observer, self())
@@ -40,22 +40,28 @@ defmodule DiscordClone.Voice.PeerConnectionTest do
 
     inbound_track = transceiver.receiver.track
 
-    assert {:accepted_inbound_track, peer_connection} =
+    assert {{:accepted_inbound_track, inbound_track_id}, peer_connection} =
              PeerConnection.route_media(peer_connection, {
                :ex_webrtc,
                peer_connection.peer_connection,
                {:track, inbound_track}
              })
 
+    assert inbound_track_id == inbound_track.id
+
     packet =
       ExRTP.Packet.new(<<1, 2, 3>>, payload_type: 111, sequence_number: 1, timestamp: 1, ssrc: 1)
 
-    assert {:echoed_rtp, ^peer_connection} =
+    assert {{:accepted_inbound_rtp, ^inbound_track_id, ^packet}, ^peer_connection} =
              PeerConnection.route_media(peer_connection, {
                :ex_webrtc,
                peer_connection.peer_connection,
                {:rtp, inbound_track.id, nil, packet}
              })
+
+    refute_receive {:peer_connection_rtp_sent, _, _, _}, 0
+
+    assert :ok = PeerConnection.send_rtp(peer_connection, packet)
 
     peer_connection_pid = peer_connection.peer_connection
     outbound_track_id = peer_connection.outbound_track_id
