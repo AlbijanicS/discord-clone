@@ -5,6 +5,8 @@ defmodule DiscordClone.Voice.Forwarder do
 
   alias DiscordClone.Voice.{Diagnostics, RoomRegistry, Session, SessionCoordinator}
 
+  @first_audio_output_slot 0
+
   @type voice_session_id :: Ecto.UUID.t()
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -153,10 +155,21 @@ defmodule DiscordClone.Voice.Forwarder do
     source = {voice_session_id, inbound_track_id}
 
     case Map.get(state.routes, source) do
-      %{destination_voice_session_id: destination_voice_session_id, session: session} ->
+      %{
+        destination_voice_session_id: destination_voice_session_id,
+        audio_output_slot: audio_output_slot,
+        session: session
+      } ->
         case Map.get(state.sessions, destination_voice_session_id) do
           %{session: ^session} ->
-            :ok = Session.deliver_rtp(session, destination_voice_session_id, packet)
+            :ok =
+              Session.deliver_rtp(
+                session,
+                destination_voice_session_id,
+                audio_output_slot,
+                packet
+              )
+
             {:noreply, record_forward(state)}
 
           _stale_destination ->
@@ -209,6 +222,7 @@ defmodule DiscordClone.Voice.Forwarder do
        ) do
     Map.put(routes, {source_voice_session_id, track_id}, %{
       destination_voice_session_id: destination_voice_session_id,
+      audio_output_slot: @first_audio_output_slot,
       session: destination_session
     })
   end

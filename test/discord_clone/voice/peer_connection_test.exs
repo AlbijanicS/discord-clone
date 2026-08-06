@@ -58,7 +58,10 @@ defmodule DiscordClone.Voice.PeerConnectionTest do
     first_output_slot = Enum.find(transceivers, &(&1.current_direction == :sendonly))
 
     assert transceiver.kind == :audio
-    assert first_output_slot.sender.track.id == peer_connection.outbound_track_id
+
+    assert first_output_slot.sender.track.id ==
+             Map.fetch!(peer_connection.audio_output_slot_track_ids, 0)
+
     assert Enum.any?(transceiver.codecs, &(&1.mime_type == "audio/opus"))
 
     inbound_track = transceiver.receiver.track
@@ -84,12 +87,20 @@ defmodule DiscordClone.Voice.PeerConnectionTest do
 
     refute_receive {:peer_connection_rtp_sent, _, _, _}, 0
 
-    assert :ok = PeerConnection.send_rtp(peer_connection, packet)
+    assert :ok = PeerConnection.send_rtp(peer_connection, 0, packet)
 
     peer_connection_pid = peer_connection.peer_connection
-    outbound_track_id = peer_connection.outbound_track_id
+    outbound_track_id = Map.fetch!(peer_connection.audio_output_slot_track_ids, 0)
 
     assert_receive {:peer_connection_rtp_sent, ^peer_connection_pid, ^outbound_track_id, ^packet}
+
+    assert :ok = PeerConnection.send_rtp(peer_connection, 2, packet)
+    slot_two_track_id = Map.fetch!(peer_connection.audio_output_slot_track_ids, 2)
+
+    assert_receive {:peer_connection_rtp_sent, ^peer_connection_pid, ^slot_two_track_id, ^packet}
+
+    assert {:error, :outbound_track_unavailable} =
+             PeerConnection.send_rtp(peer_connection, 4, packet)
 
     _ = :sys.get_state(peer_connection.peer_connection)
 
@@ -99,7 +110,8 @@ defmodule DiscordClone.Voice.PeerConnectionTest do
              |> Map.values()
              |> Enum.find(fn stats ->
                stats.type == :outbound_rtp and
-                 stats.track_identifier == peer_connection.outbound_track_id
+                 stats.track_identifier ==
+                   Map.fetch!(peer_connection.audio_output_slot_track_ids, 0)
              end)
 
     assert bytes_sent > byte_size(packet.payload)

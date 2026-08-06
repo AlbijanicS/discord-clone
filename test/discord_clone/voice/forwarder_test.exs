@@ -14,23 +14,23 @@ defmodule DiscordClone.Voice.ForwarderTest do
     assert :ok = Forwarder.sync(forwarder)
 
     assert :ok = Forwarder.forward_rtp(forwarder, first_id, 101, packet)
-    assert_receive {_cast, {:deliver_rtp, ^second_id, ^packet}}
+    assert_receive {_cast, {:deliver_rtp, ^second_id, 0, ^packet}}
     assert_receive {:voice_route_diagnostic, %{media_lifecycle: :rtp_forwarded} = forwarded}
     assert_route_diagnostic(forwarded, 1, 0)
-    refute_receive {_cast, {:deliver_rtp, ^first_id, ^packet}}, 0
+    refute_receive {_cast, {:deliver_rtp, ^first_id, _, ^packet}}, 0
 
     assert :ok = Forwarder.session_started(forwarder, third_id, self())
     assert :ok = Forwarder.sync(forwarder)
     assert :ok = Forwarder.forward_rtp(forwarder, first_id, 101, packet)
     assert :ok = Forwarder.sync(forwarder)
-    refute_receive {_cast, {:deliver_rtp, _, ^packet}}, 0
+    refute_receive {_cast, {:deliver_rtp, _, _, ^packet}}, 0
     assert_receive {:voice_route_diagnostic, %{media_lifecycle: :rtp_dropped} = dropped}
     assert_route_diagnostic(dropped, 1, 1)
 
     assert :ok = Forwarder.session_removed(forwarder, third_id)
     assert :ok = Forwarder.sync(forwarder)
     assert :ok = Forwarder.forward_rtp(forwarder, first_id, 101, packet)
-    assert_receive {_cast, {:deliver_rtp, ^second_id, ^packet}}
+    assert_receive {_cast, {:deliver_rtp, ^second_id, 0, ^packet}}
     assert_receive {:voice_route_diagnostic, %{media_lifecycle: :rtp_forwarded} = restored}
     assert_route_diagnostic(restored, 2, 1)
   end
@@ -50,21 +50,21 @@ defmodule DiscordClone.Voice.ForwarderTest do
 
     assert :ok = Forwarder.forward_rtp(forwarder, first_id, 101, packet)
     assert :ok = Forwarder.sync(forwarder)
-    refute_receive {_cast, {:deliver_rtp, _, ^packet}}, 0
+    refute_receive {_cast, {:deliver_rtp, _, _, ^packet}}, 0
 
     assert :ok = Forwarder.receive_ready(forwarder, second_id, self(), :opus)
     assert :ok = Forwarder.sync(forwarder)
     assert :ok = Forwarder.forward_rtp(forwarder, first_id, 101, packet)
-    assert_receive {_cast, {:deliver_rtp, ^second_id, ^packet}}
+    assert_receive {_cast, {:deliver_rtp, ^second_id, 0, ^packet}}
 
     assert :ok = Forwarder.source_ended(forwarder, first_id, self(), 101)
     assert :ok = Forwarder.sync(forwarder)
     assert :ok = Forwarder.forward_rtp(forwarder, first_id, 101, packet)
     assert :ok = Forwarder.sync(forwarder)
-    refute_receive {_cast, {:deliver_rtp, _, ^packet}}, 0
+    refute_receive {_cast, {:deliver_rtp, _, _, ^packet}}, 0
 
     assert :ok = Forwarder.forward_rtp(forwarder, second_id, 202, packet)
-    assert_receive {_cast, {:deliver_rtp, ^first_id, ^packet}}
+    assert_receive {_cast, {:deliver_rtp, ^first_id, 0, ^packet}}
   end
 
   defp start_forwarder do

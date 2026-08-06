@@ -55,9 +55,9 @@ defmodule DiscordClone.Voice.Session do
     )
   end
 
-  @spec deliver_rtp(pid(), Ecto.UUID.t(), ExRTP.Packet.t()) :: :ok
-  def deliver_rtp(session, voice_session_id, packet) do
-    GenServer.cast(session, {:deliver_rtp, voice_session_id, packet})
+  @spec deliver_rtp(pid(), Ecto.UUID.t(), non_neg_integer(), ExRTP.Packet.t()) :: :ok
+  def deliver_rtp(session, voice_session_id, audio_output_slot, packet) do
+    GenServer.cast(session, {:deliver_rtp, voice_session_id, audio_output_slot, packet})
   end
 
   @spec crash(pid()) :: :ok
@@ -156,10 +156,10 @@ defmodule DiscordClone.Voice.Session do
 
   @impl true
   def handle_cast(
-        {:deliver_rtp, voice_session_id, packet},
+        {:deliver_rtp, voice_session_id, audio_output_slot, packet},
         %{voice_session_id: voice_session_id} = state
       ) do
-    case PeerConnection.send_rtp(state.peer_connection, packet) do
+    case PeerConnection.send_rtp(state.peer_connection, audio_output_slot, packet) do
       :ok ->
         {:noreply,
          record_media(state, state.peer_connection, :rtp_routed, [:forwarded_packet_count])}
@@ -169,7 +169,10 @@ defmodule DiscordClone.Voice.Session do
     end
   end
 
-  def handle_cast({:deliver_rtp, _stale_voice_session_id, _packet}, state) do
+  def handle_cast(
+        {:deliver_rtp, _stale_voice_session_id, _audio_output_slot, _packet},
+        state
+      ) do
     {:noreply, record_dropped_rtp(state)}
   end
 

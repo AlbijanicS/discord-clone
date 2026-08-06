@@ -12,21 +12,33 @@ defmodule DiscordClone.Voice.SessionTest do
     packet =
       ExRTP.Packet.new(<<1, 2, 3>>, payload_type: 111, sequence_number: 1, timestamp: 1, ssrc: 1)
 
-    assert :ok = Session.deliver_rtp(session, voice_session_id, packet)
+    assert :ok = Session.deliver_rtp(session, voice_session_id, 0, packet)
     _ = :sys.get_state(session)
     refute_receive {:peer_connection_rtp_sent, _, _, _}, 0
 
     assert {:ok, _answer} = Session.accept_offer(session, "negotiation-1", browser_offer())
 
-    assert :ok = Session.deliver_rtp(session, Ecto.UUID.generate(), packet)
+    assert :ok = Session.deliver_rtp(session, Ecto.UUID.generate(), 0, packet)
     _ = :sys.get_state(session)
     refute_receive {:peer_connection_rtp_sent, _, _, _}, 0
 
-    assert :ok = Session.deliver_rtp(session, voice_session_id, packet)
+    assert :ok = Session.deliver_rtp(session, voice_session_id, 4, packet)
+    _ = :sys.get_state(session)
+    refute_receive {:peer_connection_rtp_sent, _, _, _}, 0
+
+    assert :ok = Session.deliver_rtp(session, voice_session_id, 2, packet)
 
     assert_receive {:peer_connection_rtp_sent, peer_connection, outbound_track_id, ^packet}
     assert is_pid(peer_connection)
-    assert is_integer(outbound_track_id)
+
+    expected_track_id =
+      peer_connection
+      |> ExWebRTC.PeerConnection.get_transceivers()
+      |> Enum.filter(&(&1.current_direction == :sendonly))
+      |> Enum.at(2)
+      |> then(& &1.sender.track.id)
+
+    assert outbound_track_id == expected_track_id
   end
 
   test "accepted inbound RTP from a lone Session is not echoed" do

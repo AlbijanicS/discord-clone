@@ -14,7 +14,6 @@ defmodule DiscordClone.Voice.PeerConnection do
     :peer_connection,
     :expected_inbound_track_id,
     :audio_output_slot_track_ids,
-    :outbound_track_id,
     :test_candidate_observer,
     :test_rtp_observer,
     remote_description?: false
@@ -24,7 +23,6 @@ defmodule DiscordClone.Voice.PeerConnection do
           peer_connection: pid(),
           expected_inbound_track_id: integer() | nil,
           audio_output_slot_track_ids: %{optional(non_neg_integer()) => integer()} | nil,
-          outbound_track_id: integer() | nil,
           test_candidate_observer: pid() | nil,
           test_rtp_observer: pid() | nil,
           remote_description?: boolean()
@@ -121,7 +119,6 @@ defmodule DiscordClone.Voice.PeerConnection do
          state
          | expected_inbound_track_id: inbound_track_id,
            audio_output_slot_track_ids: output_slot_track_ids,
-           outbound_track_id: Map.fetch!(output_slot_track_ids, 0),
            remote_description?: true
        }}
     else
@@ -181,20 +178,29 @@ defmodule DiscordClone.Voice.PeerConnection do
 
   def route_media(%__MODULE__{} = state, _message), do: {:ignore, state}
 
-  @spec send_rtp(t(), ExRTP.Packet.t()) :: :ok | {:error, :outbound_track_unavailable}
+  @spec send_rtp(t(), non_neg_integer(), ExRTP.Packet.t()) ::
+          :ok | {:error, :outbound_track_unavailable}
   def send_rtp(
         %__MODULE__{
           peer_connection: peer_connection,
-          outbound_track_id: outbound_track_id
+          audio_output_slot_track_ids: audio_output_slot_track_ids
         } = state,
+        audio_output_slot,
         packet
       )
-      when not is_nil(outbound_track_id) do
-    notify_test_rtp_observer(state, outbound_track_id, packet)
-    PeerConnection.send_rtp(peer_connection, outbound_track_id, packet)
+      when is_map(audio_output_slot_track_ids) and is_integer(audio_output_slot) do
+    case Map.fetch(audio_output_slot_track_ids, audio_output_slot) do
+      {:ok, outbound_track_id} ->
+        notify_test_rtp_observer(state, outbound_track_id, packet)
+        PeerConnection.send_rtp(peer_connection, outbound_track_id, packet)
+
+      :error ->
+        {:error, :outbound_track_unavailable}
+    end
   end
 
-  def send_rtp(%__MODULE__{}, _packet), do: {:error, :outbound_track_unavailable}
+  def send_rtp(%__MODULE__{}, _audio_output_slot, _packet),
+    do: {:error, :outbound_track_unavailable}
 
   @spec signal(t(), term()) ::
           {:ice_candidate, map()}
