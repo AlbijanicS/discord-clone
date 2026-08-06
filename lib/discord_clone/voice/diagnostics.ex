@@ -47,6 +47,17 @@ defmodule DiscordClone.Voice.Diagnostics do
     :telemetry.execute(@event, %{}, Map.put(counts, :media_lifecycle, lifecycle))
   end
 
+  @spec emit_route(
+          :rtp_forwarded | :rtp_dropped,
+          %{
+            forwarded_packet_count: non_neg_integer(),
+            dropped_packet_count: non_neg_integer()
+          }
+        ) :: :ok
+  def emit_route(lifecycle, counts) when lifecycle in [:rtp_forwarded, :rtp_dropped] do
+    :telemetry.execute(@event, %{}, Map.put(counts, :media_lifecycle, lifecycle))
+  end
+
   defp maybe_put(metadata, _key, nil), do: metadata
   defp maybe_put(metadata, key, value), do: Map.put(metadata, key, value)
 end

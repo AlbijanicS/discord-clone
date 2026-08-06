@@ -141,7 +141,7 @@ defmodule DiscordClone.VoiceTest do
       unaffected_voice_channel_id = Ecto.UUID.generate()
       affected_user_id = Ecto.UUID.generate()
 
-      assert {:ok, %{occupancy: 1}} =
+      assert {:ok, %{voice_session_id: old_voice_session_id, occupancy: 1}} =
                Voice.join(
                  affected_voice_channel_id,
                  affected_user_id,
@@ -157,15 +157,32 @@ defmodule DiscordClone.VoiceTest do
                  self()
                )
 
+      affected_room_server = room_server(affected_voice_channel_id)
+      unaffected_room_server = room_server(unaffected_voice_channel_id)
+      affected_room_monitor = Process.monitor(affected_room_server)
+      unaffected_room_monitor = Process.monitor(unaffected_room_server)
+
       assert :ok = Voice.crash_forwarder(affected_voice_channel_id)
 
-      assert {:ok, %{occupancy: 1}} =
+      assert_receive {:DOWN, ^affected_room_monitor, :process, ^affected_room_server, _reason}
+
+      refute_receive {:DOWN, ^unaffected_room_monitor, :process, ^unaffected_room_server,
+                      _reason},
+                     0
+
+      assert {:ok, %{voice_session_id: new_voice_session_id, occupancy: 1}} =
                Voice.join(
                  affected_voice_channel_id,
                  affected_user_id,
                  "rejoin-after-forwarder-failure",
                  self()
                )
+
+      refute new_voice_session_id == old_voice_session_id
+      assert :ok = Voice.leave(affected_voice_channel_id, old_voice_session_id)
+
+      assert {:ok, %{occupancy: 1, capacity: 5}} =
+               Voice.room_occupancy(affected_voice_channel_id)
 
       assert {:ok, %{occupancy: 1, capacity: 5}} =
                Voice.room_occupancy(unaffected_voice_channel_id)
@@ -396,6 +413,100 @@ defmodule DiscordClone.VoiceTest do
 
       assert :ok = RoomServer.sync_test_media(room_server)
       refute_receive {:peer_connection_rtp_sent, _, _, ^ended_source_packet}, 0
+    end
+
+    test "routes both directions when the second Session completes its offer first" do
+      voice_channel_id = Ecto.UUID.generate()
+      room_supervisor = start_signaling_channel(:reverse_offer_routing_room_supervisor)
+
+      room_server =
+        start_supervised!(
+          {RoomServer,
+           voice_channel_id: voice_channel_id,
+           room_supervisor: room_supervisor,
+           test_peer_connection_opts: [test_rtp_observer: self()]}
+        )
+
+      _session_supervisor =
+        start_supervised!({SessionSupervisor, voice_channel_id: voice_channel_id})
+
+      _forwarder = start_supervised!({Forwarder, voice_channel_id: voice_channel_id})
+      first_user_id = Ecto.UUID.generate()
+      second_user_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: first_voice_session_id}} =
+               RoomServer.join(room_server, first_user_id, "reverse-connection-1", self())
+
+      assert {:ok, %{voice_session_id: second_voice_session_id}} =
+               RoomServer.join(room_server, second_user_id, "reverse-connection-2", self())
+
+      assert {:ok, _answer} =
+               RoomServer.accept_offer(
+                 room_server,
+                 second_user_id,
+                 second_voice_session_id,
+                 "reverse-negotiation-2",
+                 browser_offer(),
+                 command_deadline()
+               )
+
+      second_peer_connection = negotiated_server_peer_connection([])
+
+      assert {:ok, _answer} =
+               RoomServer.accept_offer(
+                 room_server,
+                 first_user_id,
+                 first_voice_session_id,
+                 "reverse-negotiation-1",
+                 browser_offer(),
+                 command_deadline()
+               )
+
+      first_peer_connection = negotiated_server_peer_connection([second_peer_connection])
+      [first_transceiver] = ExWebRTC.PeerConnection.get_transceivers(first_peer_connection)
+      [second_transceiver] = ExWebRTC.PeerConnection.get_transceivers(second_peer_connection)
+
+      for {voice_session_id, peer_connection, track} <- [
+            {second_voice_session_id, second_peer_connection, second_transceiver.receiver.track},
+            {first_voice_session_id, first_peer_connection, first_transceiver.receiver.track}
+          ] do
+        assert :ok =
+                 RoomServer.dispatch_test_ex_webrtc(
+                   room_server,
+                   voice_session_id,
+                   {:ex_webrtc, peer_connection, {:track, track}}
+                 )
+      end
+
+      assert :ok = RoomServer.sync_test_media(room_server)
+
+      first_packet =
+        ExRTP.Packet.new(<<10>>, payload_type: 111, sequence_number: 10, timestamp: 10, ssrc: 10)
+
+      second_packet =
+        ExRTP.Packet.new(<<11>>, payload_type: 111, sequence_number: 11, timestamp: 11, ssrc: 11)
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 first_voice_session_id,
+                 {:ex_webrtc, first_peer_connection,
+                  {:rtp, first_transceiver.receiver.track.id, nil, first_packet}}
+               )
+
+      assert_receive {:peer_connection_rtp_sent, ^second_peer_connection, _, ^first_packet}
+      refute_receive {:peer_connection_rtp_sent, ^first_peer_connection, _, ^first_packet}, 0
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 second_voice_session_id,
+                 {:ex_webrtc, second_peer_connection,
+                  {:rtp, second_transceiver.receiver.track.id, nil, second_packet}}
+               )
+
+      assert_receive {:peer_connection_rtp_sent, ^first_peer_connection, _, ^second_packet}
+      refute_receive {:peer_connection_rtp_sent, ^second_peer_connection, _, ^second_packet}, 0
     end
 
     test "canonical removal withdraws exact routes and protects a healthy replacement pair" do

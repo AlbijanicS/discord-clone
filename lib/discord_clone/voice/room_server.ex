@@ -275,12 +275,7 @@ defmodule DiscordClone.Voice.RoomServer do
         _ = :sys.get_state(membership.session_pid)
       end)
 
-      reply =
-        if is_pid(state.forwarder) and Process.alive?(state.forwarder) do
-          Forwarder.sync(state.forwarder)
-        else
-          {:error, :unavailable}
-        end
+      reply = sync_forwarder(state.forwarder)
 
       {:reply, reply, state}
     else
@@ -332,6 +327,14 @@ defmodule DiscordClone.Voice.RoomServer do
       state
     end
   end
+
+  defp sync_forwarder(forwarder) when is_pid(forwarder) do
+    Forwarder.sync(forwarder)
+  catch
+    :exit, _reason -> {:error, :unavailable}
+  end
+
+  defp sync_forwarder(_missing_forwarder), do: {:error, :unavailable}
 
   defp start_pending_joins(state) do
     pending_joins = Enum.reverse(state.pending_joins)

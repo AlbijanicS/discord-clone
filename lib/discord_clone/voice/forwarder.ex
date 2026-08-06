@@ -3,7 +3,7 @@ defmodule DiscordClone.Voice.Forwarder do
 
   use GenServer
 
-  alias DiscordClone.Voice.{RoomRegistry, Session, SessionCoordinator}
+  alias DiscordClone.Voice.{Diagnostics, RoomRegistry, Session, SessionCoordinator}
 
   @type voice_session_id :: Ecto.UUID.t()
 
@@ -137,14 +137,16 @@ defmodule DiscordClone.Voice.Forwarder do
   end
 
   def handle_cast({:source_ended, voice_session_id, session, inbound_track_id}, state) do
-    {:noreply,
-     update_session(state, voice_session_id, session, fn
-       %{source: %{track_id: ^inbound_track_id}} = session_state ->
-         %{session_state | source: nil}
+    case Map.get(state.sessions, voice_session_id) do
+      %{session: ^session, source: %{track_id: ^inbound_track_id}} = session_state ->
+        {:noreply,
+         state
+         |> put_in([:sessions, voice_session_id], %{session_state | source: nil})
+         |> update_in([:routes], &Map.delete(&1, {voice_session_id, inbound_track_id}))}
 
-       session_state ->
-         session_state
-     end)}
+      _missing_replaced_or_stale_source ->
+        {:noreply, state}
+    end
   end
 
   def handle_cast({:forward_rtp, voice_session_id, inbound_track_id, packet}, state) do
@@ -155,7 +157,7 @@ defmodule DiscordClone.Voice.Forwarder do
         case Map.get(state.sessions, destination_voice_session_id) do
           %{session: ^session} ->
             :ok = Session.deliver_rtp(session, destination_voice_session_id, packet)
-            {:noreply, Map.update!(state, :forwarded_packet_count, &(&1 + 1))}
+            {:noreply, record_forward(state)}
 
           _stale_destination ->
             {:noreply, record_drop(state)}
@@ -182,16 +184,23 @@ defmodule DiscordClone.Voice.Forwarder do
     [{first_id, first}, {second_id, second}] = Map.to_list(sessions)
 
     routes =
-      %{}
-      |> maybe_put_route(first_id, first, second_id, second)
-      |> maybe_put_route(second_id, second, first_id, first)
+      if fully_ready?(first) and fully_ready?(second) do
+        %{}
+        |> put_route(first_id, first, second_id, second)
+        |> put_route(second_id, second, first_id, first)
+      else
+        %{}
+      end
 
     %{state | routes: routes}
   end
 
   defp rebuild_routes(state), do: %{state | routes: %{}}
 
-  defp maybe_put_route(
+  defp fully_ready?(%{receive_codec: :opus, source: %{codec: :opus}}), do: true
+  defp fully_ready?(_session), do: false
+
+  defp put_route(
          routes,
          source_voice_session_id,
          %{source: %{track_id: track_id, codec: :opus}},
@@ -204,9 +213,21 @@ defmodule DiscordClone.Voice.Forwarder do
     })
   end
 
-  defp maybe_put_route(routes, _source_id, _source, _destination_id, _destination), do: routes
+  defp record_forward(state) do
+    state = Map.update!(state, :forwarded_packet_count, &(&1 + 1))
+    Diagnostics.emit_route(:rtp_forwarded, route_counts(state))
+    state
+  end
 
-  defp record_drop(state), do: Map.update!(state, :dropped_packet_count, &(&1 + 1))
+  defp record_drop(state) do
+    state = Map.update!(state, :dropped_packet_count, &(&1 + 1))
+    Diagnostics.emit_route(:rtp_dropped, route_counts(state))
+    state
+  end
+
+  defp route_counts(state) do
+    Map.take(state, [:forwarded_packet_count, :dropped_packet_count])
+  end
 
   defp room_server(voice_channel_id) do
     case Registry.lookup(RoomRegistry, {:room, voice_channel_id}) do

@@ -712,6 +712,11 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       assert received_metadata.dropped_packet_count == 0
       assert received_metadata.dropped_media_count == 0
 
+      assert_receive {:voice_media_diagnostic, %{media_lifecycle: :rtp_dropped} = route_metadata}
+      assert_route_diagnostic_metadata(route_metadata)
+      assert route_metadata.forwarded_packet_count == 0
+      assert route_metadata.dropped_packet_count == 1
+
       for {message, lifecycle} <- [
             {{:track_muted, inbound_track.id}, :inbound_track_muted},
             {{:track_ended, inbound_track.id}, :inbound_track_ended}
@@ -897,6 +902,14 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
              :dropped_packet_count,
              :forwarded_packet_count,
              :inbound_packet_count,
+             :media_lifecycle
+           ]
+  end
+
+  defp assert_route_diagnostic_metadata(metadata) do
+    assert Map.keys(metadata) |> Enum.sort() == [
+             :dropped_packet_count,
+             :forwarded_packet_count,
              :media_lifecycle
            ]
   end

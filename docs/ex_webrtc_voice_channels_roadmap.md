@@ -653,7 +653,56 @@ Prove:
 Implementation Notes:
 
 ```text
-Not started.
+Completed 2026-08-06.
+
+Files changed:
+- lib/discord_clone/voice/diagnostics.ex
+- lib/discord_clone/voice/forwarder.ex
+- lib/discord_clone/voice/peer_connection.ex
+- lib/discord_clone/voice/room_server.ex
+- lib/discord_clone/voice/session.ex
+- test/discord_clone/voice/forwarder_test.exs
+- test/discord_clone/voice/peer_connection_test.exs
+- test/discord_clone/voice/session_test.exs
+- test/discord_clone/voice_test.exs
+- test/discord_clone_web/voice_channel_test.exs
+
+Final architecture/API decisions:
+- Voice.Session remains the sole owner and caller of its real ExWebRTC
+  PeerConnection; accepted inbound media is reported to the room-local
+  Forwarder and never echoed through the source Session.
+- Forwarder owns directed {voice_session_id, inbound_track_id} Audio Routes.
+  Destination PIDs remain private delivery metadata, and the destination
+  Session revalidates its exact Voice Session ID and outbound-track readiness.
+- Initial pair routes require exactly two Sessions that are each send-ready
+  and receive-ready with compatible Opus. Track end removes only that source's
+  outgoing route; mute and disconnected state retain eligible routes.
+- RoomServer synchronously withdraws every route involving an exact Voice
+  Session before ordinary termination and after an unexpected Session crash.
+  The existing room-local one_for_all Forwarder recovery policy is unchanged.
+
+Behavior proven:
+- Real ExWebRTC observers prove A-to-B and B-to-A destination-track delivery,
+  no self-forwarding, a silent lone Session, and both offer-completion orders.
+- RTP is dropped before readiness, with three through five active Sessions,
+  after track end, after cleanup, and for stale replacement identities; routes
+  return when the topology becomes exactly two fully ready Sessions again.
+- Leave, Channel death, terminal peer state, command timeout, durable access
+  removal, Voice Channel deletion, and Session crash converge on exact route
+  withdrawal while a healthy Session and unrelated Voice Channel remain usable.
+- Forwarded and dropped RTP produce counter-only diagnostics without SDP, ICE,
+  packet, PID, User, Voice Channel, or browser correlation data.
+
+Tests run:
+- mix precommit passed: Credo found no issues, 62 JavaScript tests passed, and
+  958 ExUnit tests passed.
+- Focused PeerConnection, Session, Forwarder, Voice runtime, authenticated
+  Voice Channel, and durable Voice lifecycle suites passed during development.
+
+Known follow-up work:
+- Phase 9 owns three-to-five-Session fan-out and its source/destination track
+  topology. Mixing, transcoding, recording, renegotiation, track replacement,
+  and Forwarder-only recovery remain out of scope.
 ```
 
 ## Phase 9: Capped 3-5 User Room
