@@ -712,10 +712,23 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       assert received_metadata.dropped_packet_count == 0
       assert received_metadata.dropped_media_count == 0
 
+      for {message, lifecycle} <- [
+            {{:track_muted, inbound_track.id}, :inbound_track_muted},
+            {{:track_ended, inbound_track.id}, :inbound_track_ended}
+          ] do
+        assert :ok =
+                 Voice.dispatch_test_ex_webrtc(
+                   context.voice_channel_id,
+                   voice_session_id,
+                   {:ex_webrtc, peer_connection, message}
+                 )
+
+        assert_receive {:voice_media_diagnostic, %{media_lifecycle: ^lifecycle} = track_metadata}
+        assert_media_diagnostic_metadata(track_metadata)
+      end
+
       unsupported_media = [
         {:track, %ExWebRTC.MediaStreamTrack{id: inbound_track.id + 1, kind: :video}},
-        {:track_muted, inbound_track.id},
-        {:track_ended, inbound_track.id},
         {:data_channel, %{}},
         {:data_channel_state_change, make_ref(), :open},
         {:data, make_ref(), "unsupported"},

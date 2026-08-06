@@ -26,13 +26,20 @@ defmodule DiscordClone.Voice.Diagnostics do
   end
 
   @spec emit_media(
-          :inbound_track_admitted | :unexpected_media_dropped | :rtp_received | :rtp_routed,
+          :inbound_track_admitted
+          | :inbound_track_muted
+          | :inbound_track_ended
+          | :unexpected_media_dropped
+          | :rtp_received
+          | :rtp_routed,
           media_counts()
         ) ::
           :ok
   def emit_media(lifecycle, counts)
       when lifecycle in [
              :inbound_track_admitted,
+             :inbound_track_muted,
+             :inbound_track_ended,
              :unexpected_media_dropped,
              :rtp_received,
              :rtp_routed

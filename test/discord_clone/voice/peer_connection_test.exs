@@ -87,6 +87,27 @@ defmodule DiscordClone.Voice.PeerConnectionTest do
                peer_connection.peer_connection,
                {:rtp, inbound_track.id + 1, nil, packet}
              })
+
+    assert {{:accepted_inbound_track_muted, ^inbound_track_id}, ^peer_connection} =
+             PeerConnection.route_media(peer_connection, {
+               :ex_webrtc,
+               peer_connection.peer_connection,
+               {:track_muted, inbound_track.id}
+             })
+
+    assert {{:accepted_inbound_track_ended, ^inbound_track_id}, ended_peer_connection} =
+             PeerConnection.route_media(peer_connection, {
+               :ex_webrtc,
+               peer_connection.peer_connection,
+               {:track_ended, inbound_track.id}
+             })
+
+    assert {:dropped_rtp, ^ended_peer_connection} =
+             PeerConnection.route_media(ended_peer_connection, {
+               :ex_webrtc,
+               peer_connection.peer_connection,
+               {:rtp, inbound_track.id, nil, packet}
+             })
   end
 
   test "drops unsupported media and ignores RTP from another PeerConnection" do

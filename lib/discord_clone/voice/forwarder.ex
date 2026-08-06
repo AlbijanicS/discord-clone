@@ -18,7 +18,7 @@ defmodule DiscordClone.Voice.Forwarder do
 
   @spec session_started(pid() | nil, voice_session_id(), pid()) :: :ok
   def session_started(forwarder, voice_session_id, session) when is_pid(forwarder) do
-    GenServer.cast(forwarder, {:session_started, voice_session_id, session})
+    GenServer.call(forwarder, {:session_started, voice_session_id, session})
   end
 
   def session_started(_missing_forwarder, _voice_session_id, _session), do: :ok
@@ -41,6 +41,21 @@ defmodule DiscordClone.Voice.Forwarder do
 
   def send_ready(_missing_forwarder, _voice_session_id, _session, _inbound_track_id, :opus),
     do: :ok
+
+  @spec source_ended(pid() | nil, voice_session_id(), pid(), integer()) :: :ok
+  def source_ended(forwarder, voice_session_id, session, inbound_track_id)
+      when is_pid(forwarder) do
+    GenServer.cast(forwarder, {:source_ended, voice_session_id, session, inbound_track_id})
+  end
+
+  def source_ended(_missing_forwarder, _voice_session_id, _session, _inbound_track_id), do: :ok
+
+  @spec session_removed(pid() | nil, voice_session_id()) :: :ok
+  def session_removed(forwarder, voice_session_id) when is_pid(forwarder) do
+    GenServer.cast(forwarder, {:session_removed, voice_session_id})
+  end
+
+  def session_removed(_missing_forwarder, _voice_session_id), do: :ok
 
   @spec forward_rtp(pid() | nil, voice_session_id(), integer(), ExRTP.Packet.t()) :: :ok
   def forward_rtp(forwarder, voice_session_id, inbound_track_id, packet)
@@ -77,18 +92,24 @@ defmodule DiscordClone.Voice.Forwarder do
   end
 
   @impl true
+  def handle_call({:session_started, voice_session_id, session}, _from, state) do
+    session_state =
+      case Map.get(state.sessions, voice_session_id) do
+        %{session: ^session} = current -> current
+        _missing_or_replaced -> %{session: session, receive_codec: nil, source: nil}
+      end
+
+    state =
+      state
+      |> put_in([:sessions, voice_session_id], session_state)
+      |> rebuild_routes()
+
+    {:reply, :ok, state}
+  end
+
   def handle_call(:sync, _from, state), do: {:reply, :ok, state}
 
   @impl true
-  def handle_cast({:session_started, voice_session_id, session}, state) do
-    session_state = %{session: session, receive_codec: nil, source: nil}
-
-    {:noreply,
-     state
-     |> put_in([:sessions, voice_session_id], session_state)
-     |> rebuild_routes()}
-  end
-
   def handle_cast({:receive_ready, voice_session_id, session, :opus}, state) do
     {:noreply,
      update_session(state, voice_session_id, session, fn session_state ->
@@ -104,6 +125,24 @@ defmodule DiscordClone.Voice.Forwarder do
      update_session(state, voice_session_id, session, fn session_state ->
        %{session_state | source: %{track_id: inbound_track_id, codec: :opus}}
      end)}
+  end
+
+  def handle_cast({:source_ended, voice_session_id, session, inbound_track_id}, state) do
+    {:noreply,
+     update_session(state, voice_session_id, session, fn
+       %{source: %{track_id: ^inbound_track_id}} = session_state ->
+         %{session_state | source: nil}
+
+       session_state ->
+         session_state
+     end)}
+  end
+
+  def handle_cast({:session_removed, voice_session_id}, state) do
+    {:noreply,
+     state
+     |> update_in([:sessions], &Map.delete(&1, voice_session_id))
+     |> rebuild_routes()}
   end
 
   def handle_cast({:forward_rtp, voice_session_id, inbound_track_id, packet}, state) do

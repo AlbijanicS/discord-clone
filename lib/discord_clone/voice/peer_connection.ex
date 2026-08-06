@@ -162,6 +162,8 @@ defmodule DiscordClone.Voice.PeerConnection do
   @spec route_media(t(), term()) ::
           {{:accepted_inbound_track, integer()}
            | {:accepted_inbound_rtp, integer(), ExRTP.Packet.t()}
+           | {:accepted_inbound_track_muted, integer()}
+           | {:accepted_inbound_track_ended, integer()}
            | :dropped_rtp
            | :dropped_media
            | :ignore, t()}
@@ -302,6 +304,23 @@ defmodule DiscordClone.Voice.PeerConnection do
   end
 
   defp route_peer_media(state, {:rtp, _track_id, _rid, _packet}), do: {:dropped_rtp, state}
+
+  defp route_peer_media(
+         %__MODULE__{expected_inbound_track_id: expected_track_id} = state,
+         {:track_muted, expected_track_id}
+       )
+       when not is_nil(expected_track_id) do
+    {{:accepted_inbound_track_muted, expected_track_id}, state}
+  end
+
+  defp route_peer_media(
+         %__MODULE__{expected_inbound_track_id: expected_track_id} = state,
+         {:track_ended, expected_track_id}
+       )
+       when not is_nil(expected_track_id) do
+    {{:accepted_inbound_track_ended, expected_track_id},
+     %{state | expected_inbound_track_id: nil}}
+  end
 
   defp route_peer_media(state, {:track, _track}), do: {:dropped_media, state}
   defp route_peer_media(state, {:track_muted, _track_id}), do: {:dropped_media, state}

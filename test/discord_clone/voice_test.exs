@@ -328,6 +328,74 @@ defmodule DiscordClone.VoiceTest do
 
       assert first_outbound_track_id == first_transceiver.sender.track.id
       refute_receive {:peer_connection_rtp_sent, ^second_peer_connection, _, ^second_packet}, 0
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 first_voice_session_id,
+                 {:ex_webrtc, first_peer_connection, {:connection_state_change, :disconnected}}
+               )
+
+      assert :ok = RoomServer.sync_test_media(room_server)
+
+      disconnected_source_packet =
+        ExRTP.Packet.new(<<3>>, payload_type: 111, sequence_number: 3, timestamp: 3, ssrc: 3)
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 first_voice_session_id,
+                 {:ex_webrtc, first_peer_connection,
+                  {:rtp, first_transceiver.receiver.track.id, nil, disconnected_source_packet}}
+               )
+
+      assert_receive {:peer_connection_rtp_sent, ^second_peer_connection, _,
+                      ^disconnected_source_packet}
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 first_voice_session_id,
+                 {:ex_webrtc, first_peer_connection,
+                  {:track_muted, first_transceiver.receiver.track.id}}
+               )
+
+      muted_source_packet =
+        ExRTP.Packet.new(<<4>>, payload_type: 111, sequence_number: 4, timestamp: 4, ssrc: 4)
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 first_voice_session_id,
+                 {:ex_webrtc, first_peer_connection,
+                  {:rtp, first_transceiver.receiver.track.id, nil, muted_source_packet}}
+               )
+
+      assert_receive {:peer_connection_rtp_sent, ^second_peer_connection, _, ^muted_source_packet}
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 first_voice_session_id,
+                 {:ex_webrtc, first_peer_connection,
+                  {:track_ended, first_transceiver.receiver.track.id}}
+               )
+
+      assert :ok = RoomServer.sync_test_media(room_server)
+
+      ended_source_packet =
+        ExRTP.Packet.new(<<5>>, payload_type: 111, sequence_number: 5, timestamp: 5, ssrc: 5)
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 first_voice_session_id,
+                 {:ex_webrtc, first_peer_connection,
+                  {:rtp, first_transceiver.receiver.track.id, nil, ended_source_packet}}
+               )
+
+      assert :ok = RoomServer.sync_test_media(room_server)
+      refute_receive {:peer_connection_rtp_sent, _, _, ^ended_source_packet}, 0
     end
 
     test "does not commit membership when Session PeerConnection startup fails" do

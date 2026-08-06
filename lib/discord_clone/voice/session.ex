@@ -303,6 +303,23 @@ defmodule DiscordClone.Voice.Session do
     record_media(state, peer_connection, :rtp_received, [:inbound_packet_count])
   end
 
+  defp record_media_outcome(
+         state,
+         peer_connection,
+         {:accepted_inbound_track_muted, _track_id}
+       ) do
+    record_media(state, peer_connection, :inbound_track_muted, [])
+  end
+
+  defp record_media_outcome(
+         state,
+         peer_connection,
+         {:accepted_inbound_track_ended, track_id}
+       ) do
+    :ok = Forwarder.source_ended(state.forwarder, state.voice_session_id, self(), track_id)
+    record_media(state, peer_connection, :inbound_track_ended, [])
+  end
+
   defp record_media_outcome(state, peer_connection, :dropped_rtp) do
     record_media(state, peer_connection, :unexpected_media_dropped, [:dropped_packet_count])
   end
