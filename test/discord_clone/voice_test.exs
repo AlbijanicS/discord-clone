@@ -398,6 +398,178 @@ defmodule DiscordClone.VoiceTest do
       refute_receive {:peer_connection_rtp_sent, _, _, ^ended_source_packet}, 0
     end
 
+    test "canonical removal withdraws exact routes and protects a healthy replacement pair" do
+      voice_channel_id = Ecto.UUID.generate()
+      room_supervisor = start_signaling_channel(:cleanup_routing_room_supervisor)
+
+      room_server =
+        start_supervised!(
+          {RoomServer,
+           voice_channel_id: voice_channel_id,
+           room_supervisor: room_supervisor,
+           test_peer_connection_opts: [test_rtp_observer: self()]}
+        )
+
+      _session_supervisor =
+        start_supervised!({SessionSupervisor, voice_channel_id: voice_channel_id})
+
+      forwarder = start_supervised!({Forwarder, voice_channel_id: voice_channel_id})
+      departing_user_id = Ecto.UUID.generate()
+      healthy_user_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: departing_voice_session_id}} =
+               RoomServer.join(room_server, departing_user_id, "departing-connection", self())
+
+      assert {:ok, %{voice_session_id: healthy_voice_session_id}} =
+               RoomServer.join(room_server, healthy_user_id, "healthy-connection", self())
+
+      assert {:ok, _answer} =
+               RoomServer.accept_offer(
+                 room_server,
+                 departing_user_id,
+                 departing_voice_session_id,
+                 "departing-negotiation",
+                 browser_offer(),
+                 command_deadline()
+               )
+
+      departing_peer_connection = negotiated_server_peer_connection([])
+
+      assert {:ok, _answer} =
+               RoomServer.accept_offer(
+                 room_server,
+                 healthy_user_id,
+                 healthy_voice_session_id,
+                 "healthy-negotiation",
+                 browser_offer(),
+                 command_deadline()
+               )
+
+      healthy_peer_connection = negotiated_server_peer_connection([departing_peer_connection])
+
+      [departing_transceiver] =
+        ExWebRTC.PeerConnection.get_transceivers(departing_peer_connection)
+
+      [healthy_transceiver] = ExWebRTC.PeerConnection.get_transceivers(healthy_peer_connection)
+
+      for {voice_session_id, peer_connection, track} <- [
+            {departing_voice_session_id, departing_peer_connection,
+             departing_transceiver.receiver.track},
+            {healthy_voice_session_id, healthy_peer_connection,
+             healthy_transceiver.receiver.track}
+          ] do
+        assert :ok =
+                 RoomServer.dispatch_test_ex_webrtc(
+                   room_server,
+                   voice_session_id,
+                   {:ex_webrtc, peer_connection, {:track, track}}
+                 )
+      end
+
+      assert :ok = RoomServer.sync_test_media(room_server)
+      departing_monitor = Process.monitor(departing_peer_connection)
+      healthy_monitor = Process.monitor(healthy_peer_connection)
+
+      assert :ok = RoomServer.leave(room_server, departing_voice_session_id)
+      assert_receive {:DOWN, ^departing_monitor, :process, ^departing_peer_connection, _reason}
+      refute_receive {:DOWN, ^healthy_monitor, :process, ^healthy_peer_connection, _reason}, 0
+
+      removed_destination_packet =
+        ExRTP.Packet.new(<<6>>, payload_type: 111, sequence_number: 6, timestamp: 6, ssrc: 6)
+
+      assert :ok =
+               Forwarder.forward_rtp(
+                 forwarder,
+                 healthy_voice_session_id,
+                 healthy_transceiver.receiver.track.id,
+                 removed_destination_packet
+               )
+
+      assert :ok = Forwarder.sync(forwarder)
+      refute_receive {:peer_connection_rtp_sent, _, _, ^removed_destination_packet}, 0
+
+      assert {:ok, %{voice_session_id: replacement_voice_session_id}} =
+               RoomServer.join(room_server, departing_user_id, "replacement-connection", self())
+
+      refute replacement_voice_session_id == departing_voice_session_id
+
+      assert {:ok, _answer} =
+               RoomServer.accept_offer(
+                 room_server,
+                 departing_user_id,
+                 replacement_voice_session_id,
+                 "replacement-negotiation",
+                 browser_offer(),
+                 command_deadline()
+               )
+
+      replacement_peer_connection =
+        negotiated_server_peer_connection([healthy_peer_connection])
+
+      [replacement_transceiver] =
+        ExWebRTC.PeerConnection.get_transceivers(replacement_peer_connection)
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 replacement_voice_session_id,
+                 {:ex_webrtc, replacement_peer_connection,
+                  {:track, replacement_transceiver.receiver.track}}
+               )
+
+      assert :ok = RoomServer.sync_test_media(room_server)
+
+      late_old_source_packet =
+        ExRTP.Packet.new(<<7>>, payload_type: 111, sequence_number: 7, timestamp: 7, ssrc: 7)
+
+      assert :ok =
+               Forwarder.forward_rtp(
+                 forwarder,
+                 departing_voice_session_id,
+                 departing_transceiver.receiver.track.id,
+                 late_old_source_packet
+               )
+
+      assert :ok = Forwarder.sync(forwarder)
+      refute_receive {:peer_connection_rtp_sent, _, _, ^late_old_source_packet}, 0
+
+      restored_route_packet =
+        ExRTP.Packet.new(<<8>>, payload_type: 111, sequence_number: 8, timestamp: 8, ssrc: 8)
+
+      assert :ok =
+               Forwarder.forward_rtp(
+                 forwarder,
+                 healthy_voice_session_id,
+                 healthy_transceiver.receiver.track.id,
+                 restored_route_packet
+               )
+
+      assert_receive {:peer_connection_rtp_sent, ^replacement_peer_connection, _,
+                      ^restored_route_packet}
+
+      replacement_monitor = Process.monitor(replacement_peer_connection)
+      assert :ok = RoomServer.crash_session(room_server, replacement_voice_session_id)
+
+      assert_receive {:DOWN, ^replacement_monitor, :process, ^replacement_peer_connection,
+                      _reason}
+
+      refute_receive {:DOWN, ^healthy_monitor, :process, ^healthy_peer_connection, _reason}, 0
+
+      post_crash_packet =
+        ExRTP.Packet.new(<<9>>, payload_type: 111, sequence_number: 9, timestamp: 9, ssrc: 9)
+
+      assert :ok =
+               Forwarder.forward_rtp(
+                 forwarder,
+                 healthy_voice_session_id,
+                 healthy_transceiver.receiver.track.id,
+                 post_crash_packet
+               )
+
+      assert :ok = Forwarder.sync(forwarder)
+      refute_receive {:peer_connection_rtp_sent, _, _, ^post_crash_packet}, 0
+    end
+
     test "does not commit membership when Session PeerConnection startup fails" do
       voice_channel_id = Ecto.UUID.generate()
       room_supervisor = start_signaling_channel(:failed_room_supervisor)

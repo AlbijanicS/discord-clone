@@ -5,7 +5,13 @@ defmodule DiscordClone.Voice.RoomServer do
 
   @idle_timeout_ms :timer.seconds(30)
 
-  alias DiscordClone.Voice.{SessionCoordinator, RoomRegistry, Session, SessionSupervisor}
+  alias DiscordClone.Voice.{
+    Forwarder,
+    RoomRegistry,
+    Session,
+    SessionCoordinator,
+    SessionSupervisor
+  }
 
   @capacity 5
   @test_environment Code.ensure_loaded?(Mix) and Mix.env() == :test
@@ -271,7 +277,7 @@ defmodule DiscordClone.Voice.RoomServer do
 
       reply =
         if is_pid(state.forwarder) and Process.alive?(state.forwarder) do
-          DiscordClone.Voice.Forwarder.sync(state.forwarder)
+          Forwarder.sync(state.forwarder)
         else
           {:error, :unavailable}
         end
@@ -479,6 +485,8 @@ defmodule DiscordClone.Voice.RoomServer do
          signaling_session_id: signaling_session_id,
          user_id: user_id
        }, memberships} ->
+        :ok = Forwarder.session_removed(state.forwarder, voice_session_id)
+
         if Keyword.get(opts, :terminate_session?, true) and Process.alive?(session_pid) do
           _ =
             DynamicSupervisor.terminate_child(

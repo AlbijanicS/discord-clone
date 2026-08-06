@@ -52,7 +52,7 @@ defmodule DiscordClone.Voice.Forwarder do
 
   @spec session_removed(pid() | nil, voice_session_id()) :: :ok
   def session_removed(forwarder, voice_session_id) when is_pid(forwarder) do
-    GenServer.cast(forwarder, {:session_removed, voice_session_id})
+    GenServer.call(forwarder, {:session_removed, voice_session_id})
   end
 
   def session_removed(_missing_forwarder, _voice_session_id), do: :ok
@@ -107,6 +107,15 @@ defmodule DiscordClone.Voice.Forwarder do
     {:reply, :ok, state}
   end
 
+  def handle_call({:session_removed, voice_session_id}, _from, state) do
+    state =
+      state
+      |> update_in([:sessions], &Map.delete(&1, voice_session_id))
+      |> rebuild_routes()
+
+    {:reply, :ok, state}
+  end
+
   def handle_call(:sync, _from, state), do: {:reply, :ok, state}
 
   @impl true
@@ -136,13 +145,6 @@ defmodule DiscordClone.Voice.Forwarder do
        session_state ->
          session_state
      end)}
-  end
-
-  def handle_cast({:session_removed, voice_session_id}, state) do
-    {:noreply,
-     state
-     |> update_in([:sessions], &Map.delete(&1, voice_session_id))
-     |> rebuild_routes()}
   end
 
   def handle_cast({:forward_rtp, voice_session_id, inbound_track_id, packet}, state) do
