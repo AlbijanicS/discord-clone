@@ -47,6 +47,10 @@ export function createVoiceSignaling({Socket, csrfToken} = {}) {
       return channel?.onClose(callback) ?? null
     },
 
+    onRosterCue(callback) {
+      return channel?.on("voice_roster_cue", callback) ?? null
+    },
+
     leave() {
       if (!channel) return null
 

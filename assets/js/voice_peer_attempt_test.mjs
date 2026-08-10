@@ -90,10 +90,12 @@ function attemptFixture() {
   const peer = fakePeerConnection()
   const serverIce = []
   const closes = []
+  const rosterCues = []
   const signaling = {
     joinVoiceChannel: async () => ({signaling_session_id: "server-session"}),
     leave() {},
     onClose(callback) { closes.push(callback); return 1 },
+    onRosterCue(callback) { rosterCues.push(callback); return 1 },
     onServerIce(callback) { serverIce.push(callback); return 1 },
     sendIce() {},
     sendOffer: async () => ({
@@ -103,7 +105,7 @@ function attemptFixture() {
     }),
   }
 
-  return {closes, peer, serverIce, signaling}
+  return {closes, peer, rosterCues, serverIce, signaling}
 }
 
 test("preflights one microphone connection and four Audio Output Slots before admission", async () => {
@@ -168,6 +170,43 @@ test("a connected silent microphone remains active without an RTP inactivity tim
   assert.deepEqual(states, ["joining", "connected"])
   assert.deepEqual(failures, [])
   assert.equal(peer.closed, false)
+})
+
+test("reports a disconnected peer as interrupted without ending its Voice Session", async () => {
+  const {peer, signaling} = attemptFixture()
+  const states = []
+  const failures = []
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    negotiationId: () => "browser-negotiation",
+    onFailure: failure => failures.push(failure),
+    onState: state => states.push(state),
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  peer.connectionState = "disconnected"
+  peer.emit("connectionstatechange")
+
+  assert.deepEqual(states, ["joining", "interrupted"])
+  assert.deepEqual(failures, [])
+  assert.equal(peer.closed, false)
+})
+
+test("forwards server roster cues to the active Voice Owner Tab", async () => {
+  const {rosterCues, signaling} = attemptFixture()
+  const cues = []
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return fakePeerConnection() } },
+    negotiationId: () => "browser-negotiation",
+    onCue: cue => cues.push(cue),
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  rosterCues[0]({channel_id: "voice-1", cue: "join"})
+
+  assert.deepEqual(cues, [{channelId: "voice-1", cue: "join"}])
 })
 
 test("keeps four remote tracks separate in one stable aggregate playback stream", async () => {

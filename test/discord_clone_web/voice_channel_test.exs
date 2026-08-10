@@ -523,6 +523,28 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       }
     end
 
+    test "sends join and leave cues only to existing Voice Owner Tabs", context do
+      %{channel_socket: first_channel_socket, voice_channel_id: voice_channel_id} = context
+
+      second_user = user_fixture()
+      add_workspace_member!(voice_channel_id, second_user)
+      {:ok, second_socket} = connect_voice_socket(second_user)
+
+      assert {:ok, _join_payload, second_channel_socket} =
+               subscribe_and_join(
+                 second_socket,
+                 VoiceChannel,
+                 first_channel_socket.topic,
+                 admission_params()
+               )
+
+      assert_push "voice_roster_cue", %{channel_id: ^voice_channel_id, cue: "join"}
+
+      Process.unlink(second_channel_socket.channel_pid)
+      assert_reply leave(second_channel_socket), :ok
+      assert_push "voice_roster_cue", %{channel_id: ^voice_channel_id, cue: "leave"}
+    end
+
     test "ignores stale Voice Session and Negotiation events before serializing server ICE",
          context do
       %{

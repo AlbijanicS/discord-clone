@@ -6,6 +6,7 @@ export function createVoiceController({
   tabId = createTabId(),
   connectionFactory = null,
   audioElementFactory = createRemoteAudioElement,
+  cuePlayer = () => {},
 } = {}) {
   let activeRequest = 0
   let audioTracks = []
@@ -56,7 +57,7 @@ export function createVoiceController({
   }
 
   function ownsLocalCapture() {
-    return ["requesting", "capturing", "joining", "connected", "muted"].includes(currentState.status)
+    return ["requesting", "capturing", "joining", "connected", "interrupted", "muted"].includes(currentState.status)
   }
 
   function handleClaim(claim) {
@@ -137,11 +138,14 @@ export function createVoiceController({
 
         activeConnection = null
         clearCapture()
-        publish({...channel, error, retryable: true, status: error})
+        publish(idleState())
       },
       onState(status) {
         if (connection !== activeConnection || request !== activeRequest) return
         publish({...channel, status})
+      },
+      onCue({channelId, cue}) {
+        if (channelId === currentState.channelId && ownsLocalCapture()) cuePlayer(cue)
       },
       onPlayback(outcome) {
         if (connection !== activeConnection || request !== activeRequest) return
@@ -198,7 +202,7 @@ export function createVoiceController({
     },
 
     toggleMute() {
-      if (["capturing", "connected"].includes(currentState.status)) {
+      if (["capturing", "connected", "interrupted"].includes(currentState.status)) {
         statusBeforeMute = currentState.status
         audioTracks.forEach(track => track.enabled = false)
         const state = {...currentState, status: "muted"}
@@ -214,7 +218,7 @@ export function createVoiceController({
     },
 
     toggleDeafen() {
-      if (!["capturing", "connected", "muted"].includes(currentState.status)) return
+      if (!["capturing", "connected", "interrupted", "muted"].includes(currentState.status)) return
 
       const deafened = currentState.deafened !== true
       if (deafened) {
@@ -245,8 +249,9 @@ export function createVoiceController({
       }
     },
 
-    configure({connectionFactory: nextConnectionFactory} = {}) {
+    configure({connectionFactory: nextConnectionFactory, cuePlayer: nextCuePlayer} = {}) {
       connectionFactory = nextConnectionFactory || null
+      cuePlayer = nextCuePlayer || cuePlayer
     },
   }
 }

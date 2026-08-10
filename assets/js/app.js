@@ -36,6 +36,7 @@ import VoiceLifecycle from "./hooks/voice_lifecycle"
 import voiceController from "./hooks/voice_controller"
 import {createVoicePeerAttempt} from "./voice_peer_attempt"
 import {createVoiceSignaling} from "./voice_signaling"
+import {playVoiceCue} from "./voice_cues"
 
 const Hooks = {
   ChannelMessages,
@@ -96,6 +97,7 @@ window.liveSocket = liveSocket
 window.voiceSignaling = createVoiceSignaling({Socket, csrfToken})
 voiceController.configure({
   connectionFactory: options => createVoicePeerAttempt({...options, signaling: window.voiceSignaling}),
+  cuePlayer: playVoiceCue,
 })
 
 // The lines below enable quality of life phoenix_live_reload

@@ -56,7 +56,7 @@ export function createVoiceChannels(controller) {
     const enableAudio = this.el.querySelector("[data-voice-channel-enable-audio]")
 
     status.textContent = statusMessage(state)
-    controls.hidden = !["joining", "connected", "muted"].includes(state.status)
+    controls.hidden = !["joining", "connected", "interrupted", "muted"].includes(state.status)
     retryControls.hidden = !state.retryable
     enableAudio.hidden = state.audioPlayback !== "blocked"
     muteButton.textContent = state.status === "muted" ? "Unmute" : "Mute"
@@ -71,6 +71,7 @@ function statusMessage(state) {
   if (state.status === "requesting") return "Allow microphone access"
   if (state.status === "joining" || state.status === "capturing") return "Joining voice…"
   if (state.status === "connected" || state.status === "muted") return "Connected"
+  if (state.status === "interrupted") return "Connection interrupted"
   if (state.status === "connection_failed") return "Couldn’t connect — try again"
   if (state.status === "connection_lost") return "Connection lost — try again"
   if (state.status === "incompatible_audio_output_slots") return "This browser could not prepare group audio. Try again after checking browser support."

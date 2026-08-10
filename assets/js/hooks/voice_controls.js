@@ -39,7 +39,7 @@ export function createVoiceControls(controller) {
     renderState(state) {
       this.currentState = state
       const audioBlocked = state.audioPlayback === "blocked"
-      const visible = ["requesting", "capturing", "joining", "connected", "muted"].includes(state.status) || state.error || audioBlocked
+      const visible = ["requesting", "capturing", "joining", "connected", "interrupted", "muted"].includes(state.status) || state.error || audioBlocked
       const channel = this.el.querySelector("[data-voice-controls-channel]")
       const status = this.el.querySelector("[data-voice-controls-status]")
       const announcement = this.el.querySelector("[data-voice-controls-announcement]")
@@ -72,6 +72,7 @@ function railStatusMessage(state) {
   if (state.status === "requesting") return "Allow microphone access"
   if (state.status === "joining" || state.status === "capturing") return "Joining voice…"
   if (state.status === "connected" || state.status === "muted") return "Connected"
+  if (state.status === "interrupted") return "Connection interrupted"
   if (state.status === "connection_failed") return "Couldn’t connect — try again"
   if (state.status === "connection_lost") return "Connection lost — try again"
   if (state.status === "incompatible_audio_output_slots") return "This browser could not prepare group audio. Try again after checking browser support."

@@ -144,3 +144,12 @@ test("the persistent panel remains visible through controller state updates unti
   assert.equal(mounted.panel.hidden, true)
   mounted.hook.destroyed()
 })
+
+test("the panel distinguishes an interrupted connection while retaining ordinary Voice controls", () => {
+  const mounted = mountVoiceControls({channelId: "voice-1", channelName: "lobby", status: "interrupted", workspaceId: "workspace-1"})
+
+  assert.equal(mounted.status.textContent, "Connection interrupted")
+  assert.equal(mounted.panel.hidden, false)
+  assert.equal(mounted.localActions.hidden, false)
+  mounted.hook.destroyed()
+})

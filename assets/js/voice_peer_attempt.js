@@ -10,6 +10,7 @@ export function createVoicePeerAttempt({
   MediaStream = globalThis.MediaStream,
   negotiationId = createNegotiationId,
   onFailure = () => {},
+  onCue = () => {},
   onPlayback = () => {},
   onState = () => {},
   remoteAudio = null,
@@ -164,6 +165,7 @@ export function createVoicePeerAttempt({
     if (!active) return
 
     if (peerConnection.connectionState === "connected") onState("connected")
+    if (peerConnection.connectionState === "disconnected") onState("interrupted")
     if (["failed", "closed"].includes(peerConnection.connectionState)) fail("connection_lost")
   }
 
@@ -209,6 +211,11 @@ export function createVoicePeerAttempt({
 
         signaling.onServerIce(receiveServerIce)
         signaling.onClose(() => fail("connection_lost"))
+        signaling.onRosterCue?.(payload => {
+          if (active && payload?.channel_id === channelId && ["join", "leave"].includes(payload?.cue)) {
+            onCue({channelId, cue: payload.cue})
+          }
+        })
 
         await peerConnection.setLocalDescription(offer)
         ensureActive()

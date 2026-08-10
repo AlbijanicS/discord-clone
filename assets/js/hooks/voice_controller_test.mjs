@@ -402,7 +402,7 @@ test("takeover and teardown release the active remote audio attempt exactly once
   }
 })
 
-test("a terminal connection failure releases controller-owned capture and exposes a retryable error", async () => {
+test("a terminal connection failure releases controller-owned capture and returns to ordinary Join", async () => {
   const microphoneTrack = track()
   let attempt
   const controller = createVoiceController({
@@ -417,14 +417,35 @@ test("a terminal connection failure releases controller-owned capture and expose
   attempt.onFailure("connection_failed")
 
   assert.equal(microphoneTrack.stopped, true)
-  assert.deepEqual(controller.state(), {
-    channelId: "voice-1",
-    channelName: "lobby",
-    error: "connection_failed",
-    retryable: true,
-    status: "connection_failed",
-    workspaceId: "workspace-1",
+  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", workspaceId: null})
+})
+
+test("a Voice Owner Tab plays browser-local roster cues only from its active Voice Channel, including while interrupted", async () => {
+  const cues = []
+  const microphoneTrack = track()
+  let attempt
+  const controller = createVoiceController({
+    connectionFactory(options) {
+      attempt = options
+      return {leave() {}}
+    },
+    cuePlayer: cue => cues.push(cue),
+    mediaDevices: {getUserMedia: () => Promise.resolve(stream(microphoneTrack))},
   })
+
+  await controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+  attempt.onCue({channelId: "voice-1", cue: "join"})
+  attempt.onState("interrupted")
+  controller.toggleMute()
+  assert.equal(controller.state().status, "muted")
+  controller.toggleMute()
+  assert.equal(controller.state().status, "interrupted")
+  attempt.onCue({channelId: "voice-1", cue: "leave"})
+  attempt.onCue({channelId: "voice-2", cue: "leave"})
+  controller.leave()
+  attempt.onCue({channelId: "voice-1", cue: "leave"})
+
+  assert.deepEqual(cues, ["join", "leave"])
 })
 
 test("explicit Leave, page teardown, and an ended microphone tell the active attempt to leave before release", async () => {

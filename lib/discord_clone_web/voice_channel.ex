@@ -159,6 +159,32 @@ defmodule DiscordCloneWeb.VoiceChannel do
     end
   end
 
+  def handle_info(
+        {:voice_channel_roster_changed, %{voice_channel_id: voice_channel_id, members: members}},
+        %{assigns: %{voice_channel_id: voice_channel_id}} = socket
+      ) do
+    current_member_ids = socket.assigns.voice_roster_member_ids || MapSet.new()
+    member_ids = MapSet.new(members, & &1.user_id)
+    current_user_id = socket.assigns.current_scope.user.id
+
+    cue =
+      cond do
+        MapSet.size(MapSet.delete(member_ids, current_user_id)) >
+            MapSet.size(MapSet.delete(current_member_ids, current_user_id)) ->
+          "join"
+
+        MapSet.size(MapSet.delete(member_ids, current_user_id)) <
+            MapSet.size(MapSet.delete(current_member_ids, current_user_id)) ->
+          "leave"
+
+        true ->
+          nil
+      end
+
+    if cue, do: push(socket, "voice_roster_cue", %{channel_id: voice_channel_id, cue: cue})
+    {:noreply, assign(socket, :voice_roster_member_ids, member_ids)}
+  end
+
   def handle_info(_message, socket), do: {:noreply, socket}
 
   @impl true
@@ -340,12 +366,20 @@ defmodule DiscordCloneWeb.VoiceChannel do
             Workspaces.workspace_mute_active?(voice_channel.workspace_id, current_scope.user.id)
           )
 
-        {:ok, payload,
-         socket
-         |> assign(:voice_channel_id, voice_channel_id)
-         |> assign(:signaling_session_id, signaling_session_id)
-         |> assign(:voice_session_id, voice_session_id)
-         |> assign(:negotiation_id, nil)}
+        with {:ok, %{members: members}} <- Voice.voice_channel_roster(voice_channel_id),
+             :ok <- Voice.subscribe_to_voice_channel_roster(voice_channel_id) do
+          {:ok, payload,
+           socket
+           |> assign(:voice_channel_id, voice_channel_id)
+           |> assign(:signaling_session_id, signaling_session_id)
+           |> assign(:voice_session_id, voice_session_id)
+           |> assign(:negotiation_id, nil)
+           |> assign(:voice_roster_member_ids, MapSet.new(members, & &1.user_id))}
+        else
+          _unavailable_roster ->
+            :ok = Voice.leave(voice_channel_id, voice_session_id)
+            {:error, %{reason: "unavailable"}}
+        end
 
       {:error, :not_found} ->
         :ok = Voice.leave(voice_channel_id, voice_session_id)
