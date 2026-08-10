@@ -28,12 +28,6 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
 
       assert has_element?(view, "#voice-channels")
 
-      assert has_element?(
-               view,
-               "#voice-channel-local-state[phx-hook='VoiceChannels'][phx-update='ignore']"
-             )
-
-      assert has_element?(view, "#voice-channel-status[role='status'][aria-live='polite']")
       assert has_element?(view, "#voice-channel-#{voice_channel.id}", "lobby")
 
       assert has_element?(view, "#voice-channel-#{voice_channel.id}[data-voice-channel-row]")
@@ -48,11 +42,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
                "#voice-channel-#{voice_channel.id}-join[type='button'][aria-label='Join voice channel lobby'][aria-pressed='false'][data-workspace-id='#{workspace.id}']"
              )
 
-      assert has_element?(view, "#voice-channel-local-controls[hidden]")
-      assert has_element?(view, "#voice-channel-retry-controls[hidden]")
-      assert has_element?(view, "#voice-channel-retry[type='button'][data-voice-channel-retry]")
-      assert has_element?(view, "#voice-channel-mute[aria-pressed='false']")
-      assert has_element?(view, "#voice-channel-leave")
+      refute has_element?(view, "#voice-channel-local-state")
+      refute has_element?(view, "#voice-channel-local-controls")
+      refute has_element?(view, "#voice-channel-leave")
 
       assert has_element?(
                view,

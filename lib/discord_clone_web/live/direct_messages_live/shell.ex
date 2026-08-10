@@ -22,7 +22,7 @@ defmodule DiscordCloneWeb.DirectMessagesLive.Shell do
 
   def app(assigns) do
     ~H"""
-    <div class={direct_messages_shell_class(@member_panel != [])}>
+    <div id="direct-messages-app-shell" class={direct_messages_shell_class(@member_panel != [])}>
       <GlobalDestinationRail.rail
         workspace_stream={@workspace_stream}
         workspace_form={@workspace_form}

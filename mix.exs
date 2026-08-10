@@ -109,7 +109,7 @@ defmodule DiscordClone.MixProject do
         "deps.unlock --unused",
         "format",
         "credo --strict",
-        "cmd node --test assets/js/hooks/channel_messages_test.mjs assets/js/hooks/message_actions_menu_test.mjs assets/js/hooks/message_composer_test.mjs assets/js/hooks/voice_channels_test.mjs assets/js/hooks/voice_controller_test.mjs assets/js/hooks/voice_controls_test.mjs assets/js/hooks/voice_workspace_badge_test.mjs assets/js/hooks/voice_channel_indicator_test.mjs assets/js/hooks/voice_lifecycle_test.mjs assets/js/voice_signaling_test.mjs assets/js/voice_peer_attempt_test.mjs assets/js/voice_cues_test.mjs",
+        "cmd node --test assets/js/hooks/channel_messages_test.mjs assets/js/hooks/message_actions_menu_test.mjs assets/js/hooks/message_composer_test.mjs assets/js/hooks/voice_controller_test.mjs assets/js/hooks/voice_controls_test.mjs assets/js/hooks/voice_workspace_badge_test.mjs assets/js/hooks/voice_channel_indicator_test.mjs assets/js/hooks/voice_lifecycle_test.mjs assets/js/voice_signaling_test.mjs assets/js/voice_peer_attempt_test.mjs assets/js/voice_cues_test.mjs",
         "test"
       ]
     ]

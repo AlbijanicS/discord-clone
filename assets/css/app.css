@@ -138,3 +138,24 @@
 #direct-message-composer-shell input {
   box-shadow: none;
 }
+
+/* Voice controls need a full-width panel while keeping the destination rail compact otherwise. */
+@media (min-width: 1024px) {
+  #workspace-app-shell:has(#global-voice-connection-panel:not([hidden])) {
+    grid-template-columns: 14rem 18rem minmax(0, 1fr);
+  }
+
+  #direct-messages-app-shell:has(#global-voice-connection-panel:not([hidden])) {
+    grid-template-columns: 14rem 20rem minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 1280px) {
+  #workspace-app-shell:has(#global-voice-connection-panel:not([hidden])) {
+    grid-template-columns: 14rem 18rem minmax(0, 1fr) 16rem;
+  }
+
+  #direct-messages-app-shell:has(#global-voice-connection-panel:not([hidden])) {
+    grid-template-columns: 14rem 20rem minmax(0, 1fr) 16rem;
+  }
+}

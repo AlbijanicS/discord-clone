@@ -17,7 +17,7 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
       <aside
         id="workspace-sidebar"
         aria-label="Global destinations"
-        class="flex min-h-0 flex-col items-center bg-base-300 p-3 shadow-[inset_-1px_0_0_rgb(255_255_255/0.03)]"
+        class="flex min-h-0 min-w-0 flex-col items-center overflow-x-hidden bg-base-300 p-3 shadow-[inset_-1px_0_0_rgb(255_255_255/0.03)]"
       >
         <.link
           id="global-direct-messages-destination"

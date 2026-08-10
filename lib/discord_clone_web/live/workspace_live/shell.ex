@@ -346,69 +346,6 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                 </button>
               </div>
               <div id="voice-channel-controls" class="mt-2">
-                <div
-                  id="voice-channel-local-state"
-                  phx-hook="VoiceChannels"
-                  phx-update="ignore"
-                >
-                  <div
-                    id="voice-channel-status"
-                    data-voice-channel-status
-                    role="status"
-                    aria-live="polite"
-                    class="mb-2 text-xs text-base-content/60"
-                  >
-                    Voice is not connected.
-                  </div>
-                  <div
-                    id="voice-channel-local-controls"
-                    data-voice-channel-local-controls
-                    hidden
-                    class="mt-3 flex gap-2"
-                  >
-                    <button
-                      id="voice-channel-enable-audio"
-                      type="button"
-                      data-voice-channel-enable-audio
-                      class="btn btn-sm btn-primary"
-                      hidden
-                    >
-                      Enable audio
-                    </button>
-                    <button
-                      id="voice-channel-mute"
-                      type="button"
-                      data-voice-channel-mute
-                      aria-pressed="false"
-                      class="btn btn-sm btn-ghost"
-                    >
-                      Mute
-                    </button>
-                    <button
-                      id="voice-channel-leave"
-                      type="button"
-                      data-voice-channel-leave
-                      class="btn btn-sm btn-error"
-                    >
-                      Leave Voice
-                    </button>
-                  </div>
-                  <div
-                    id="voice-channel-retry-controls"
-                    data-voice-channel-retry-controls
-                    hidden
-                    class="mt-3"
-                  >
-                    <button
-                      id="voice-channel-retry"
-                      type="button"
-                      data-voice-channel-retry
-                      class="btn btn-sm btn-primary"
-                    >
-                      Retry microphone
-                    </button>
-                  </div>
-                </div>
                 <div id="voice-channels" phx-update="stream" class="space-y-1">
                   <div
                     id="voice-channel-list-empty-state"
