@@ -31,6 +31,7 @@ function mountVoiceControls(state) {
   const localActions = {hidden: false}
   globalThis.document = eventTarget()
   const controller = {
+    join(channel) { calls.push({join: channel}) },
     leave() { calls.push("leave") },
     retry() { calls.push("retry") },
     enableAudio() { calls.push("enableAudio") },
@@ -81,6 +82,21 @@ test("the rail adapter immediately renders an existing capture and controls it w
   mounted.hook.destroyed()
   document.dispatch("click", {target: muteButton})
   assert.deepEqual(mounted.calls, ["toggleMute", "toggleDeafen", "leave"])
+})
+
+test("a Voice Channel row delegates joining to the global Voice Owner Tab controller", () => {
+  const mounted = mountVoiceControls({channelId: null, channelName: null, status: "idle", workspaceId: null})
+  const joinButton = {
+    closest(selector) {
+      return selector === "[data-voice-channel-join]" ? joinButton : null
+    },
+    dataset: {voiceChannelId: "voice-1", voiceChannelName: "lobby", workspaceId: "workspace-1"},
+  }
+
+  document.dispatch("click", {target: joinButton})
+
+  assert.deepEqual(mounted.calls, [{join: {id: "voice-1", name: "lobby", workspaceId: "workspace-1"}}])
+  mounted.hook.destroyed()
 })
 
 test("the rail renders a browser failure and delegates its explicit retry", () => {

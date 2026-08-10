@@ -4,6 +4,17 @@ export function createVoiceControls(controller) {
   return {
     mounted() {
       this.handleClick = event => {
+        const joinButton = event.target.closest("[data-voice-channel-join]")
+
+        if (joinButton) {
+          controller.join({
+            id: joinButton.dataset.voiceChannelId,
+            name: joinButton.dataset.voiceChannelName,
+            workspaceId: joinButton.dataset.workspaceId,
+          })
+          return
+        }
+
         if (event.target.closest("[data-voice-controls-mute]")) {
           controller.toggleMute()
           return
