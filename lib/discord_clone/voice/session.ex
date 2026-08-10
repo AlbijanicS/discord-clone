@@ -321,6 +321,12 @@ defmodule DiscordClone.Voice.Session do
          peer_connection,
          {:accepted_inbound_rtp, track_id, packet}
        ) do
+    GenServer.cast(
+      state.room_server,
+      {:accepted_inbound_rtp, state.voice_session_id,
+       PeerConnection.speaking_activity(peer_connection, packet)}
+    )
+
     :ok = Forwarder.forward_rtp(state.forwarder, state.voice_session_id, track_id, packet)
     record_media(state, peer_connection, :rtp_received, [:inbound_packet_count])
   end

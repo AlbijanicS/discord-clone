@@ -526,8 +526,13 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                         class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1 text-sm text-base-content/80 transition hover:bg-base-300/60"
                       >
                         <span
-                          class="flex size-5 shrink-0 items-center justify-center rounded-md bg-primary/10 text-[0.625rem] font-bold text-primary ring-1 ring-primary/15"
+                          id={"voice-channel-#{voice_channel.id}-roster-member-#{user_id}-avatar"}
+                          class={[
+                            "flex size-5 shrink-0 items-center justify-center rounded-md bg-primary/10 text-[0.625rem] font-bold text-primary ring-1 ring-primary/15",
+                            member.speaking && "ring-2 ring-emerald-400/80"
+                          ]}
                           aria-hidden="true"
+                          data-speaking-indicator={if(member.speaking, do: "true")}
                         >
                           {user_initial(user)}
                         </span>
@@ -1095,7 +1100,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
               user_id: user_id,
               user: user,
               muted: Map.get(roster_member, :muted, false),
-              deafened: Map.get(roster_member, :deafened, false)
+              deafened: Map.get(roster_member, :deafened, false),
+              speaking: Map.get(roster_member, :speaking, false)
             }
           ]
 

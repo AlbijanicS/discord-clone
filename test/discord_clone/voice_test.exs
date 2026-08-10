@@ -1801,6 +1801,195 @@ defmodule DiscordClone.VoiceTest do
   end
 
   describe "Voice Channel Roster snapshots" do
+    test "publishes Speaking Indicator state from negotiated RTP audio-level metadata" do
+      voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+
+      assert :ok = Voice.subscribe_to_voice_channel_roster(voice_channel_id)
+
+      assert {:ok, %{voice_session_id: voice_session_id}} =
+               Voice.join(voice_channel_id, user_id, "speaking-level-session", self())
+
+      assert_receive {:voice_channel_roster_changed, _initial_snapshot}
+
+      assert {:ok, _answer} =
+               RoomServer.accept_offer(
+                 room_server(voice_channel_id),
+                 user_id,
+                 voice_session_id,
+                 "speaking-level-negotiation",
+                 browser_offer_with_audio_level(),
+                 command_deadline()
+               )
+
+      peer_connection = peer_connection_for_session(voice_channel_id, voice_session_id)
+      inbound_track = inbound_audio_transceiver(peer_connection).receiver.track
+
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 voice_channel_id,
+                 voice_session_id,
+                 {:ex_webrtc, peer_connection, {:track, inbound_track}}
+               )
+
+      quiet_packet =
+        ExRTP.Packet.new(<<0>>, payload_type: 111, sequence_number: 0, timestamp: 0, ssrc: 1)
+        |> ExRTP.Packet.add_extension(
+          ExRTP.Packet.Extension.AudioLevel.new(true, 90)
+          |> ExRTP.Packet.Extension.AudioLevel.to_raw(2)
+        )
+
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 voice_channel_id,
+                 voice_session_id,
+                 {:ex_webrtc, peer_connection, {:rtp, inbound_track.id, nil, quiet_packet}}
+               )
+
+      assert {:ok, %{members: [%{speaking: false}]}} =
+               Voice.voice_channel_roster(voice_channel_id)
+
+      packet =
+        ExRTP.Packet.new(<<1>>, payload_type: 111, sequence_number: 1, timestamp: 1, ssrc: 1)
+        |> ExRTP.Packet.add_extension(
+          ExRTP.Packet.Extension.AudioLevel.new(true, 20)
+          |> ExRTP.Packet.Extension.AudioLevel.to_raw(2)
+        )
+
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 voice_channel_id,
+                 voice_session_id,
+                 {:ex_webrtc, peer_connection, {:rtp, inbound_track.id, nil, packet}}
+               )
+
+      assert_receive {:voice_channel_roster_changed,
+                      %{
+                        voice_channel_id: ^voice_channel_id,
+                        members: [%{user_id: ^user_id, speaking: true}]
+                      }}
+
+      refute_receive {:voice_channel_roster_changed,
+                      %{members: [%{user_id: ^user_id, speaking: false}]}},
+                     550
+
+      assert_receive {:voice_channel_roster_changed,
+                      %{members: [%{user_id: ^user_id, speaking: false}]}},
+                     200
+    end
+
+    test "falls back to accepted RTP and clears the Speaking Indicator when the Session ends" do
+      voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+
+      assert :ok = Voice.subscribe_to_voice_channel_roster(voice_channel_id)
+
+      assert {:ok, %{voice_session_id: voice_session_id}} =
+               Voice.join(voice_channel_id, user_id, "speaking-fallback-session", self())
+
+      assert_receive {:voice_channel_roster_changed, _initial_snapshot}
+
+      assert {:ok, _answer} =
+               RoomServer.accept_offer(
+                 room_server(voice_channel_id),
+                 user_id,
+                 voice_session_id,
+                 "speaking-fallback-negotiation",
+                 browser_offer(),
+                 command_deadline()
+               )
+
+      peer_connection = peer_connection_for_session(voice_channel_id, voice_session_id)
+      inbound_track = inbound_audio_transceiver(peer_connection).receiver.track
+
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 voice_channel_id,
+                 voice_session_id,
+                 {:ex_webrtc, peer_connection, {:track, inbound_track}}
+               )
+
+      fallback_packet =
+        ExRTP.Packet.new(<<1>>, payload_type: 111, sequence_number: 1, timestamp: 1, ssrc: 1)
+
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 voice_channel_id,
+                 voice_session_id,
+                 {:ex_webrtc, peer_connection, {:rtp, inbound_track.id, nil, fallback_packet}}
+               )
+
+      assert_receive {:voice_channel_roster_changed,
+                      %{members: [%{user_id: ^user_id, speaking: true}]}}
+
+      assert :ok = Voice.leave(voice_channel_id, voice_session_id)
+      assert_receive {:voice_channel_roster_changed, %{members: []}}
+    end
+
+    test "does not use the Speaking Indicator to authorize RTP forwarding" do
+      voice_channel_id = Ecto.UUID.generate()
+      source_user_id = Ecto.UUID.generate()
+      listener_user_id = Ecto.UUID.generate()
+
+      assert :ok = Voice.subscribe_to_voice_channel_roster(voice_channel_id)
+
+      assert {:ok, %{voice_session_id: source_session_id}} =
+               Voice.join(voice_channel_id, source_user_id, "speaking-source-session", self())
+
+      assert {:ok, %{voice_session_id: listener_session_id}} =
+               Voice.join(voice_channel_id, listener_user_id, "speaking-listener-session", self())
+
+      assert {:ok, _answer} =
+               RoomServer.accept_offer(
+                 room_server(voice_channel_id),
+                 source_user_id,
+                 source_session_id,
+                 "speaking-source-negotiation",
+                 browser_offer_with_audio_level(),
+                 command_deadline()
+               )
+
+      assert {:ok, _answer} =
+               RoomServer.accept_offer(
+                 room_server(voice_channel_id),
+                 listener_user_id,
+                 listener_session_id,
+                 "speaking-listener-negotiation",
+                 browser_offer(),
+                 command_deadline()
+               )
+
+      source_peer_connection = peer_connection_for_session(voice_channel_id, source_session_id)
+
+      listener_peer_connection =
+        peer_connection_for_session(voice_channel_id, listener_session_id)
+
+      source_inbound_track = inbound_audio_transceiver(source_peer_connection).receiver.track
+      forwarded_packets_before = outbound_packet_count(listener_peer_connection)
+
+      packet =
+        ExRTP.Packet.new(<<1>>, payload_type: 111, sequence_number: 1, timestamp: 1, ssrc: 1)
+        |> ExRTP.Packet.add_extension(
+          ExRTP.Packet.Extension.AudioLevel.new(true, 90)
+          |> ExRTP.Packet.Extension.AudioLevel.to_raw(2)
+        )
+
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 voice_channel_id,
+                 source_session_id,
+                 {:ex_webrtc, source_peer_connection,
+                  {:rtp, source_inbound_track.id, nil, packet}}
+               )
+
+      assert :ok = RoomServer.sync_test_media(room_server(voice_channel_id))
+
+      assert {:ok, %{members: [%{user_id: ^source_user_id, speaking: false}, _listener]}} =
+               Voice.voice_channel_roster(voice_channel_id)
+
+      assert outbound_packet_count(listener_peer_connection) == forwarded_packets_before + 1
+    end
+
     test "publishes effective Local Mute and Local Deafen state for an active Voice Session" do
       voice_channel_id = Ecto.UUID.generate()
       scope = user_scope_fixture()
@@ -1898,7 +2087,9 @@ defmodule DiscordClone.VoiceTest do
       assert {:ok, %{voice_channel_id: ^second_voice_channel_id, members: roster_members}} =
                Voice.voice_channel_roster(second_voice_channel_id)
 
-      assert roster_members == [%{user_id: first_user_id, muted: false, deafened: false}]
+      assert roster_members == [
+               %{user_id: first_user_id, muted: false, deafened: false, speaking: false}
+             ]
 
       refute Enum.any?(roster_members, fn member ->
                Map.has_key?(member, :pid) or Map.has_key?(member, :session_pid) or
@@ -2119,6 +2310,46 @@ defmodule DiscordClone.VoiceTest do
   defp room_server(voice_channel_id) do
     {:via, Registry, {DiscordClone.Voice.RoomRegistry, {:room, voice_channel_id}}}
     |> GenServer.whereis()
+  end
+
+  defp browser_offer_with_audio_level do
+    peer_connection =
+      start_supervised!(%{
+        id: make_ref(),
+        restart: :temporary,
+        start:
+          {ExWebRTC.PeerConnection, :start_link,
+           [
+             [
+               ice_servers: [],
+               controlling_process: self(),
+               rtp_header_extensions: [
+                 %{type: :all, uri: "urn:ietf:params:rtp-hdrext:sdes:mid"},
+                 %{type: :audio, uri: "urn:ietf:params:rtp-hdrext:ssrc-audio-level"}
+               ]
+             ]
+           ]}
+      })
+
+    assert {:ok, _microphone_transceiver} =
+             ExWebRTC.PeerConnection.add_transceiver(
+               peer_connection,
+               ExWebRTC.MediaStreamTrack.new(:audio),
+               direction: :sendonly
+             )
+
+    Enum.each(List.duplicate(:audio_output_slot, 4), fn _slot ->
+      assert {:ok, _audio_output_transceiver} =
+               ExWebRTC.PeerConnection.add_transceiver(peer_connection, :audio,
+                 direction: :recvonly
+               )
+    end)
+
+    assert {:ok, description} = ExWebRTC.PeerConnection.create_offer(peer_connection)
+    assert :ok = ExWebRTC.PeerConnection.set_local_description(peer_connection, description)
+    serialized_description = ExWebRTC.SessionDescription.to_json(description)
+    :ok = ExWebRTC.PeerConnection.stop(peer_connection)
+    serialized_description
   end
 
   defp runtime_candidate(number, options \\ []) do

@@ -117,6 +117,29 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
 
       refute has_element?(
                view,
+               "#voice-channel-#{first_voice_channel.id}-roster-member-#{first_member_scope.user.id}-avatar[data-speaking-indicator='true']"
+             )
+
+      assert :ok =
+               Voice.publish_voice_channel_roster(%{
+                 voice_channel_id: first_voice_channel.id,
+                 members: [
+                   %{
+                     user_id: first_member_scope.user.id,
+                     muted: false,
+                     deafened: false,
+                     speaking: true
+                   }
+                 ]
+               })
+
+      assert has_element?(
+               view,
+               "#voice-channel-#{first_voice_channel.id}-roster-member-#{first_member_scope.user.id}-avatar[data-speaking-indicator='true'].ring-2"
+             )
+
+      refute has_element?(
+               view,
                "#voice-channel-#{second_voice_channel.id}-roster-member-#{first_member_scope.user.id}"
              )
 

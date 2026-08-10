@@ -24,7 +24,14 @@ defmodule DiscordClone.Voice do
           {:ok,
            %{
              voice_channel_id: Ecto.UUID.t(),
-             members: [%{user_id: Ecto.UUID.t(), muted: boolean(), deafened: boolean()}]
+             members: [
+               %{
+                 user_id: Ecto.UUID.t(),
+                 muted: boolean(),
+                 deafened: boolean(),
+                 speaking: boolean()
+               }
+             ]
            }}
           | {:error, :not_found}
   def voice_channel_roster(voice_channel_id) do
@@ -47,7 +54,9 @@ defmodule DiscordClone.Voice do
   @doc false
   @spec publish_voice_channel_roster(%{
           voice_channel_id: Ecto.UUID.t(),
-          members: [%{user_id: Ecto.UUID.t(), muted: boolean(), deafened: boolean()}]
+          members: [
+            %{user_id: Ecto.UUID.t(), muted: boolean(), deafened: boolean(), speaking: boolean()}
+          ]
         }) :: :ok
   def publish_voice_channel_roster(%{voice_channel_id: voice_channel_id} = snapshot) do
     Phoenix.PubSub.broadcast(

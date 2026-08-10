@@ -4,6 +4,7 @@ defmodule DiscordClone.Voice.RoomServer do
   use GenServer
 
   @idle_timeout_ms :timer.seconds(30)
+  @speaking_decay_ms 600
 
   alias DiscordClone.Voice.{
     Forwarder,
@@ -356,9 +357,32 @@ defmodule DiscordClone.Voice.RoomServer do
     end
   end
 
+  def handle_info({:speaking_decay, voice_session_id, decay_ref}, state) do
+    case Map.get(state.memberships, voice_session_id) do
+      %{speaking: true, speaking_decay_ref: ^decay_ref} = membership ->
+        membership = %{
+          membership
+          | speaking: false,
+            speaking_decay_timer: nil,
+            speaking_decay_ref: nil
+        }
+
+        state = put_in(state, [:memberships, voice_session_id], membership)
+        :ok = Voice.publish_voice_channel_roster(roster_snapshot(state))
+        {:noreply, state}
+
+      _stale_decay ->
+        {:noreply, state}
+    end
+  end
+
   @impl true
   def handle_cast({:signaling_channel_down, voice_session_id}, state) do
     {:noreply, remove_membership(state, voice_session_id)}
+  end
+
+  def handle_cast({:accepted_inbound_rtp, voice_session_id, activity}, state) do
+    {:noreply, record_speaking_activity(state, voice_session_id, activity)}
   end
 
   def handle_cast(:shutdown_runtime, state) do
@@ -445,6 +469,9 @@ defmodule DiscordClone.Voice.RoomServer do
         user_id: user_id,
         local_muted: false,
         local_deafened: false,
+        speaking: false,
+        speaking_decay_timer: nil,
+        speaking_decay_ref: nil,
         admission_order: state.next_admission_order,
         signaling_session_id: signaling_session_id,
         session_pid: session_pid,
@@ -538,7 +565,8 @@ defmodule DiscordClone.Voice.RoomServer do
          session_pid: session_pid,
          session_monitor: session_monitor,
          signaling_session_id: signaling_session_id,
-         user_id: user_id
+         user_id: user_id,
+         speaking_decay_timer: speaking_decay_timer
        }, memberships} ->
         :ok = Forwarder.session_removed(state.forwarder, voice_session_id)
 
@@ -551,6 +579,7 @@ defmodule DiscordClone.Voice.RoomServer do
         end
 
         _ = Process.demonitor(session_monitor, [:flush])
+        _ = cancel_speaking_decay(speaking_decay_timer)
 
         state = %{
           state
@@ -657,7 +686,8 @@ defmodule DiscordClone.Voice.RoomServer do
         &%{
           user_id: &1.user_id,
           muted: &1.local_muted,
-          deafened: &1.local_deafened
+          deafened: &1.local_deafened,
+          speaking: &1.speaking
         }
       )
 
@@ -665,4 +695,43 @@ defmodule DiscordClone.Voice.RoomServer do
   end
 
   defp room_full(state), do: %{reason: :room_full} |> Map.merge(membership_occupancy(state))
+
+  defp record_speaking_activity(state, voice_session_id, activity)
+       when activity in [:speaking, :fallback] do
+    case Map.get(state.memberships, voice_session_id) do
+      nil ->
+        state
+
+      %{speaking: was_speaking} = membership ->
+        _ = cancel_speaking_decay(membership.speaking_decay_timer)
+        decay_ref = make_ref()
+
+        decay_timer =
+          Process.send_after(
+            self(),
+            {:speaking_decay, voice_session_id, decay_ref},
+            @speaking_decay_ms
+          )
+
+        membership = %{
+          membership
+          | speaking: true,
+            speaking_decay_timer: decay_timer,
+            speaking_decay_ref: decay_ref
+        }
+
+        state = put_in(state, [:memberships, voice_session_id], membership)
+
+        if not was_speaking do
+          :ok = Voice.publish_voice_channel_roster(roster_snapshot(state))
+        end
+
+        state
+    end
+  end
+
+  defp record_speaking_activity(state, _voice_session_id, :silent), do: state
+
+  defp cancel_speaking_decay(nil), do: :ok
+  defp cancel_speaking_decay(timer), do: Process.cancel_timer(timer)
 end

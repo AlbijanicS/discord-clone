@@ -1,6 +1,8 @@
 defmodule DiscordClone.Voice.PeerConnection do
   @moduledoc false
 
+  alias ExRTP.Packet
+  alias ExRTP.Packet.Extension.AudioLevel
   alias ExWebRTC.{ICECandidate, MediaStreamTrack, PeerConnection, SessionDescription}
   alias ExWebRTC.SDPUtils
 
@@ -8,11 +10,14 @@ defmodule DiscordClone.Voice.PeerConnection do
   @command_timeout_ms 5_000
   @startup_timeout_ms 5_000
   @ice_servers []
+  @audio_level_uri "urn:ietf:params:rtp-hdrext:ssrc-audio-level"
+  @mid_uri "urn:ietf:params:rtp-hdrext:sdes:mid"
   @test_environment Code.ensure_loaded?(Mix) and Mix.env() == :test
 
   defstruct [
     :peer_connection,
     :expected_inbound_track_id,
+    :audio_level_extension_id,
     :audio_output_slot_track_ids,
     :test_candidate_observer,
     :test_rtp_observer,
@@ -22,6 +27,7 @@ defmodule DiscordClone.Voice.PeerConnection do
   @type t :: %__MODULE__{
           peer_connection: pid(),
           expected_inbound_track_id: integer() | nil,
+          audio_level_extension_id: integer() | nil,
           audio_output_slot_track_ids: %{optional(non_neg_integer()) => integer()} | nil,
           test_candidate_observer: pid() | nil,
           test_rtp_observer: pid() | nil,
@@ -33,6 +39,10 @@ defmodule DiscordClone.Voice.PeerConnection do
     peer_connection_options =
       options
       |> Keyword.put_new(:ice_servers, @ice_servers)
+      |> Keyword.put_new(:rtp_header_extensions, [
+        %{type: :all, uri: @mid_uri},
+        %{type: :audio, uri: @audio_level_uri}
+      ])
       |> Keyword.put(:controlling_process, self())
 
     case PeerConnection.start_link(peer_connection_options) do
@@ -127,6 +137,7 @@ defmodule DiscordClone.Voice.PeerConnection do
        %{
          state
          | expected_inbound_track_id: inbound_track_id,
+           audio_level_extension_id: negotiated_audio_level_extension_id(description),
            audio_output_slot_track_ids: output_slot_track_ids,
            remote_description?: true
        }}
@@ -186,6 +197,18 @@ defmodule DiscordClone.Voice.PeerConnection do
   end
 
   def route_media(%__MODULE__{} = state, _message), do: {:ignore, state}
+
+  @spec speaking_activity(t(), ExRTP.Packet.t()) :: :speaking | :silent | :fallback
+  def speaking_activity(%__MODULE__{audio_level_extension_id: nil}, _packet), do: :fallback
+
+  def speaking_activity(%__MODULE__{audio_level_extension_id: extension_id}, packet) do
+    with {:ok, extension} <- Packet.fetch_extension(packet, extension_id),
+         {:ok, %AudioLevel{voice: true, level: level}} <- AudioLevel.from_raw(extension) do
+      if level <= 50, do: :speaking, else: :silent
+    else
+      _missing_or_invalid_extension -> :silent
+    end
+  end
 
   @spec send_rtp(t(), non_neg_integer(), ExRTP.Packet.t()) ::
           :ok | {:error, :outbound_track_unavailable}
@@ -359,6 +382,19 @@ defmodule DiscordClone.Voice.PeerConnection do
 
   defp deadline(:infinity), do: :infinity
   defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
+
+  defp negotiated_audio_level_extension_id(description) do
+    with %SessionDescription{sdp: sdp} <- SessionDescription.from_json(description),
+         {:ok, parsed_sdp} <- ExSDP.parse(sdp),
+         %{id: extension_id} <-
+           Enum.find(SDPUtils.get_extensions(parsed_sdp), &(&1.uri == @audio_level_uri)) do
+      extension_id
+    else
+      _missing_or_invalid_description -> nil
+    end
+  rescue
+    _error -> nil
+  end
 
   defp test_candidate_observer(options) do
     if @test_environment do
