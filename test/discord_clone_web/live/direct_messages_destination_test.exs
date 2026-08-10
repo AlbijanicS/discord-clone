@@ -21,12 +21,12 @@ defmodule DiscordCloneWeb.DirectMessagesDestinationTest do
 
     assert has_element?(
              workspace_view,
-             "#global-voice-controls[phx-hook='VoiceControls'][phx-update='ignore']"
+             "#channel-sidebar #global-voice-controls[phx-hook='VoiceControls'][phx-update='ignore']"
            )
 
     assert has_element?(
              workspace_view,
-             "#global-voice-connection-panel[data-voice-controls-panel][hidden]"
+             "#channel-sidebar #global-voice-connection-panel[data-voice-controls-panel][hidden]"
            )
 
     assert has_element?(
@@ -67,7 +67,7 @@ defmodule DiscordCloneWeb.DirectMessagesDestinationTest do
 
     assert has_element?(
              direct_view,
-             "#global-voice-controls[phx-hook='VoiceControls'][phx-update='ignore']"
+             "#direct-messages-sidebar > #global-voice-controls[phx-hook='VoiceControls'][phx-update='ignore']"
            )
 
     assert has_element?(direct_view, "[data-voice-logout]")

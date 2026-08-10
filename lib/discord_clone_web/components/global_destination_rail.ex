@@ -169,88 +169,6 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
         >
         </div>
 
-        <div
-          id="global-voice-controls"
-          phx-hook="VoiceControls"
-          phx-update="ignore"
-          class="relative mb-3 shrink-0"
-        >
-          <p
-            id="global-voice-controls-announcement"
-            data-voice-controls-announcement
-            role="status"
-            aria-live="polite"
-            class="sr-only"
-          >
-          </p>
-          <section
-            id="global-voice-connection-panel"
-            data-voice-controls-panel
-            aria-label="Voice Connection Panel"
-            hidden
-            class="mb-3 w-full rounded-xl border border-base-300 bg-base-100 p-3 text-base-content shadow-sm"
-          >
-            <p class="text-xs font-semibold uppercase tracking-wide text-base-content/50">
-              Active Voice Channel
-            </p>
-            <p data-voice-controls-channel class="mt-1 truncate text-sm font-bold"></p>
-            <p
-              id="global-voice-controls-status"
-              data-voice-controls-status
-              role="status"
-              aria-live="polite"
-              class="mt-1 text-xs text-base-content/60"
-            >
-            </p>
-            <div data-voice-controls-local-actions class="mt-4 flex gap-2">
-              <button
-                id="global-voice-controls-retry"
-                type="button"
-                data-voice-controls-retry
-                class="btn btn-sm btn-primary"
-                hidden
-              >
-                Retry microphone
-              </button>
-              <button
-                id="global-voice-controls-enable-audio"
-                type="button"
-                data-voice-controls-enable-audio
-                class="btn btn-sm btn-primary"
-                hidden
-              >
-                Enable audio
-              </button>
-              <button
-                id="global-voice-controls-mute"
-                type="button"
-                data-voice-controls-mute
-                aria-pressed="false"
-                class="btn btn-sm btn-ghost"
-              >
-                Mute
-              </button>
-              <button
-                id="global-voice-controls-deafen"
-                type="button"
-                data-voice-controls-deafen
-                aria-pressed="false"
-                class="btn btn-sm btn-ghost"
-              >
-                Deafen
-              </button>
-              <button
-                id="global-voice-controls-leave"
-                type="button"
-                data-voice-controls-leave
-                class="btn btn-sm btn-error"
-              >
-                Leave Voice
-              </button>
-            </div>
-          </section>
-        </div>
-
         <div class="mb-3 h-px w-8 shrink-0 bg-base-content/15" aria-hidden="true"></div>
 
         <div
@@ -361,6 +279,94 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
           </div>
         </.form>
       </aside>
+    </div>
+    """
+  end
+
+  def voice_controls(assigns) do
+    ~H"""
+    <div id="global-voice-controls" phx-hook="VoiceControls" phx-update="ignore" class="shrink-0">
+      <p
+        id="global-voice-controls-announcement"
+        data-voice-controls-announcement
+        role="status"
+        aria-live="polite"
+        class="sr-only"
+      >
+      </p>
+      <section
+        id="global-voice-connection-panel"
+        data-voice-controls-panel
+        aria-label="Voice Connection Panel"
+        hidden
+        class="mx-3 mb-2.5 overflow-hidden rounded-xl border border-primary/20 bg-gradient-to-br from-base-100 via-base-100 to-primary/10 p-3 text-base-content shadow-[0_-8px_24px_rgb(0_0_0/0.12)] ring-1 ring-white/5"
+      >
+        <div class="flex items-center gap-2.5">
+          <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary ring-1 ring-primary/25">
+            <.icon name="hero-microphone" class="size-4" />
+          </span>
+          <div class="min-w-0">
+            <p class="text-[0.625rem] font-bold uppercase tracking-[0.14em] text-base-content/45">
+              Voice connected
+            </p>
+            <p data-voice-controls-channel class="mt-0.5 truncate text-sm font-bold"></p>
+          </div>
+        </div>
+        <p
+          id="global-voice-controls-status"
+          data-voice-controls-status
+          role="status"
+          aria-live="polite"
+          class="mt-2 truncate text-xs font-medium text-base-content/60"
+        >
+        </p>
+        <div data-voice-controls-local-actions class="mt-3 grid grid-cols-3 gap-1.5">
+          <button
+            id="global-voice-controls-retry"
+            type="button"
+            data-voice-controls-retry
+            class="btn btn-sm btn-primary col-span-3"
+            hidden
+          >
+            Retry microphone
+          </button>
+          <button
+            id="global-voice-controls-enable-audio"
+            type="button"
+            data-voice-controls-enable-audio
+            class="btn btn-sm btn-primary col-span-3"
+            hidden
+          >
+            Enable audio
+          </button>
+          <button
+            id="global-voice-controls-mute"
+            type="button"
+            data-voice-controls-mute
+            aria-pressed="false"
+            class="btn btn-sm btn-ghost border border-base-content/10 bg-base-200/70"
+          >
+            Mute
+          </button>
+          <button
+            id="global-voice-controls-deafen"
+            type="button"
+            data-voice-controls-deafen
+            aria-pressed="false"
+            class="btn btn-sm btn-ghost border border-base-content/10 bg-base-200/70"
+          >
+            Deafen
+          </button>
+          <button
+            id="global-voice-controls-leave"
+            type="button"
+            data-voice-controls-leave
+            class="btn btn-sm btn-error"
+          >
+            Leave
+          </button>
+        </div>
+      </section>
     </div>
     """
   end

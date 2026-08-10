@@ -146,6 +146,8 @@ defmodule DiscordCloneWeb.DirectMessagesLive.Shell do
           </div>
         </div>
 
+        <GlobalDestinationRail.voice_controls />
+
         <div
           :if={@current_scope && @current_scope.user}
           id="direct-messages-current-user"

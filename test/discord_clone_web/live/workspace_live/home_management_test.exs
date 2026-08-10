@@ -48,7 +48,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
 
       assert has_element?(
                view,
-               "#global-voice-connection-panel[data-voice-controls-panel][hidden]"
+               "#channel-sidebar #global-voice-connection-panel[data-voice-controls-panel][hidden]"
              )
 
       assert has_element?(

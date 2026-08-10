@@ -560,6 +560,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
           <% end %>
         </div>
 
+        <GlobalDestinationRail.voice_controls />
+
         <div
           :if={@current_scope && @current_scope.user}
           class="bg-base-300/70 p-3 shadow-[inset_0_1px_0_rgb(255_255_255/0.04)]"
