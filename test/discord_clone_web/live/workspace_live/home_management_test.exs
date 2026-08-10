@@ -52,6 +52,17 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
       assert has_element?(view, "#voice-channel-retry[type='button'][data-voice-channel-retry]")
       assert has_element?(view, "#voice-channel-mute[aria-pressed='false']")
       assert has_element?(view, "#voice-channel-leave")
+
+      assert has_element?(
+               view,
+               "#global-voice-connection-panel[data-voice-controls-panel][hidden]"
+             )
+
+      assert has_element?(
+               view,
+               "#global-voice-controls-deafen[data-voice-controls-deafen][aria-pressed='false']"
+             )
+
       assert has_element?(view, "[data-voice-logout]")
       assert has_element?(view, "#voice-channel-create-toggle")
     end
@@ -120,6 +131,24 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
       assert has_element?(
                view,
                "#voice-channel-#{first_voice_channel.id}-roster-member-#{first_member_scope.user.id} + #voice-channel-#{first_voice_channel.id}-roster-member-#{second_member_scope.user.id}"
+             )
+
+      assert :ok =
+               Voice.update_local_voice_state(
+                 first_member_scope,
+                 first_voice_channel.id,
+                 first_voice_session_id,
+                 %{muted: true, deafened: true}
+               )
+
+      assert has_element?(
+               view,
+               "#voice-channel-#{first_voice_channel.id}-roster-member-#{first_member_scope.user.id} [aria-label='Muted']"
+             )
+
+      assert has_element?(
+               view,
+               "#voice-channel-#{first_voice_channel.id}-roster-member-#{first_member_scope.user.id} [aria-label='Deafened']"
              )
 
       assert :ok = Voice.leave(first_voice_channel.id, first_voice_session_id)

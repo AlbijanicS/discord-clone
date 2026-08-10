@@ -253,6 +253,14 @@ export function createVoicePeerAttempt({
     enableAudio() {
       return playRemoteAudio()
     },
+
+    setDeafened(deafened) {
+      if (remoteAudio) remoteAudio.muted = deafened === true
+    },
+
+    updateLocalVoiceState(state) {
+      if (active) signaling?.sendLocalVoiceState?.(state)
+    },
   }
 }
 

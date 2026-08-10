@@ -1801,6 +1801,39 @@ defmodule DiscordClone.VoiceTest do
   end
 
   describe "Voice Channel Roster snapshots" do
+    test "publishes effective Local Mute and Local Deafen state for an active Voice Session" do
+      voice_channel_id = Ecto.UUID.generate()
+      scope = user_scope_fixture()
+
+      assert :ok = Voice.subscribe_to_voice_channel_roster(voice_channel_id)
+
+      assert {:ok, %{voice_session_id: voice_session_id}} =
+               Voice.join(voice_channel_id, scope.user.id, "local-state-session", self())
+
+      assert_receive {:voice_channel_roster_changed, _initial_snapshot}
+
+      assert :ok =
+               Voice.update_local_voice_state(scope, voice_channel_id, voice_session_id, %{
+                 muted: true,
+                 deafened: true
+               })
+
+      assert_receive {:voice_channel_roster_changed,
+                      %{
+                        voice_channel_id: ^voice_channel_id,
+                        members: [
+                          %{user_id: user_id, muted: true, deafened: true}
+                        ]
+                      }}
+
+      assert user_id == scope.user.id
+
+      assert :ok = Voice.leave(voice_channel_id, voice_session_id)
+
+      assert_receive {:voice_channel_roster_changed,
+                      %{voice_channel_id: ^voice_channel_id, members: []}}
+    end
+
     test "publishes admission-ordered safe snapshots through leave, terminal cleanup, and replacement" do
       first_voice_channel_id = Ecto.UUID.generate()
       second_voice_channel_id = Ecto.UUID.generate()
@@ -1865,7 +1898,7 @@ defmodule DiscordClone.VoiceTest do
       assert {:ok, %{voice_channel_id: ^second_voice_channel_id, members: roster_members}} =
                Voice.voice_channel_roster(second_voice_channel_id)
 
-      assert roster_members == [%{user_id: first_user_id}]
+      assert roster_members == [%{user_id: first_user_id, muted: false, deafened: false}]
 
       refute Enum.any?(roster_members, fn member ->
                Map.has_key?(member, :pid) or Map.has_key?(member, :session_pid) or

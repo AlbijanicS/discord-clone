@@ -16,12 +16,16 @@ defmodule DiscordClone.Voice do
   @doc """
   Returns the safe current Voice Channel Roster snapshot for a Voice Channel.
 
-  This runtime projection contains only User IDs in Voice Session admission
-  order. Workspace-facing code is responsible for authorization and resolving
-  those IDs to display identities.
+  This runtime projection contains User IDs and effective shared Voice states
+  in Voice Session admission order. Workspace-facing code is responsible for
+  authorization and resolving those IDs to display identities.
   """
   @spec voice_channel_roster(term()) ::
-          {:ok, %{voice_channel_id: Ecto.UUID.t(), members: [%{user_id: Ecto.UUID.t()}]}}
+          {:ok,
+           %{
+             voice_channel_id: Ecto.UUID.t(),
+             members: [%{user_id: Ecto.UUID.t(), muted: boolean(), deafened: boolean()}]
+           }}
           | {:error, :not_found}
   def voice_channel_roster(voice_channel_id) do
     UUIDIdentifier.cast_or(voice_channel_id, {:error, :not_found}, fn voice_channel_id ->
@@ -43,7 +47,7 @@ defmodule DiscordClone.Voice do
   @doc false
   @spec publish_voice_channel_roster(%{
           voice_channel_id: Ecto.UUID.t(),
-          members: [%{user_id: Ecto.UUID.t()}]
+          members: [%{user_id: Ecto.UUID.t(), muted: boolean(), deafened: boolean()}]
         }) :: :ok
   def publish_voice_channel_roster(%{voice_channel_id: voice_channel_id} = snapshot) do
     Phoenix.PubSub.broadcast(
@@ -88,6 +92,40 @@ defmodule DiscordClone.Voice do
       :error -> {:error, :not_found}
     end
   end
+
+  @doc """
+  Updates the browser-originated shared Voice state for the caller's active
+  Voice Session.
+
+  Local Deafen always enables Local Mute. The state is runtime-only and is
+  cleared when the Voice Session ends.
+  """
+  @spec update_local_voice_state(Scope.t(), term(), term(), map()) :: :ok | {:error, atom()}
+  def update_local_voice_state(
+        %Scope{user: %{id: user_id}},
+        voice_channel_id,
+        voice_session_id,
+        %{muted: muted, deafened: deafened}
+      )
+      when is_binary(user_id) and is_boolean(muted) and is_boolean(deafened) do
+    with {:ok, [voice_channel_id, voice_session_id]} <-
+           UUIDIdentifier.cast_all([voice_channel_id, voice_session_id]),
+         room_server when is_pid(room_server) <- room_server(voice_channel_id) do
+      safe_update_local_voice_state(
+        room_server,
+        user_id,
+        voice_session_id,
+        muted,
+        deafened
+      )
+    else
+      nil -> {:error, :unavailable}
+      :error -> {:error, :invalid_session}
+    end
+  end
+
+  def update_local_voice_state(_scope, _voice_channel_id, _voice_session_id, _state),
+    do: {:error, :invalid_session}
 
   @spec accept_offer(Scope.t(), term(), term(), binary(), map()) ::
           {:ok, map()} | {:error, atom()}
@@ -567,6 +605,12 @@ defmodule DiscordClone.Voice do
     RoomServer.occupancy(room_server)
   catch
     :exit, _room_stopped -> {:error, :not_found}
+  end
+
+  defp safe_update_local_voice_state(room_server, user_id, voice_session_id, muted, deafened) do
+    RoomServer.update_local_voice_state(room_server, user_id, voice_session_id, muted, deafened)
+  catch
+    :exit, _room_stopped -> {:error, :unavailable}
   end
 
   defp safe_voice_channel_roster(room_server, voice_channel_id) do

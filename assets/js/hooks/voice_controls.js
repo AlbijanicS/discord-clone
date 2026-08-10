@@ -4,13 +4,13 @@ export function createVoiceControls(controller) {
   return {
     mounted() {
       this.handleClick = event => {
-        if (event.target.closest("[data-voice-controls-close]")) {
-          this.close()
+        if (event.target.closest("[data-voice-controls-mute]")) {
+          controller.toggleMute()
           return
         }
 
-        if (event.target.closest("[data-voice-controls-mute]")) {
-          controller.toggleMute()
+        if (event.target.closest("[data-voice-controls-deafen]")) {
+          controller.toggleDeafen()
           return
         }
 
@@ -28,41 +28,12 @@ export function createVoiceControls(controller) {
       }
 
       document.addEventListener("click", this.handleClick)
-      this.handleKeydown = event => {
-        if (event.key === "Escape" && this.popoverOpen) {
-          event.preventDefault()
-          this.close()
-        }
-      }
-      document.addEventListener("keydown", this.handleKeydown)
-      this.handleOpen = event => {
-        this.trigger = event.detail?.trigger || document.activeElement
-        this.popoverOpen = true
-        this.renderState(controller.state())
-      }
-      window.addEventListener("voice-controls:open", this.handleOpen)
-      this.popoverOpen = false
-      this.lastOpenedError = null
       this.unsubscribe = controller.subscribe(state => this.renderState(state))
     },
 
     destroyed() {
       document.removeEventListener("click", this.handleClick)
-      document.removeEventListener("keydown", this.handleKeydown)
-      window.removeEventListener("voice-controls:open", this.handleOpen)
       this.unsubscribe()
-    },
-
-    close() {
-      const trigger = this.trigger
-      this.popoverOpen = false
-      this.renderState(this.currentState)
-      this.trigger = null
-
-      if (trigger) {
-        trigger.setAttribute?.("aria-expanded", "false")
-        if (trigger.isConnected !== false) trigger.focus?.()
-      }
     },
 
     renderState(state) {
@@ -73,7 +44,8 @@ export function createVoiceControls(controller) {
       const status = this.el.querySelector("[data-voice-controls-status]")
       const announcement = this.el.querySelector("[data-voice-controls-announcement]")
       const mute = this.el.querySelector("[data-voice-controls-mute]")
-      const popover = this.el.querySelector("[data-voice-controls-popover]")
+      const deafen = this.el.querySelector("[data-voice-controls-deafen]")
+      const panel = this.el.querySelector("[data-voice-controls-panel]")
       const retry = this.el.querySelector("[data-voice-controls-retry]")
       const enableAudio = this.el.querySelector("[data-voice-controls-enable-audio]")
       const localActions = this.el.querySelector("[data-voice-controls-local-actions]")
@@ -83,19 +55,14 @@ export function createVoiceControls(controller) {
       status.setAttribute("aria-live", state.error ? "off" : "polite")
       mute.textContent = state.status === "muted" ? "Unmute" : "Mute"
       mute.setAttribute("aria-pressed", String(state.status === "muted"))
+      deafen.textContent = state.deafened === true ? "Undeafen" : "Deafen"
+      deafen.setAttribute("aria-pressed", String(state.deafened === true))
 
       retry.hidden = !state.retryable
       enableAudio.hidden = !audioBlocked
       localActions.hidden = state.status === "taken_over"
-      const notice = state.error || (audioBlocked && "audio_blocked")
-      if (notice && this.lastOpenedError !== notice) {
-        this.popoverOpen = true
-        this.lastOpenedError = notice
-      }
-      if (!notice) this.lastOpenedError = null
-      if (!visible) this.popoverOpen = false
-      popover.hidden = !this.popoverOpen
-      announcement.textContent = !this.popoverOpen || notice ? railStatusMessage(state) : ""
+      panel.hidden = !visible
+      announcement.textContent = state.error || audioBlocked ? railStatusMessage(state) : ""
     },
   }
 }

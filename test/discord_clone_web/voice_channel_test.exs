@@ -61,6 +61,26 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
              ]
     end
 
+    test "updates the active Voice Session's Local Mute and Local Deafen state", context do
+      %{
+        channel_socket: channel_socket,
+        voice_channel_id: voice_channel_id
+      } = context
+
+      assert_reply push(channel_socket, "local_voice_state", %{muted: false, deafened: true}), :ok
+
+      assert {:ok,
+              %{
+                voice_channel_id: ^voice_channel_id,
+                members: [%{muted: true, deafened: true}]
+              }} = Voice.voice_channel_roster(voice_channel_id)
+
+      assert_reply push(channel_socket, "local_voice_state", %{muted: true, deafened: false}), :ok
+
+      assert {:ok, %{members: [%{muted: true, deafened: false}]}} =
+               Voice.voice_channel_roster(voice_channel_id)
+    end
+
     test "returns a correlated real answer and sends server ICE only to its connection",
          context do
       %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context

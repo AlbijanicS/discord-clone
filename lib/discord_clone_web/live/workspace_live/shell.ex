@@ -515,7 +515,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                     >
                       <div
                         :for={
-                          %{user_id: user_id, user: user} <-
+                          %{user_id: user_id, user: user} = member <-
                             roster_members(
                               @voice_channel_rosters,
                               @member_by_user_id,
@@ -532,6 +532,20 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                           {user_initial(user)}
                         </span>
                         <span class="truncate">{user.username}</span>
+                        <span
+                          :if={member.muted}
+                          aria-label="Muted"
+                          class="ml-auto shrink-0 text-base-content/45"
+                        >
+                          <.icon name="hero-microphone" class="size-3.5" />
+                        </span>
+                        <span
+                          :if={member.deafened}
+                          aria-label="Deafened"
+                          class="shrink-0 text-base-content/45"
+                        >
+                          <.icon name="hero-speaker-x-mark" class="size-3.5" />
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -1073,10 +1087,20 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   defp roster_members(voice_channel_rosters, member_by_user_id, voice_channel_id) do
     voice_channel_rosters
     |> Map.get(voice_channel_id, [])
-    |> Enum.flat_map(fn %{user_id: user_id} ->
+    |> Enum.flat_map(fn %{user_id: user_id} = roster_member ->
       case Map.get(member_by_user_id, user_id) do
-        %{user: user} -> [%{user_id: user_id, user: user}]
-        nil -> []
+        %{user: user} ->
+          [
+            %{
+              user_id: user_id,
+              user: user,
+              muted: Map.get(roster_member, :muted, false),
+              deafened: Map.get(roster_member, :deafened, false)
+            }
+          ]
+
+        nil ->
+          []
       end
     end)
   end

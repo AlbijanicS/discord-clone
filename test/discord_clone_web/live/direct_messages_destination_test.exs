@@ -24,7 +24,10 @@ defmodule DiscordCloneWeb.DirectMessagesDestinationTest do
              "#global-voice-controls[phx-hook='VoiceControls'][phx-update='ignore']"
            )
 
-    assert has_element?(workspace_view, "#global-voice-controls-popover[role='dialog'][hidden]")
+    assert has_element?(
+             workspace_view,
+             "#global-voice-connection-panel[data-voice-controls-panel][hidden]"
+           )
 
     assert has_element?(
              workspace_view,
@@ -34,11 +37,6 @@ defmodule DiscordCloneWeb.DirectMessagesDestinationTest do
     assert has_element?(
              workspace_view,
              "#global-voice-controls-announcement[role='status'][aria-live='polite']"
-           )
-
-    assert has_element?(
-             workspace_view,
-             "#global-voice-controls-close[type='button'][data-voice-controls-close][aria-label='Close Voice controls']"
            )
 
     assert has_element?(
@@ -53,7 +51,7 @@ defmodule DiscordCloneWeb.DirectMessagesDestinationTest do
 
     assert has_element?(
              workspace_view,
-             "#workspace-#{workspace.id}-voice-badge[phx-hook='VoiceWorkspaceBadge'][phx-update='ignore'][aria-haspopup='dialog'][aria-controls='global-voice-controls-popover'][aria-expanded='false'][hidden]"
+             "#workspace-#{workspace.id}-voice-badge[phx-hook='VoiceWorkspaceBadge'][phx-update='ignore'][aria-controls='global-voice-connection-panel'][aria-expanded='false'][hidden]"
            )
 
     assert has_element?(

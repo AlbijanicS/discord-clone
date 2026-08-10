@@ -184,12 +184,11 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
           >
           </p>
           <section
-            id="global-voice-controls-popover"
-            data-voice-controls-popover
-            role="dialog"
-            aria-label="Active Voice Channel controls"
+            id="global-voice-connection-panel"
+            data-voice-controls-panel
+            aria-label="Voice Connection Panel"
             hidden
-            class="absolute left-[calc(100%+0.75rem)] top-0 z-50 w-72 rounded-2xl border border-base-300 bg-base-100 p-4 text-base-content shadow-2xl ring-1 ring-black/10"
+            class="mb-3 w-full rounded-xl border border-base-300 bg-base-100 p-3 text-base-content shadow-sm"
           >
             <p class="text-xs font-semibold uppercase tracking-wide text-base-content/50">
               Active Voice Channel
@@ -203,15 +202,6 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
               class="mt-1 text-xs text-base-content/60"
             >
             </p>
-            <button
-              id="global-voice-controls-close"
-              type="button"
-              data-voice-controls-close
-              aria-label="Close Voice controls"
-              class="absolute right-2 top-2 inline-flex size-8 items-center justify-center rounded-lg text-base-content/60 transition hover:bg-base-200 hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-            >
-              <.icon name="hero-x-mark" class="size-4" />
-            </button>
             <div data-voice-controls-local-actions class="mt-4 flex gap-2">
               <button
                 id="global-voice-controls-retry"
@@ -239,6 +229,15 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
                 class="btn btn-sm btn-ghost"
               >
                 Mute
+              </button>
+              <button
+                id="global-voice-controls-deafen"
+                type="button"
+                data-voice-controls-deafen
+                aria-pressed="false"
+                class="btn btn-sm btn-ghost"
+              >
+                Deafen
               </button>
               <button
                 id="global-voice-controls-leave"
@@ -291,8 +290,7 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
               phx-update="ignore"
               data-workspace-id={workspace.id}
               aria-label={"Open #{workspace.name} Voice Channel controls"}
-              aria-haspopup="dialog"
-              aria-controls="global-voice-controls-popover"
+              aria-controls="global-voice-connection-panel"
               aria-expanded="false"
               class="absolute -right-1 -top-1 flex size-5 items-center justify-center rounded-full bg-success text-success-content shadow-sm ring-2 ring-base-300 transition hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-success/60"
               hidden

@@ -46,6 +46,20 @@ defmodule DiscordClone.Voice.RoomServer do
   @spec leave(GenServer.server(), Ecto.UUID.t()) :: :ok
   def leave(server, voice_session_id), do: GenServer.call(server, {:leave, voice_session_id})
 
+  @spec update_local_voice_state(
+          GenServer.server(),
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          boolean(),
+          boolean()
+        ) :: :ok | {:error, :invalid_session}
+  def update_local_voice_state(server, user_id, voice_session_id, muted, deafened) do
+    GenServer.call(
+      server,
+      {:update_local_voice_state, user_id, voice_session_id, muted, deafened}
+    )
+  end
+
   @spec accept_offer(
           GenServer.server(),
           Ecto.UUID.t(),
@@ -190,6 +204,30 @@ defmodule DiscordClone.Voice.RoomServer do
 
   def handle_call({:leave, voice_session_id}, _from, state) do
     {:reply, :ok, remove_membership(state, voice_session_id)}
+  end
+
+  def handle_call(
+        {:update_local_voice_state, user_id, voice_session_id, muted, deafened},
+        _from,
+        state
+      ) do
+    case Map.get(state.memberships, voice_session_id) do
+      %{user_id: ^user_id} = membership ->
+        local_state = %{local_muted: muted or deafened, local_deafened: deafened}
+
+        if Map.take(membership, Map.keys(local_state)) == local_state do
+          {:reply, :ok, state}
+        else
+          state =
+            put_in(state, [:memberships, voice_session_id], Map.merge(membership, local_state))
+
+          :ok = Voice.publish_voice_channel_roster(roster_snapshot(state))
+          {:reply, :ok, state}
+        end
+
+      _missing_or_mismatched_session ->
+        {:reply, {:error, :invalid_session}, state}
+    end
   end
 
   def handle_call(
@@ -405,6 +443,8 @@ defmodule DiscordClone.Voice.RoomServer do
       membership = %{
         voice_session_id: voice_session_id,
         user_id: user_id,
+        local_muted: false,
+        local_deafened: false,
         admission_order: state.next_admission_order,
         signaling_session_id: signaling_session_id,
         session_pid: session_pid,
@@ -613,7 +653,13 @@ defmodule DiscordClone.Voice.RoomServer do
       state.memberships
       |> Map.values()
       |> Enum.sort_by(& &1.admission_order)
-      |> Enum.map(&%{user_id: &1.user_id})
+      |> Enum.map(
+        &%{
+          user_id: &1.user_id,
+          muted: &1.local_muted,
+          deafened: &1.local_deafened
+        }
+      )
 
     %{voice_channel_id: state.voice_channel_id, members: members}
   end

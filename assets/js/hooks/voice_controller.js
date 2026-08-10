@@ -37,6 +37,13 @@ export function createVoiceController({
     activeConnection = null
   }
 
+  function publishLocalVoiceState(state = currentState) {
+    activeConnection?.updateLocalVoiceState?.({
+      muted: state.status === "muted",
+      deafened: state.deafened === true,
+    })
+  }
+
   function releaseForTakeover() {
     if (!ownsLocalCapture()) return
 
@@ -194,12 +201,31 @@ export function createVoiceController({
       if (["capturing", "connected"].includes(currentState.status)) {
         statusBeforeMute = currentState.status
         audioTracks.forEach(track => track.enabled = false)
-        publish({...currentState, status: "muted"})
-      } else if (currentState.status === "muted") {
+        const state = {...currentState, status: "muted"}
+        publish(state)
+        publishLocalVoiceState(state)
+      } else if (currentState.status === "muted" && currentState.deafened !== true) {
         audioTracks.forEach(track => track.enabled = true)
-        publish({...currentState, status: statusBeforeMute || "capturing"})
+        const state = {...currentState, status: statusBeforeMute || "capturing"}
+        publish(state)
+        publishLocalVoiceState(state)
         statusBeforeMute = null
       }
+    },
+
+    toggleDeafen() {
+      if (!["capturing", "connected", "muted"].includes(currentState.status)) return
+
+      const deafened = currentState.deafened !== true
+      if (deafened) {
+        statusBeforeMute = currentState.status === "muted" ? statusBeforeMute : currentState.status
+        audioTracks.forEach(track => track.enabled = false)
+      }
+
+      activeConnection?.setDeafened?.(deafened)
+      const state = {...currentState, deafened, status: deafened ? "muted" : currentState.status}
+      publish(state)
+      publishLocalVoiceState(state)
     },
 
     leave() {

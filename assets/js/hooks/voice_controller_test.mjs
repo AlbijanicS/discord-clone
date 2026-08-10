@@ -217,6 +217,41 @@ test("capture succeeds before one connection attempt receives the owned track an
   assert.equal(controller.state().status, "connected")
 })
 
+test("Local Deafen silences playback, enables Local Mute, and undeafens without resuming transmission", async () => {
+  const microphoneTrack = track()
+  const localStates = []
+  const playbackStates = []
+  let onState
+  const controller = createVoiceController({
+    connectionFactory(options) {
+      onState = options.onState
+      return {
+        leave() {},
+        setDeafened(deafened) { playbackStates.push(deafened) },
+        updateLocalVoiceState(state) { localStates.push(state) },
+      }
+    },
+    mediaDevices: {getUserMedia: () => Promise.resolve(stream(microphoneTrack))},
+  })
+
+  await controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+  onState("connected")
+
+  controller.toggleDeafen()
+  assert.equal(controller.state().status, "muted")
+  assert.equal(controller.state().deafened, true)
+  assert.equal(microphoneTrack.enabled, false)
+  assert.deepEqual(playbackStates, [true])
+  assert.deepEqual(localStates.at(-1), {muted: true, deafened: true})
+
+  controller.toggleDeafen()
+  assert.equal(controller.state().status, "muted")
+  assert.equal(controller.state().deafened, false)
+  assert.equal(microphoneTrack.enabled, false)
+  assert.deepEqual(playbackStates, [true, false])
+  assert.deepEqual(localStates.at(-1), {muted: true, deafened: false})
+})
+
 test("local mute and unmute keep the established Voice connection and capture request", async () => {
   const microphoneTrack = track()
   let captureRequests = 0

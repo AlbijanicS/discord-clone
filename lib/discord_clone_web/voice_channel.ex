@@ -130,6 +130,23 @@ defmodule DiscordCloneWeb.VoiceChannel do
     end
   end
 
+  def handle_in(
+        "local_voice_state",
+        %{"muted" => muted, "deafened" => deafened},
+        socket
+      )
+      when is_boolean(muted) and is_boolean(deafened) do
+    case Voice.update_local_voice_state(
+           socket.assigns.current_scope,
+           socket.assigns.voice_channel_id,
+           socket.assigns.voice_session_id,
+           %{muted: muted, deafened: deafened}
+         ) do
+      :ok -> {:reply, :ok, socket}
+      {:error, _reason} -> {:reply, {:error, %{reason: "invalid_session"}}, socket}
+    end
+  end
+
   def handle_in(_event, _params, socket),
     do: {:reply, {:error, %{reason: "unsupported_event"}}, socket}
 
