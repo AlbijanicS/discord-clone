@@ -511,6 +511,129 @@ defmodule DiscordClone.VoiceTest do
       refute_receive {:peer_connection_rtp_sent, ^second_peer_connection, _, ^second_packet}, 0
     end
 
+    test "routes the real three-Session matrix across different negotiation and source orders" do
+      voice_channel_id = Ecto.UUID.generate()
+      room_supervisor = start_signaling_channel(:three_session_routing_room_supervisor)
+
+      room_server =
+        start_supervised!(
+          {RoomServer,
+           voice_channel_id: voice_channel_id,
+           room_supervisor: room_supervisor,
+           test_peer_connection_opts: [test_rtp_observer: self()]}
+        )
+
+      _session_supervisor =
+        start_supervised!({SessionSupervisor, voice_channel_id: voice_channel_id})
+
+      _forwarder = start_supervised!({Forwarder, voice_channel_id: voice_channel_id})
+
+      sessions =
+        Enum.map(1..3, fn number ->
+          user_id = Ecto.UUID.generate()
+
+          assert {:ok, %{voice_session_id: voice_session_id}} =
+                   RoomServer.join(
+                     room_server,
+                     user_id,
+                     "three-session-connection-#{number}",
+                     self()
+                   )
+
+          %{number: number, user_id: user_id, voice_session_id: voice_session_id}
+        end)
+
+      {sessions_by_id, _peer_connections} =
+        sessions
+        |> Enum.reverse()
+        |> Enum.reduce({%{}, []}, fn session, {sessions_by_id, peer_connections} ->
+          assert {:ok, _answer} =
+                   RoomServer.accept_offer(
+                     room_server,
+                     session.user_id,
+                     session.voice_session_id,
+                     "three-session-negotiation-#{session.number}",
+                     browser_offer(),
+                     command_deadline()
+                   )
+
+          peer_connection = negotiated_server_peer_connection(peer_connections)
+
+          session =
+            Map.put(session, :peer_connection, peer_connection)
+            |> Map.put(:inbound_track, inbound_audio_transceiver(peer_connection).receiver.track)
+
+          {Map.put(sessions_by_id, session.voice_session_id, session),
+           [
+             peer_connection | peer_connections
+           ]}
+        end)
+
+      sessions_by_id
+      |> Map.values()
+      |> Enum.sort_by(& &1.number)
+      |> Enum.each(fn session ->
+        assert :ok =
+                 RoomServer.dispatch_test_ex_webrtc(
+                   room_server,
+                   session.voice_session_id,
+                   {:ex_webrtc, session.peer_connection, {:track, session.inbound_track}}
+                 )
+      end)
+
+      assert :ok = RoomServer.sync_test_media(room_server)
+
+      destination_ids_by_peer =
+        Map.new(sessions_by_id, fn {voice_session_id, session} ->
+          {session.peer_connection, voice_session_id}
+        end)
+
+      deliveries =
+        sessions_by_id
+        |> Map.values()
+        |> Enum.sort_by(& &1.number, :desc)
+        |> Enum.flat_map(fn session ->
+          packet =
+            ExRTP.Packet.new(<<session.number>>,
+              payload_type: 111,
+              sequence_number: session.number,
+              timestamp: session.number,
+              ssrc: session.number
+            )
+
+          assert :ok =
+                   RoomServer.dispatch_test_ex_webrtc(
+                     room_server,
+                     session.voice_session_id,
+                     {:ex_webrtc, session.peer_connection,
+                      {:rtp, session.inbound_track.id, nil, packet}}
+                   )
+
+          Enum.map(1..2, fn _ ->
+            assert_receive {:peer_connection_rtp_sent, destination_peer_connection,
+                            output_track_id, ^packet}
+
+            {session.voice_session_id,
+             Map.fetch!(destination_ids_by_peer, destination_peer_connection), output_track_id}
+          end)
+        end)
+
+      assert Enum.all?(deliveries, fn {source_id, destination_id, output_track_id} ->
+               source_id != destination_id and
+                 output_track_id in audio_output_track_ids(
+                   Map.fetch!(sessions_by_id, destination_id).peer_connection
+                 )
+             end)
+
+      for destination_id <- Map.keys(sessions_by_id) do
+        destination_track_ids =
+          for {_source_id, ^destination_id, output_track_id} <- deliveries,
+              do: output_track_id
+
+        assert destination_track_ids |> Enum.uniq() |> length() == 2
+      end
+    end
+
     test "canonical removal withdraws exact routes and protects a healthy replacement pair" do
       voice_channel_id = Ecto.UUID.generate()
       room_supervisor = start_signaling_channel(:cleanup_routing_room_supervisor)
@@ -1586,6 +1709,13 @@ defmodule DiscordClone.VoiceTest do
     peer_connection
     |> ExWebRTC.PeerConnection.get_transceivers()
     |> Enum.find(&(&1.current_direction == :sendonly))
+  end
+
+  defp audio_output_track_ids(peer_connection) do
+    peer_connection
+    |> ExWebRTC.PeerConnection.get_transceivers()
+    |> Enum.filter(&(&1.current_direction == :sendonly))
+    |> Enum.map(& &1.sender.track.id)
   end
 
   defp start_signaling_channel(id) do

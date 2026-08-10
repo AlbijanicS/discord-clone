@@ -5,7 +5,7 @@ defmodule DiscordClone.Voice.Forwarder do
 
   alias DiscordClone.Voice.{Diagnostics, RoomRegistry, Session, SessionCoordinator}
 
-  @first_audio_output_slot 0
+  @audio_output_slots 0..3
 
   @type voice_session_id :: Ecto.UUID.t()
 
@@ -87,6 +87,8 @@ defmodule DiscordClone.Voice.Forwarder do
        voice_channel_id: voice_channel_id,
        room_server: room_server,
        sessions: %{},
+       next_session_order: 0,
+       slot_assignments: %{},
        routes: %{},
        forwarded_packet_count: 0,
        dropped_packet_count: 0
@@ -95,15 +97,32 @@ defmodule DiscordClone.Voice.Forwarder do
 
   @impl true
   def handle_call({:session_started, voice_session_id, session}, _from, state) do
-    session_state =
+    {session_state, next_session_order} =
       case Map.get(state.sessions, voice_session_id) do
-        %{session: ^session} = current -> current
-        _missing_or_replaced -> %{session: session, receive_codec: nil, source: nil}
+        %{session: ^session} = current ->
+          {current, state.next_session_order}
+
+        %{started_order: started_order} ->
+          {%{
+             session: session,
+             receive_codec: nil,
+             source: nil,
+             started_order: started_order
+           }, state.next_session_order}
+
+        nil ->
+          {%{
+             session: session,
+             receive_codec: nil,
+             source: nil,
+             started_order: state.next_session_order
+           }, state.next_session_order + 1}
       end
 
     state =
       state
       |> put_in([:sessions, voice_session_id], session_state)
+      |> Map.put(:next_session_order, next_session_order)
       |> rebuild_routes()
 
     {:reply, :ok, state}
@@ -144,7 +163,7 @@ defmodule DiscordClone.Voice.Forwarder do
         {:noreply,
          state
          |> put_in([:sessions, voice_session_id], %{session_state | source: nil})
-         |> update_in([:routes], &Map.delete(&1, {voice_session_id, inbound_track_id}))}
+         |> rebuild_routes()}
 
       _missing_replaced_or_stale_source ->
         {:noreply, state}
@@ -155,28 +174,10 @@ defmodule DiscordClone.Voice.Forwarder do
     source = {voice_session_id, inbound_track_id}
 
     case Map.get(state.routes, source) do
-      %{
-        destination_voice_session_id: destination_voice_session_id,
-        audio_output_slot: audio_output_slot,
-        session: session
-      } ->
-        case Map.get(state.sessions, destination_voice_session_id) do
-          %{session: ^session} ->
-            :ok =
-              Session.deliver_rtp(
-                session,
-                destination_voice_session_id,
-                audio_output_slot,
-                packet
-              )
+      routes when is_map(routes) and map_size(routes) > 0 ->
+        {:noreply, Enum.reduce(routes, state, &deliver_route(&1, packet, &2))}
 
-            {:noreply, record_forward(state)}
-
-          _stale_destination ->
-            {:noreply, record_drop(state)}
-        end
-
-      nil ->
+      _missing_routes ->
         {:noreply, record_drop(state)}
     end
   end
@@ -193,38 +194,130 @@ defmodule DiscordClone.Voice.Forwarder do
     end
   end
 
-  defp rebuild_routes(%{sessions: sessions} = state) when map_size(sessions) == 2 do
-    [{first_id, first}, {second_id, second}] = Map.to_list(sessions)
-
-    routes =
-      if fully_ready?(first) and fully_ready?(second) do
-        %{}
-        |> put_route(first_id, first, second_id, second)
-        |> put_route(second_id, second, first_id, first)
-      else
-        %{}
-      end
-
-    %{state | routes: routes}
+  defp rebuild_routes(state) do
+    slot_assignments = rebuild_slot_assignments(state.sessions, state.slot_assignments)
+    routes = build_routes(state.sessions, slot_assignments)
+    %{state | routes: routes, slot_assignments: slot_assignments}
   end
 
-  defp rebuild_routes(state), do: %{state | routes: %{}}
+  defp rebuild_slot_assignments(sessions, current_assignments) do
+    sessions
+    |> sessions_in_started_order()
+    |> Enum.reduce(%{}, fn {destination_id, destination}, assignments ->
+      if receive_ready?(destination) do
+        source_ids =
+          sessions
+          |> sessions_in_started_order()
+          |> Enum.filter(fn {source_id, source} ->
+            source_id != destination_id and source_ready?(source)
+          end)
+          |> Enum.map(&elem(&1, 0))
 
-  defp fully_ready?(%{receive_codec: :opus, source: %{codec: :opus}}), do: true
-  defp fully_ready?(_session), do: false
+        current_destination_assignments = Map.get(current_assignments, destination_id, %{})
+
+        Map.put(
+          assignments,
+          destination_id,
+          assign_destination_slots(current_destination_assignments, source_ids)
+        )
+      else
+        assignments
+      end
+    end)
+  end
+
+  defp assign_destination_slots(current_assignments, source_ids) do
+    source_id_set = MapSet.new(source_ids)
+
+    preserved_assignments =
+      Map.filter(current_assignments, fn {source_id, slot} ->
+        MapSet.member?(source_id_set, source_id) and slot in @audio_output_slots
+      end)
+
+    free_slots = Enum.reject(@audio_output_slots, &(&1 in Map.values(preserved_assignments)))
+
+    source_ids
+    |> Enum.reject(&Map.has_key?(preserved_assignments, &1))
+    |> Enum.zip(free_slots)
+    |> Enum.reduce(preserved_assignments, fn {source_id, slot}, assignments ->
+      Map.put(assignments, source_id, slot)
+    end)
+  end
+
+  defp build_routes(sessions, slot_assignments) do
+    Enum.reduce(slot_assignments, %{}, fn {destination_id, source_slots}, routes ->
+      destination = Map.fetch!(sessions, destination_id)
+
+      Enum.reduce(source_slots, routes, fn {source_id, audio_output_slot}, routes ->
+        put_route(
+          routes,
+          source_id,
+          Map.fetch!(sessions, source_id),
+          destination_id,
+          destination,
+          audio_output_slot
+        )
+      end)
+    end)
+  end
+
+  defp source_ready?(%{source: %{codec: :opus}}), do: true
+  defp source_ready?(_session), do: false
+
+  defp receive_ready?(%{receive_codec: :opus}), do: true
+  defp receive_ready?(_session), do: false
+
+  defp sessions_in_started_order(sessions) do
+    Enum.sort_by(sessions, fn {_voice_session_id, session} -> session.started_order end)
+  end
 
   defp put_route(
          routes,
          source_voice_session_id,
          %{source: %{track_id: track_id, codec: :opus}},
          destination_voice_session_id,
-         %{receive_codec: :opus, session: destination_session}
+         %{receive_codec: :opus, session: destination_session},
+         audio_output_slot
        ) do
-    Map.put(routes, {source_voice_session_id, track_id}, %{
+    route = %{
       destination_voice_session_id: destination_voice_session_id,
-      audio_output_slot: @first_audio_output_slot,
+      audio_output_slot: audio_output_slot,
       session: destination_session
-    })
+    }
+
+    Map.update(
+      routes,
+      {source_voice_session_id, track_id},
+      %{destination_voice_session_id => route},
+      &Map.put(&1, destination_voice_session_id, route)
+    )
+  end
+
+  defp deliver_route(
+         {_destination_id,
+          %{
+            destination_voice_session_id: destination_voice_session_id,
+            audio_output_slot: audio_output_slot,
+            session: session
+          }},
+         packet,
+         state
+       ) do
+    case Map.get(state.sessions, destination_voice_session_id) do
+      %{session: ^session} ->
+        :ok =
+          Session.deliver_rtp(
+            session,
+            destination_voice_session_id,
+            audio_output_slot,
+            packet
+          )
+
+        record_forward(state)
+
+      _stale_destination ->
+        record_drop(state)
+    end
   end
 
   defp record_forward(state) do
