@@ -83,6 +83,12 @@ _Avoid_: Sender, publisher
 A Voice Session whose outbound audio track receives RTP through an Audio Route.
 _Avoid_: Receiver, subscriber
 
+**Audio Output Slot**:
+A room-local receiving position on a Voice Session for one other Voice Session's
+Audio Source. A Voice Session has at most four Audio Output Slots in the capped
+Voice Channel; a slot is not itself an Audio Route or a Voice Session.
+_Avoid_: Outbound track, remote track
+
 **Direct Conversation**:
 A private conversation between exactly two Friends that does not belong to a Workspace.
 _Avoid_: DM Channel, private Channel, private chat
@@ -208,6 +214,32 @@ _Avoid_: Unread range
 - A **Voice Session** is controlled by one **Voice Owner Tab**
 - A User may continue using the app from other browser tabs while one
   **Voice Owner Tab** remains connected to voice
+- A **Voice Session** has at most four **Audio Output Slots** in a Voice
+  Channel capped at five active Voice Sessions
+- A Voice join requires four usable **Audio Output Slots**; if the Voice Owner
+  Tab cannot provide them, the join fails with a retryable compatibility error
+  and leaves no partial **Voice Session**
+- The Voice Owner Tab checks its four slots before admission, and the Voice
+  runtime validates the same requirement from the received offer
+- A compatibility failure cleans up the attempted Voice connection and waits
+  for an explicit User retry rather than retrying automatically
+- A Voice Session that leaves during negotiation ends immediately; later
+  signaling or audio for that Session is ignored
+- Ending one Voice Session removes only the Audio Routes involving it; the
+  remaining Voice Sessions continue exchanging audio when their routes are
+  otherwise eligible
+- An **Audio Output Slot** stays assigned to its Audio Source while both remain
+  active; when that source leaves, only its slot is released for a later source
+- An unused **Audio Output Slot** remains available and silent until another
+  Audio Source is assigned to it
+- An **Audio Output Slot** carries at most one Audio Source at a time and may
+  later carry a different source after the first source leaves
+- The four **Audio Output Slots** have fixed positions for the life of a Voice
+  Session; later source changes do not change the slot positions
+- An **Audio Route** connects one **Audio Source** to one **Audio Destination**
+  through one destination **Audio Output Slot**
+- An eligible **Audio Route** may start while another active Voice Session is
+  still connecting; that Session does not block ready source/destination pairs
 - A **Conversation** contains **Messages**
 - A **Message Reply** references a **Message** in the same **Conversation**
 - A **Message Reply** does not create a thread or nested conversation
