@@ -836,7 +836,70 @@ Prove:
 Implementation Notes:
 
 ```text
-Not started.
+Automated certification completed on 2026-08-10. The required manual
+two-browser pass remains pending operator evidence.
+
+Final decisions
+- The Workspace LiveView renders each authorized Voice Channel Roster from safe,
+  complete per-channel snapshots. Runtime and media internals stay outside the
+  web projection.
+- The Voice Owner Tab owns Local Mute, Local Deafen, playback, persistent
+  controls, connection presentation, and browser-local join/leave cues.
+- Workspace Mute and Workspace Timeout remain server-authoritative; Voice
+  Disconnect is silent and leaves ordinary Voice admission available afterward.
+- The precommit browser suite now includes `assets/js/voice_cues_test.mjs`, so
+  cue playback is part of the regular verification gate.
+
+Automated evidence
+- `mix test test/discord_clone/voice_test.exs --seed 0 --max-failures 1`
+  passed (52 tests). This also exercised the previously reported room-restart
+  lifecycle case without reproducing its intermittent failure.
+- `mix test` passed with Phase 10 included (seed 497330).
+- `node --test assets/js/voice_cues_test.mjs` passed (2 tests).
+- `mix precommit` passed after adding the cue suite: compilation, formatting,
+  Credo, all 70 browser tests, and the full Elixir suite completed successfully.
+
+Focused behavior coverage
+- `test/discord_clone/voice_test.exs` covers public Voice Channel Roster
+  snapshots, public effective states, Speaking Indicator behavior, Workspace
+  Mute and Workspace Timeout enforcement, Voice Disconnect lifecycle, and
+  safe projection boundaries.
+- `test/discord_clone_web/live/workspace_live/home_management_test.exs` covers
+  authorized Voice Channel Roster rendering, admission order, action visibility,
+  and silent Voice Disconnect.
+- `test/discord_clone_web/voice_channel_test.exs` covers authenticated signaling,
+  Local Mute/Deafen publication, terminal cleanup, and Voice Owner Tab cues.
+- `assets/js/hooks/voice_controller_test.mjs`,
+  `assets/js/hooks/voice_controls_test.mjs`,
+  `assets/js/voice_peer_attempt_test.mjs`, and `assets/js/voice_cues_test.mjs`
+  cover persistent controls, public connection states, cleanup, cue routing,
+  and cue playback.
+
+Manual two-browser pass (requires two separately authenticated Users and audio
+permission in two real browser contexts)
+1. Open the same Workspace in Browser A and Browser B, then join the same Voice
+   Channel from each. Confirm the Voice Channel Roster appears and disappears
+   immediately in both views, remains admission ordered, and reveals no runtime
+   or media details.
+2. Toggle Local Mute and Local Deafen in Browser A. Confirm Browser B sees only
+   the public muted/deafened badges; undeafen and confirm Local Mute remains on.
+3. Speak in Browser A. Confirm Browser B sees Browser A's Speaking Indicator;
+   stop speaking and confirm it fades. Navigate Browser A within the app and
+   confirm its Voice Connection Panel and controls remain available.
+4. As an authorized owner or admin, apply Workspace Mute and Workspace Timeout
+   to Browser B. Confirm mute blocks Browser B's outgoing audio while retaining
+   inbound playback, and timeout ends Browser B's Voice Session then blocks
+   admission until expiry.
+5. Voice Disconnect Browser B from Browser A. Confirm Browser B receives no
+   explanatory prompt, releases its session resources, and returns to the
+   ordinary Join control. Rejoin Browser B and confirm both Voice Owner Tabs
+   hear the join/leave cues only for their current Voice Channel.
+
+Intentional follow-up
+- Record the operator, browser versions, device setup, and pass/fail result for
+  the two-browser checklist above before closing this certification ticket.
+- Re-open lifecycle diagnosis only if `Voice.ensure_room/1` fails again; this
+  certification run did not produce a deterministic red-capable reproduction.
 ```
 
 ## Phase 11: Disconnects, Cleanup, And Recovery
