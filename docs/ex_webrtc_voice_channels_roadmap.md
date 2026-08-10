@@ -126,7 +126,7 @@ full SDP credentials or TURN credentials.
 | 6. OTP Voice Channel Room and Session architecture | Complete | 2026-08-04 | Supervised room/session ownership, cross-room admission coordination, failure recovery, Phoenix delegation, and durable-access cleanup are complete; media remains intentionally scoped to Phases 7/8. |
 | 7. Move echo into supervised `Voice.Session` | Complete | 2026-08-05 | The Session-owned peer lifecycle, private signaling adapter, bounded commands, one-peer RTP echo, terminal cleanup, and browser-compatibility certification are complete. |
 | 8. Two-user server-routed audio | Not started |  |  |
-| 9. Capped 3-5 user room | Not started |  |  |
+| 9. Capped 3-5 user room | Complete | 2026-08-10 | Four preallocated receive lanes, stable first-free routing slots, and the complete five-Session matrix are automated; the separate five-browser manual pass remains follow-up work. |
 | 10. Voice controls and UI polish | Not started |  |  |
 | 11. Disconnects, cleanup, and recovery | Not started |  |  |
 | 12. STUN/TURN and real-network deployment | Not started |  |  |
@@ -730,7 +730,78 @@ Prove:
 Implementation Notes:
 
 ```text
-Not started.
+Completed 2026-08-10.
+
+Files changed:
+- assets/js/hooks/voice_channels.js and voice_channels_test.mjs
+- assets/js/hooks/voice_controller_test.mjs
+- assets/js/hooks/voice_controls.js and voice_controls_test.mjs
+- assets/js/voice_peer_attempt.js and voice_peer_attempt_test.mjs
+- lib/discord_clone/voice/forwarder.ex
+- lib/discord_clone/voice/peer_connection.ex
+- lib/discord_clone/voice/session.ex
+- lib/discord_clone/voice.ex
+- lib/discord_clone_web/voice_channel.ex
+- test/discord_clone/voice/forwarder_test.exs
+- test/discord_clone/voice/peer_connection_test.exs
+- test/discord_clone/voice/session_test.exs
+- test/discord_clone/voice_test.exs
+- test/discord_clone_web/voice_channel_test.exs
+- test/support/voice_signaling_helpers.ex
+
+Final architecture/API decisions:
+- The browser preallocates one send-only microphone transceiver and four
+  receive-only Audio Output Slots before server admission. The server requires
+  that exact Opus topology and provisions four stable outbound tracks in its
+  first answer, so joins and leaves require no renegotiation.
+- Forwarder owns a one-to-many route set per accepted source and a stable
+  source-to-slot map per destination. Existing sources keep their destination
+  slots; a new source receives the first released slot in Session start order.
+- The browser keeps remote tracks distinct inside one stable aggregate
+  MediaStream and one audio element. An incompatible four-lane preflight or
+  answer is an explicit retryable compatibility failure.
+
+Behavior proven:
+- Pure tests cover room sizes one through five, exact directed matrices (12
+  routes at four Sessions and 20 at five), no self-route, partial readiness,
+  stable slots, first-free reuse, duplicate cleanup, late work, and aggregate
+  forwarded/dropped diagnostics.
+- A real five-Session ExWebRTC test sends 50 synthetic 20 ms packets from each
+  source and observes all 1,000 intended destination-track deliveries with no
+  self-delivery. Concurrent admission admits exactly five of six callers.
+- Leave, ended tracks, mute, temporary disconnected state, terminal peer state,
+  signaling death, Session crash, durable access removal, Voice Channel
+  deletion, replacement identity, and Forwarder failure converge without
+  disturbing healthy Sessions where recovery is supported.
+- Diagnostic metadata is restricted to operation/outcome/byte counts, media
+  lifecycle counters, and route counters; it excludes SDP, ICE credentials,
+  raw RTP, PIDs, User/Voice Channel/Voice Session identity, and browser
+  correlation data.
+
+Measurements:
+- Focused sample command: mix test test/discord_clone/voice_test.exs:637 --seed 0.
+- On the 2026-08-10 development run, the 20-route/1,000-forward burst completed
+  in 21,146 microseconds with a 33 ms aggregate BEAM scheduler-runtime delta.
+- ExWebRTC sender stats recorded 104,000 serialized RTP bytes. The synthetic
+  50-packet, 20 ms cadence models 832,000 aggregate serialized-RTP bits/s; the
+  observed burst processing rate was 39,345,502 bits/s. These exclude
+  ICE/DTLS/SRTP/UDP/IP overhead and establish no stricter Phase 9 cutoff.
+
+Tests run:
+- Focused Forwarder, PeerConnection, Session, Voice runtime, authenticated
+  Voice Channel, and browser tests passed, including the real five-Session
+  ExWebRTC measurement. The shutdown convergence case passed 20 consecutive
+  randomized repetitions after its race fix.
+- mix precommit passed: Credo found no issues, 64 JavaScript tests passed, and
+  969 ExUnit tests passed.
+
+Known follow-up work:
+- The five-browser validation with five separately authenticated Users remains
+  intentionally deferred to its separate manual testing discussion.
+- Phase 10 owns user-facing controls/roster polish; Phase 12 owns real-network
+  STUN/TURN behavior; Phase 14 owns production observability and performance
+  limits. Mixing, transcoding, recording, and dynamic renegotiation remain out
+  of scope.
 ```
 
 ## Phase 10: Voice Controls And UI Polish

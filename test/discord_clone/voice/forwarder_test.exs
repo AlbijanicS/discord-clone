@@ -267,6 +267,43 @@ defmodule DiscordClone.Voice.ForwarderTest do
              MapSet.new([first_id, third_id])
   end
 
+  test "duplicate cleanup and late readiness cannot resurrect a removed Session" do
+    attach_route_diagnostics()
+    forwarder = start_forwarder()
+
+    sessions =
+      Enum.map(1..5, fn number ->
+        {Ecto.UUID.generate(), number * 100}
+      end)
+
+    for {voice_session_id, track_id} <- sessions do
+      register_ready_session(forwarder, voice_session_id, track_id)
+    end
+
+    [{removed_id, removed_track_id} | retained_sessions] = sessions
+
+    assert :ok = Forwarder.session_removed(forwarder, removed_id)
+    assert :ok = Forwarder.session_removed(forwarder, removed_id)
+    assert :ok = Forwarder.receive_ready(forwarder, removed_id, self(), :opus)
+    assert :ok = Forwarder.send_ready(forwarder, removed_id, self(), removed_track_id, :opus)
+    assert :ok = Forwarder.sync(forwarder)
+
+    late_packet = ExRTP.Packet.new(<<5>>, sequence_number: 5, timestamp: 5, ssrc: 5)
+    assert :ok = Forwarder.forward_rtp(forwarder, removed_id, removed_track_id, late_packet)
+    assert :ok = Forwarder.sync(forwarder)
+    refute_receive {_cast, {:deliver_rtp, _, _, ^late_packet}}, 0
+
+    assert_receive {:voice_route_diagnostic, %{media_lifecycle: :rtp_dropped} = dropped}
+    assert_route_diagnostic(dropped, 0, 1)
+
+    [{retained_id, retained_track_id} | _] = retained_sessions
+    retained_packet = ExRTP.Packet.new(<<6>>, sequence_number: 6, timestamp: 6, ssrc: 6)
+    assert :ok = Forwarder.forward_rtp(forwarder, retained_id, retained_track_id, retained_packet)
+    assert length(receive_deliveries(retained_packet, 3)) == 3
+
+    refute_receive {_cast, {:deliver_rtp, ^removed_id, _, ^retained_packet}}, 0
+  end
+
   defp start_forwarder do
     start_supervised!(%{
       id: make_ref(),

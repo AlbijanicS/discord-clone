@@ -650,7 +650,21 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       assert metadata.outcome == :accepted
       assert is_integer(metadata.decoded_request_byte_count)
 
+      assert Map.keys(metadata) |> Enum.sort() == [
+               :decoded_request_byte_count,
+               :operation,
+               :outcome
+             ]
+
       for forbidden <- [
+            :sdp,
+            :ice_username_fragment,
+            :raw_rtp,
+            :packet,
+            :pid,
+            :user_id,
+            :voice_channel_id,
+            :voice_session_id,
             :signaling_session_id,
             :negotiation_id,
             :description,
@@ -664,6 +678,8 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
           ] do
         refute Map.has_key?(metadata, forbidden)
       end
+
+      refute Enum.any?(Map.values(metadata), &is_pid/1)
     end
 
     test "counts accepted and dropped media without self-echo or identifying metadata", context do

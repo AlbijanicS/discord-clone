@@ -531,10 +531,15 @@ defmodule DiscordClone.Voice do
 
   defp await_room_shutdown(room_server) do
     room_monitor = Process.monitor(room_server)
-    :ok = RoomServer.mark_empty(room_server, idle_timeout: 0)
+
+    try do
+      :ok = RoomServer.mark_empty(room_server, idle_timeout: 0)
+    catch
+      :exit, _room_already_stopped -> :ok
+    end
 
     receive do
-      {:DOWN, ^room_monitor, :process, ^room_server, :normal} -> :ok
+      {:DOWN, ^room_monitor, :process, ^room_server, _reason} -> :ok
     end
   end
 end

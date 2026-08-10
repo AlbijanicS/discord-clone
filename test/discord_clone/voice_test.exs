@@ -634,6 +634,127 @@ defmodule DiscordClone.VoiceTest do
       end
     end
 
+    test "measures the complete real five-Session ExWebRTC matrix" do
+      voice_channel_id = Ecto.UUID.generate()
+      room_supervisor = start_signaling_channel(:five_session_measurement_room_supervisor)
+
+      room_server =
+        start_supervised!(
+          {RoomServer,
+           voice_channel_id: voice_channel_id,
+           room_supervisor: room_supervisor,
+           test_peer_connection_opts: [test_rtp_observer: self()]}
+        )
+
+      _session_supervisor =
+        start_supervised!({SessionSupervisor, voice_channel_id: voice_channel_id})
+
+      forwarder = start_supervised!({Forwarder, voice_channel_id: voice_channel_id})
+      sessions = negotiate_room_sessions(room_server, 5, "five-session")
+      destination_ids_by_peer = Map.new(sessions, &{&1.peer_connection, &1.voice_session_id})
+      packets_per_source = 50
+      expected_route_count = 5 * 4
+      expected_forwarded_packets = expected_route_count * packets_per_source
+      attach_five_session_diagnostics(expected_forwarded_packets)
+
+      _previous_runtime = :erlang.statistics(:runtime)
+      started_at = System.monotonic_time(:microsecond)
+
+      for session <- sessions, packet_number <- 1..packets_per_source do
+        packet =
+          ExRTP.Packet.new(:binary.copy(<<session.number>>, 80),
+            payload_type: 111,
+            sequence_number: packet_number,
+            timestamp: packet_number * 960,
+            ssrc: session.number
+          )
+
+        assert :ok =
+                 RoomServer.dispatch_test_ex_webrtc(
+                   room_server,
+                   session.voice_session_id,
+                   {:ex_webrtc, session.peer_connection,
+                    {:rtp, session.inbound_track.id, nil, packet}}
+                 )
+
+        destination_ids =
+          for _destination <- 1..4 do
+            assert_receive {:peer_connection_rtp_sent, destination_peer_connection,
+                            output_track_id, ^packet}
+
+            destination_id = Map.fetch!(destination_ids_by_peer, destination_peer_connection)
+            refute destination_id == session.voice_session_id
+
+            assert output_track_id in audio_output_track_ids(destination_peer_connection)
+            destination_id
+          end
+
+        assert MapSet.new(destination_ids) ==
+                 sessions
+                 |> Enum.reject(&(&1.voice_session_id == session.voice_session_id))
+                 |> MapSet.new(& &1.voice_session_id)
+      end
+
+      elapsed_microseconds = System.monotonic_time(:microsecond) - started_at
+      {_total_runtime, scheduler_runtime_milliseconds} = :erlang.statistics(:runtime)
+      assert :ok = RoomServer.sync_test_media(room_server)
+
+      outbound_stats =
+        sessions
+        |> Enum.flat_map(fn session ->
+          session.peer_connection
+          |> ExWebRTC.PeerConnection.get_stats()
+          |> Map.values()
+          |> Enum.filter(&(&1.type == :outbound_rtp and &1.packets_sent > 0))
+        end)
+
+      forwarded_packets = Enum.sum(Enum.map(outbound_stats, & &1.packets_sent))
+      serialized_rtp_bytes = Enum.sum(Enum.map(outbound_stats, & &1.bytes_sent))
+      stale_packet = ExRTP.Packet.new(<<0>>, sequence_number: 0, timestamp: 0, ssrc: 0)
+      assert :ok = Forwarder.forward_rtp(forwarder, Ecto.UUID.generate(), 0, stale_packet)
+      assert :ok = Forwarder.sync(forwarder)
+      media_interval_milliseconds = packets_per_source * 20
+
+      measurement = %{
+        route_count: expected_route_count,
+        forwarded_packet_count: forwarded_packets,
+        dropped_packet_count: 1,
+        elapsed_microseconds: elapsed_microseconds,
+        scheduler_runtime_milliseconds: scheduler_runtime_milliseconds,
+        serialized_rtp_bytes: serialized_rtp_bytes,
+        modeled_serialized_rtp_bits_per_second:
+          div(serialized_rtp_bytes * 8 * 1_000, media_interval_milliseconds),
+        burst_serialized_rtp_bits_per_second:
+          div(serialized_rtp_bytes * 8 * 1_000_000, elapsed_microseconds)
+      }
+
+      assert measurement.route_count == 20
+      assert measurement.forwarded_packet_count == expected_forwarded_packets
+      assert measurement.elapsed_microseconds > 0
+      assert measurement.scheduler_runtime_milliseconds >= 0
+      assert measurement.serialized_rtp_bytes > expected_forwarded_packets * 80
+      assert measurement.modeled_serialized_rtp_bits_per_second > 0
+      assert measurement.burst_serialized_rtp_bits_per_second > 0
+
+      assert_receive {:five_session_route_diagnostic,
+                      %{media_lifecycle: :rtp_forwarded} = forwarded_metadata}
+
+      assert forwarded_metadata == %{
+               media_lifecycle: :rtp_forwarded,
+               forwarded_packet_count: expected_forwarded_packets,
+               dropped_packet_count: 0
+             }
+
+      assert_receive {:five_session_route_diagnostic,
+                      %{media_lifecycle: :rtp_dropped} = dropped_metadata}
+
+      assert dropped_metadata == %{
+               media_lifecycle: :rtp_dropped,
+               forwarded_packet_count: expected_forwarded_packets,
+               dropped_packet_count: 1
+             }
+    end
+
     test "canonical removal withdraws exact routes and protects a healthy replacement pair" do
       voice_channel_id = Ecto.UUID.generate()
       room_supervisor = start_signaling_channel(:cleanup_routing_room_supervisor)
@@ -1000,6 +1121,8 @@ defmodule DiscordClone.VoiceTest do
       assert :ok = RoomServer.shutdown(room_server)
       assert_receive {:DOWN, ^peer_connection_monitor, :process, ^peer_connection, _reason}
       assert :ok = Voice.await_empty_room(voice_channel_id)
+      assert :ok = Voice.expire_idle_room(voice_channel_id)
+      refute Voice.room_running?(voice_channel_id)
     end
 
     test "a crashed PeerConnection removes its Voice Session without affecting another room" do
@@ -1813,6 +1936,72 @@ defmodule DiscordClone.VoiceTest do
     |> ExWebRTC.PeerConnection.get_transceivers()
     |> Enum.filter(&(&1.current_direction == :sendonly))
     |> Enum.map(& &1.sender.track.id)
+  end
+
+  defp negotiate_room_sessions(room_server, session_count, label) do
+    running_before = ExWebRTC.PeerConnection.get_all_running()
+
+    1..session_count
+    |> Enum.map(fn number ->
+      user_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: voice_session_id}} =
+               RoomServer.join(room_server, user_id, "#{label}-connection-#{number}", self())
+
+      %{number: number, user_id: user_id, voice_session_id: voice_session_id}
+    end)
+    |> Enum.reduce({[], running_before}, fn session, {sessions, excluded_peer_connections} ->
+      assert {:ok, _answer} =
+               RoomServer.accept_offer(
+                 room_server,
+                 session.user_id,
+                 session.voice_session_id,
+                 "#{label}-negotiation-#{session.number}",
+                 browser_offer(),
+                 command_deadline()
+               )
+
+      peer_connection = negotiated_server_peer_connection(excluded_peer_connections)
+      inbound_track = inbound_audio_transceiver(peer_connection).receiver.track
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 session.voice_session_id,
+                 {:ex_webrtc, peer_connection, {:track, inbound_track}}
+               )
+
+      session =
+        session
+        |> Map.put(:peer_connection, peer_connection)
+        |> Map.put(:inbound_track, inbound_track)
+
+      {[session | sessions], [peer_connection | excluded_peer_connections]}
+    end)
+    |> then(fn {sessions, _peer_connections} ->
+      assert :ok = RoomServer.sync_test_media(room_server)
+      Enum.reverse(sessions)
+    end)
+  end
+
+  defp attach_five_session_diagnostics(expected_forwarded_packets) do
+    handler_id = "five-session-routes-#{System.unique_integer([:positive])}"
+    test_pid = self()
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:discord_clone, :voice_signaling, :operation],
+        fn _, _, metadata, _ ->
+          if metadata[:media_lifecycle] == :rtp_dropped or
+               metadata[:forwarded_packet_count] == expected_forwarded_packets do
+            send(test_pid, {:five_session_route_diagnostic, metadata})
+          end
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
   end
 
   defp start_signaling_channel(id) do
