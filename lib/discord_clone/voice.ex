@@ -13,6 +13,46 @@ defmodule DiscordClone.Voice do
 
   @command_timeout_ms 5_000
 
+  @doc """
+  Returns the safe current Voice Channel Roster snapshot for a Voice Channel.
+
+  This runtime projection contains only User IDs in Voice Session admission
+  order. Workspace-facing code is responsible for authorization and resolving
+  those IDs to display identities.
+  """
+  @spec voice_channel_roster(term()) ::
+          {:ok, %{voice_channel_id: Ecto.UUID.t(), members: [%{user_id: Ecto.UUID.t()}]}}
+          | {:error, :not_found}
+  def voice_channel_roster(voice_channel_id) do
+    UUIDIdentifier.cast_or(voice_channel_id, {:error, :not_found}, fn voice_channel_id ->
+      case room_server(voice_channel_id) do
+        nil -> {:ok, empty_roster(voice_channel_id)}
+        room_server -> safe_voice_channel_roster(room_server, voice_channel_id)
+      end
+    end)
+  end
+
+  @doc false
+  @spec subscribe_to_voice_channel_roster(term()) :: :ok | {:error, :not_found}
+  def subscribe_to_voice_channel_roster(voice_channel_id) do
+    UUIDIdentifier.cast_or(voice_channel_id, {:error, :not_found}, fn voice_channel_id ->
+      Phoenix.PubSub.subscribe(DiscordClone.PubSub, voice_channel_roster_topic(voice_channel_id))
+    end)
+  end
+
+  @doc false
+  @spec publish_voice_channel_roster(%{
+          voice_channel_id: Ecto.UUID.t(),
+          members: [%{user_id: Ecto.UUID.t()}]
+        }) :: :ok
+  def publish_voice_channel_roster(%{voice_channel_id: voice_channel_id} = snapshot) do
+    Phoenix.PubSub.broadcast(
+      DiscordClone.PubSub,
+      voice_channel_roster_topic(voice_channel_id),
+      {:voice_channel_roster_changed, snapshot}
+    )
+  end
+
   @spec ensure_room(term()) :: :ok | {:error, :not_found | term()}
   def ensure_room(voice_channel_id) do
     UUIDIdentifier.cast_or(voice_channel_id, {:error, :not_found}, &ensure_room_id/1)
@@ -528,6 +568,17 @@ defmodule DiscordClone.Voice do
   catch
     :exit, _room_stopped -> {:error, :not_found}
   end
+
+  defp safe_voice_channel_roster(room_server, voice_channel_id) do
+    {:ok, RoomServer.roster(room_server)}
+  catch
+    :exit, _room_stopped -> {:ok, empty_roster(voice_channel_id)}
+  end
+
+  defp empty_roster(voice_channel_id), do: %{voice_channel_id: voice_channel_id, members: []}
+
+  defp voice_channel_roster_topic(voice_channel_id),
+    do: "voice_channel_roster:#{voice_channel_id}"
 
   defp await_room_shutdown(room_server) do
     room_monitor = Process.monitor(room_server)

@@ -1800,6 +1800,81 @@ defmodule DiscordClone.VoiceTest do
     end
   end
 
+  describe "Voice Channel Roster snapshots" do
+    test "publishes admission-ordered safe snapshots through leave, terminal cleanup, and replacement" do
+      first_voice_channel_id = Ecto.UUID.generate()
+      second_voice_channel_id = Ecto.UUID.generate()
+      first_user_id = Ecto.UUID.generate()
+      second_user_id = Ecto.UUID.generate()
+
+      assert :ok = Voice.subscribe_to_voice_channel_roster(first_voice_channel_id)
+      assert :ok = Voice.subscribe_to_voice_channel_roster(second_voice_channel_id)
+
+      assert {:ok, %{voice_session_id: first_voice_session_id}} =
+               Voice.join(first_voice_channel_id, first_user_id, "first-connection", self())
+
+      assert_receive {:voice_channel_roster_changed,
+                      %{
+                        voice_channel_id: ^first_voice_channel_id,
+                        members: [%{user_id: ^first_user_id}]
+                      }}
+
+      assert {:ok, %{voice_session_id: second_voice_session_id}} =
+               Voice.join(first_voice_channel_id, second_user_id, "second-connection", self())
+
+      assert_receive {:voice_channel_roster_changed,
+                      %{
+                        voice_channel_id: ^first_voice_channel_id,
+                        members: [%{user_id: ^first_user_id}, %{user_id: ^second_user_id}]
+                      }}
+
+      assert :ok = Voice.leave(first_voice_channel_id, first_voice_session_id)
+
+      assert_receive {:voice_channel_roster_changed,
+                      %{
+                        voice_channel_id: ^first_voice_channel_id,
+                        members: [%{user_id: ^second_user_id}]
+                      }}
+
+      assert :ok = Voice.crash_session(first_voice_channel_id, second_voice_session_id)
+
+      assert_receive {:voice_channel_roster_changed,
+                      %{voice_channel_id: ^first_voice_channel_id, members: []}}
+
+      assert {:ok, _join_result} =
+               Voice.join(first_voice_channel_id, first_user_id, "replacement-old", self())
+
+      assert_receive {:voice_channel_roster_changed,
+                      %{
+                        voice_channel_id: ^first_voice_channel_id,
+                        members: [%{user_id: ^first_user_id}]
+                      }}
+
+      assert {:ok, _join_result} =
+               Voice.join(second_voice_channel_id, first_user_id, "replacement-new", self())
+
+      assert_receive {:voice_channel_roster_changed,
+                      %{voice_channel_id: ^first_voice_channel_id, members: []}}
+
+      assert_receive {:voice_channel_roster_changed,
+                      %{
+                        voice_channel_id: ^second_voice_channel_id,
+                        members: [%{user_id: ^first_user_id}]
+                      }}
+
+      assert {:ok, %{voice_channel_id: ^second_voice_channel_id, members: roster_members}} =
+               Voice.voice_channel_roster(second_voice_channel_id)
+
+      assert roster_members == [%{user_id: first_user_id}]
+
+      refute Enum.any?(roster_members, fn member ->
+               Map.has_key?(member, :pid) or Map.has_key?(member, :session_pid) or
+                 Map.has_key?(member, :voice_session_id) or Map.has_key?(member, :sdp) or
+                 Map.has_key?(member, :ice)
+             end)
+    end
+  end
+
   describe "durable Voice lifecycle notifications" do
     test "ends only the matching user's Voice Session in a Voice Channel" do
       voice_channel_id = Ecto.UUID.generate()

@@ -8,6 +8,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
   attr :workspace_stream, :any, required: true
   attr :channel_stream, :any, default: nil
   attr :voice_channel_stream, :any, default: nil
+  attr :voice_channel_rosters, :map, default: %{}
+  attr :member_by_user_id, :map, default: %{}
   attr :selected_workspace, :any, default: nil
   attr :selected_channel, :any, default: nil
   attr :member_stream, :any, default: []
@@ -504,6 +506,32 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                         >
                           Delete
                         </button>
+                      </div>
+                    </div>
+                    <div
+                      id={"voice-channel-#{voice_channel.id}-roster"}
+                      class="ml-4 space-y-1 pb-2 pt-1"
+                      aria-label={"#{voice_channel.name} Voice Channel Roster"}
+                    >
+                      <div
+                        :for={
+                          %{user_id: user_id, user: user} <-
+                            roster_members(
+                              @voice_channel_rosters,
+                              @member_by_user_id,
+                              voice_channel.id
+                            )
+                        }
+                        id={"voice-channel-#{voice_channel.id}-roster-member-#{user_id}"}
+                        class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1 text-sm text-base-content/80 transition hover:bg-base-300/60"
+                      >
+                        <span
+                          class="flex size-5 shrink-0 items-center justify-center rounded-md bg-primary/10 text-[0.625rem] font-bold text-primary ring-1 ring-primary/15"
+                          aria-hidden="true"
+                        >
+                          {user_initial(user)}
+                        </span>
+                        <span class="truncate">{user.username}</span>
                       </div>
                     </div>
                   </div>
@@ -1040,6 +1068,17 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
     user.username
     |> String.first()
     |> String.upcase()
+  end
+
+  defp roster_members(voice_channel_rosters, member_by_user_id, voice_channel_id) do
+    voice_channel_rosters
+    |> Map.get(voice_channel_id, [])
+    |> Enum.flat_map(fn %{user_id: user_id} ->
+      case Map.get(member_by_user_id, user_id) do
+        %{user: user} -> [%{user_id: user_id, user: user}]
+        nil -> []
+      end
+    end)
   end
 
   defp member_presence_state(online_user_ids, member) do

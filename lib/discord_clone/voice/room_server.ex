@@ -13,6 +13,8 @@ defmodule DiscordClone.Voice.RoomServer do
     SessionSupervisor
   }
 
+  alias DiscordClone.Voice
+
   @capacity 5
   @test_environment Code.ensure_loaded?(Mix) and Mix.env() == :test
 
@@ -112,6 +114,10 @@ defmodule DiscordClone.Voice.RoomServer do
           {:ok, %{occupancy: non_neg_integer(), capacity: pos_integer()}}
   def occupancy(server), do: GenServer.call(server, :occupancy)
 
+  @spec roster(GenServer.server()) ::
+          %{voice_channel_id: Ecto.UUID.t(), members: [%{user_id: Ecto.UUID.t()}]}
+  def roster(server), do: GenServer.call(server, :roster)
+
   @spec await_empty(GenServer.server()) :: :ok
   def await_empty(server), do: GenServer.call(server, :await_empty)
 
@@ -144,6 +150,7 @@ defmodule DiscordClone.Voice.RoomServer do
        session_by_monitor: %{},
        session_supervisor: nil,
        forwarder: nil,
+       next_admission_order: 0,
        test_admission_observer: test_admission_observer(opts),
        test_peer_connection_opts: test_peer_connection_opts(opts),
        pending_joins: [],
@@ -229,6 +236,8 @@ defmodule DiscordClone.Voice.RoomServer do
 
   def handle_call(:occupancy, _from, state),
     do: {:reply, {:ok, membership_occupancy(state)}, state}
+
+  def handle_call(:roster, _from, state), do: {:reply, roster_snapshot(state), state}
 
   def handle_call(:await_empty, from, state) do
     if map_size(state.memberships) == 0 do
@@ -396,6 +405,7 @@ defmodule DiscordClone.Voice.RoomServer do
       membership = %{
         voice_session_id: voice_session_id,
         user_id: user_id,
+        admission_order: state.next_admission_order,
         signaling_session_id: signaling_session_id,
         session_pid: session_pid,
         session_monitor: session_monitor
@@ -406,9 +416,11 @@ defmodule DiscordClone.Voice.RoomServer do
         |> put_in([:memberships, voice_session_id], membership)
         |> put_in([:session_by_signaling, signaling_session_id], voice_session_id)
         |> put_in([:session_by_monitor, session_monitor], voice_session_id)
+        |> Map.update!(:next_admission_order, &(&1 + 1))
         |> Map.put(:idle_timer, cancel_idle_shutdown(state.idle_timer))
 
       notify_test_admission(state, voice_session_id)
+      :ok = Voice.publish_voice_channel_roster(roster_snapshot(state))
       {:reply, {:ok, session_details(membership, state)}, state}
     else
       {:error, _reason} -> {:reply, {:error, :unavailable}, state}
@@ -509,6 +521,8 @@ defmodule DiscordClone.Voice.RoomServer do
 
         :ok = SessionCoordinator.session_removed(user_id, voice_session_id)
 
+        :ok = Voice.publish_voice_channel_roster(roster_snapshot(state))
+
         if map_size(memberships) == 0 do
           state =
             if Keyword.get(opts, :schedule_idle?, true) do
@@ -593,6 +607,16 @@ defmodule DiscordClone.Voice.RoomServer do
 
   defp membership_occupancy(state),
     do: %{occupancy: map_size(state.memberships), capacity: @capacity}
+
+  defp roster_snapshot(state) do
+    members =
+      state.memberships
+      |> Map.values()
+      |> Enum.sort_by(& &1.admission_order)
+      |> Enum.map(&%{user_id: &1.user_id})
+
+    %{voice_channel_id: state.voice_channel_id, members: members}
+  end
 
   defp room_full(state), do: %{reason: :room_full} |> Map.merge(membership_occupancy(state))
 end

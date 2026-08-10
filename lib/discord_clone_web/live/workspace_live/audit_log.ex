@@ -21,6 +21,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
          {:ok, voice_channels} <-
            Workspaces.list_voice_channels(socket.assigns.current_scope, workspace.id),
          {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace.id),
+         :ok <- subscribe_to_voice_channel_rosters(socket, workspace.id),
+         {:ok, voice_channel_rosters} <-
+           Workspaces.list_voice_channel_rosters(socket.assigns.current_scope, workspace.id),
          :ok <- WorkspaceEvents.subscribe(socket, workspace.id) do
       socket =
         socket
@@ -35,6 +38,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
         |> assign(:context_menu_position, nil)
         |> assign(:audit_events, audit_events)
         |> assign(:banned_members, banned_members)
+        |> assign(:voice_channel_rosters, voice_channel_rosters)
+        |> assign(:member_by_user_id, Map.new(members, &{&1.user_id, &1}))
         |> stream(:workspaces, workspaces)
         |> stream(:channels, channels)
         |> stream(:voice_channels, voice_channels)
@@ -64,6 +69,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
         workspace_stream={@streams.workspaces}
         channel_stream={@streams.channels}
         voice_channel_stream={@streams.voice_channels}
+        voice_channel_rosters={@voice_channel_rosters}
+        member_by_user_id={@member_by_user_id}
         selected_workspace={@selected_workspace}
         member_stream={@streams.workspace_members}
         workspace_form={@workspace_form}
@@ -111,12 +118,33 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
      )}
   end
 
+  def handle_info(
+        {:voice_channel_roster_changed, %{voice_channel_id: voice_channel_id, members: members}},
+        socket
+      ) do
+    socket =
+      assign(
+        socket,
+        :voice_channel_rosters,
+        Map.put(socket.assigns.voice_channel_rosters, voice_channel_id, members)
+      )
+
+    case Workspaces.fetch_voice_channel(
+           socket.assigns.current_scope,
+           socket.assigns.selected_workspace.id,
+           voice_channel_id
+         ) do
+      {:ok, voice_channel} -> {:noreply, stream_insert(socket, :voice_channels, voice_channel)}
+      {:error, _reason} -> {:noreply, socket}
+    end
+  end
+
   def handle_info({:workspace_member_joined, %{workspace_id: workspace_id}}, socket) do
     {:noreply,
      WorkspaceEvents.apply_to_selected(
        socket,
        workspace_id,
-       &WorkspaceEvents.refresh_members(&1, workspace_id)
+       &refresh_workspace_members(&1, workspace_id)
      )}
   end
 
@@ -240,9 +268,37 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
   end
 
   defp refresh_voice_channels(socket, workspace_id) do
-    case Workspaces.list_voice_channels(socket.assigns.current_scope, workspace_id) do
-      {:ok, voice_channels} -> stream(socket, :voice_channels, voice_channels, reset: true)
-      {:error, _reason} -> socket
+    with :ok <- subscribe_to_voice_channel_rosters(socket, workspace_id),
+         {:ok, voice_channels} <-
+           Workspaces.list_voice_channels(socket.assigns.current_scope, workspace_id),
+         {:ok, voice_channel_rosters} <-
+           Workspaces.list_voice_channel_rosters(socket.assigns.current_scope, workspace_id) do
+      socket
+      |> assign(:voice_channel_rosters, voice_channel_rosters)
+      |> stream(:voice_channels, voice_channels, reset: true)
+    else
+      _error -> socket
+    end
+  end
+
+  defp refresh_workspace_members(socket, workspace_id) do
+    case Workspaces.list_members(socket.assigns.current_scope, workspace_id) do
+      {:ok, members} ->
+        socket
+        |> assign(:member_by_user_id, Map.new(members, &{&1.user_id, &1}))
+        |> Presence.refresh_workspace_members(members)
+        |> refresh_voice_channels(workspace_id)
+
+      _error ->
+        socket
+    end
+  end
+
+  defp subscribe_to_voice_channel_rosters(socket, workspace_id) do
+    if connected?(socket) do
+      Workspaces.subscribe_to_voice_channel_rosters(socket.assigns.current_scope, workspace_id)
+    else
+      :ok
     end
   end
 

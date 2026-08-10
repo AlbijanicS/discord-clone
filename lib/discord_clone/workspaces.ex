@@ -103,6 +103,44 @@ defmodule DiscordClone.Workspaces do
 
   def list_voice_channels(_scope, _workspace_id), do: {:error, :unauthenticated}
 
+  @doc """
+  Returns safe runtime Voice Channel Roster snapshots for a scoped Workspace.
+
+  Voice owns only runtime membership. This Workspace boundary authorizes which
+  Voice Channels a subscriber may observe before the web layer resolves User
+  display identity from its already-scoped member data.
+  """
+  @spec list_voice_channel_rosters(Scope.t(), term()) ::
+          {:ok, %{Ecto.UUID.t() => [%{user_id: Ecto.UUID.t()}]}} | {:error, reason()}
+  def list_voice_channel_rosters(%Scope{} = scope, workspace_id) do
+    with {:ok, voice_channels} <- list_voice_channels(scope, workspace_id) do
+      rosters =
+        Map.new(voice_channels, fn voice_channel ->
+          {:ok, %{members: members}} = Voice.voice_channel_roster(voice_channel.id)
+          {voice_channel.id, members}
+        end)
+
+      {:ok, rosters}
+    end
+  end
+
+  def list_voice_channel_rosters(_scope, _workspace_id), do: {:error, :unauthenticated}
+
+  @doc false
+  @spec subscribe_to_voice_channel_rosters(Scope.t(), term()) :: :ok | {:error, reason()}
+  def subscribe_to_voice_channel_rosters(%Scope{} = scope, workspace_id) do
+    with {:ok, voice_channels} <- list_voice_channels(scope, workspace_id) do
+      Enum.reduce_while(voice_channels, :ok, fn voice_channel, :ok ->
+        case Voice.subscribe_to_voice_channel_roster(voice_channel.id) do
+          :ok -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+    end
+  end
+
+  def subscribe_to_voice_channel_rosters(_scope, _workspace_id), do: {:error, :unauthenticated}
+
   def list_members(%Scope{} = scope, workspace_id) do
     with {:ok, %Workspace{id: workspace_id}} <- fetch_workspace(scope, workspace_id) do
       members =

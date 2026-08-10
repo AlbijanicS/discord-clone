@@ -8,6 +8,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
   alias DiscordClone.Chat
   alias DiscordClone.Workspaces.Channel
   alias DiscordClone.Repo
+  alias DiscordClone.Voice
 
   describe "workspace and channel management" do
     setup :register_and_log_in_user
@@ -53,6 +54,87 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
       assert has_element?(view, "#voice-channel-leave")
       assert has_element?(view, "[data-voice-logout]")
       assert has_element?(view, "#voice-channel-create-toggle")
+    end
+
+    test "renders each Voice Channel Roster independently and updates it without a refresh", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, first_voice_channel} =
+        Workspaces.create_voice_channel(scope, workspace.id, %{name: "Lobby"})
+
+      {:ok, second_voice_channel} =
+        Workspaces.create_voice_channel(scope, workspace.id, %{name: "Focus"})
+
+      first_member_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      second_member_scope = DiscordClone.AccountsFixtures.user_scope_fixture()
+      add_workspace_member!(workspace, first_member_scope)
+      add_workspace_member!(workspace, second_member_scope)
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(view, "#voice-channel-#{first_voice_channel.id}-roster")
+      assert has_element?(view, "#voice-channel-#{second_voice_channel.id}-roster")
+
+      refute has_element?(
+               view,
+               "#voice-channel-#{first_voice_channel.id}-roster-member-#{first_member_scope.user.id}"
+             )
+
+      assert {:ok, %{voice_session_id: first_voice_session_id}} =
+               Voice.join(
+                 first_voice_channel.id,
+                 first_member_scope.user.id,
+                 "first-roster-session",
+                 self()
+               )
+
+      assert has_element?(
+               view,
+               "#voice-channel-#{first_voice_channel.id}-roster-member-#{first_member_scope.user.id}",
+               first_member_scope.user.username
+             )
+
+      assert has_element?(
+               view,
+               "#voice-channel-#{first_voice_channel.id}-roster-member-#{first_member_scope.user.id} [aria-hidden='true']",
+               first_member_scope.user.username |> String.first() |> String.upcase()
+             )
+
+      refute has_element?(
+               view,
+               "#voice-channel-#{second_voice_channel.id}-roster-member-#{first_member_scope.user.id}"
+             )
+
+      assert {:ok, %{voice_session_id: second_voice_session_id}} =
+               Voice.join(
+                 first_voice_channel.id,
+                 second_member_scope.user.id,
+                 "second-roster-session",
+                 self()
+               )
+
+      assert has_element?(
+               view,
+               "#voice-channel-#{first_voice_channel.id}-roster-member-#{first_member_scope.user.id} + #voice-channel-#{first_voice_channel.id}-roster-member-#{second_member_scope.user.id}"
+             )
+
+      assert :ok = Voice.leave(first_voice_channel.id, first_voice_session_id)
+
+      refute has_element?(
+               view,
+               "#voice-channel-#{first_voice_channel.id}-roster-member-#{first_member_scope.user.id}"
+             )
+
+      assert has_element?(
+               view,
+               "#voice-channel-#{first_voice_channel.id}-roster-member-#{second_member_scope.user.id}"
+             )
+
+      assert :ok = Voice.leave(first_voice_channel.id, second_voice_session_id)
     end
 
     test "creates, validates, renames, and deletes a voice channel from the shell", %{

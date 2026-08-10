@@ -53,6 +53,9 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          :ok <- subscribe_to_channel_reactions(socket, channel.id),
          :ok <- subscribe_to_workspace_messages(socket, workspace.id),
          :ok <- subscribe_to_workspace_moderation(socket, workspace.id),
+         :ok <- subscribe_to_voice_channel_rosters(socket, workspace.id),
+         {:ok, voice_channel_rosters} <-
+           Workspaces.list_voice_channel_rosters(socket.assigns.current_scope, workspace_id),
          :ok <- WorkspaceEvents.subscribe(socket, workspace.id),
          :ok <- subscribe_to_channel_read_states(socket, channels) do
       message_rows = MessageRows.annotate(messages)
@@ -110,6 +113,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         |> assign(:suppressed_selected_channel_read_state_payloads, MapSet.new())
         |> assign(:reaction_summaries, reaction_summaries)
         |> assign(:member_by_user_id, member_by_user_id(members))
+        |> assign(:voice_channel_rosters, voice_channel_rosters)
         |> assign(
           :member_actions_by_user_id,
           member_actions_by_user_id(socket.assigns.current_scope, workspace, members)
@@ -142,6 +146,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         workspace_stream={@streams.workspaces}
         channel_stream={@streams.channels}
         voice_channel_stream={@streams.voice_channels}
+        voice_channel_rosters={@voice_channel_rosters}
+        member_by_user_id={@member_by_user_id}
         selected_workspace={@selected_workspace}
         selected_channel={@selected_channel}
         member_stream={@streams.workspace_members}
@@ -750,6 +756,27 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
        workspace_id,
        &refresh_voice_channel_sidebar(&1, workspace_id)
      )}
+  end
+
+  def handle_info(
+        {:voice_channel_roster_changed, %{voice_channel_id: voice_channel_id, members: members}},
+        socket
+      ) do
+    socket =
+      assign(
+        socket,
+        :voice_channel_rosters,
+        Map.put(socket.assigns.voice_channel_rosters, voice_channel_id, members)
+      )
+
+    case Workspaces.fetch_voice_channel(
+           socket.assigns.current_scope,
+           socket.assigns.selected_workspace.id,
+           voice_channel_id
+         ) do
+      {:ok, voice_channel} -> {:noreply, stream_insert(socket, :voice_channels, voice_channel)}
+      {:error, _reason} -> {:noreply, socket}
+    end
   end
 
   def handle_info({:workspace_member_joined, %{workspace_id: workspace_id}}, socket) do
@@ -2427,6 +2454,14 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     end
   end
 
+  defp subscribe_to_voice_channel_rosters(socket, workspace_id) do
+    if connected?(socket) do
+      Workspaces.subscribe_to_voice_channel_rosters(socket.assigns.current_scope, workspace_id)
+    else
+      :ok
+    end
+  end
+
   defp load_channel_unread_counts(socket, workspace_id) do
     if connected?(socket) do
       Chat.list_unread_counts(socket.assigns.current_scope, workspace_id)
@@ -2605,9 +2640,16 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   end
 
   defp refresh_voice_channel_sidebar(socket, workspace_id) do
-    case Workspaces.list_voice_channels(socket.assigns.current_scope, workspace_id) do
-      {:ok, voice_channels} -> stream(socket, :voice_channels, voice_channels, reset: true)
-      {:error, _reason} -> socket
+    with :ok <- subscribe_to_voice_channel_rosters(socket, workspace_id),
+         {:ok, voice_channels} <-
+           Workspaces.list_voice_channels(socket.assigns.current_scope, workspace_id),
+         {:ok, voice_channel_rosters} <-
+           Workspaces.list_voice_channel_rosters(socket.assigns.current_scope, workspace_id) do
+      socket
+      |> assign(:voice_channel_rosters, voice_channel_rosters)
+      |> stream(:voice_channels, voice_channels, reset: true)
+    else
+      _error -> socket
     end
   end
 
@@ -2628,6 +2670,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         )
       )
       |> Presence.refresh_workspace_members(members)
+      |> refresh_voice_channel_sidebar(workspace_id)
       |> refresh_mention_suggestions()
     else
       _error -> socket
