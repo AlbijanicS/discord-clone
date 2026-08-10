@@ -24,11 +24,23 @@ defmodule DiscordCloneWeb.WorkspaceLive.MemberActionsMenu do
   attr :user_id, :string, required: true
   attr :current_scope, :map, required: true
   attr :workspace, :map, required: true
+  attr :voice_channel_id, :string, default: nil
 
   def menu_items(assigns) do
     ~H"""
     <%= for action <- @actions do %>
       <%= cond do %>
+        <% action == :voice_disconnect -> %>
+          <button
+            id={"#{@id_prefix}-voice-disconnect"}
+            type="button"
+            class="block w-full rounded px-3 py-2 text-left text-xs font-medium text-error transition hover:bg-error/10"
+            phx-click="voice_disconnect"
+            phx-value-voice_channel_id={@voice_channel_id}
+            phx-value-user_id={@user_id}
+          >
+            Voice Disconnect
+          </button>
         <% action == :timeout -> %>
           <div class="border-y border-base-300/70 py-1">
             <p class="px-3 py-1 text-[0.65rem] font-semibold uppercase text-base-content/50">
@@ -156,6 +168,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.MemberActionsMenu do
   defp member_action_label(:remove_timeout), do: "Remove timeout"
   defp member_action_label(:kick), do: "Kick"
   defp member_action_label(:ban), do: "Ban"
+  defp member_action_label(:voice_disconnect), do: "Voice Disconnect"
   defp member_action_label(:send_friend_request), do: "Send Friend Request"
 
   defp member_action_destructive?(action), do: action in [:kick, :ban]

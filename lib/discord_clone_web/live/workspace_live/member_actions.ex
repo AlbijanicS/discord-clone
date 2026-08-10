@@ -101,6 +101,24 @@ defmodule DiscordCloneWeb.WorkspaceLive.MemberActions do
     )
   end
 
+  def voice_disconnect(
+        socket,
+        %{"voice_channel_id" => voice_channel_id, "user_id" => target_user_id},
+        workspace_id
+      ) do
+    _ =
+      Workspaces.voice_disconnect_member(
+        socket.assigns.current_scope,
+        workspace_id,
+        voice_channel_id,
+        target_user_id
+      )
+
+    {:noreply, socket}
+  end
+
+  def voice_disconnect(socket, _params, _workspace_id), do: {:noreply, socket}
+
   defp dispatch_member_action(scope, "promote_to_admin", workspace_id, target_user_id, _params) do
     Workspaces.change_member_role(scope, workspace_id, target_user_id, "admin")
   end

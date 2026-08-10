@@ -9,6 +9,120 @@ defmodule DiscordClone.WorkspacesVoiceLifecycleTest do
   import DiscordClone.AccountsFixtures
 
   describe "durable access revocation" do
+    test "a permitted Voice Disconnect ends only the target Voice Session without changing Workspace state" do
+      owner_scope = user_scope_fixture()
+      disconnected_scope = user_scope_fixture()
+      retained_scope = user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Voice Disconnect"})
+      add_workspace_member!(workspace, disconnected_scope)
+      add_workspace_member!(workspace, retained_scope)
+
+      {:ok, voice_channel} =
+        Workspaces.create_voice_channel(owner_scope, workspace.id, %{name: "lobby"})
+
+      on_exit(fn -> cleanup_room(voice_channel.id) end)
+
+      assert {:ok, %{occupancy: 1}} =
+               Voice.join(
+                 voice_channel.id,
+                 disconnected_scope.user.id,
+                 "disconnected-connection",
+                 self()
+               )
+
+      assert {:ok, %{occupancy: 2}} =
+               Voice.join(voice_channel.id, retained_scope.user.id, "retained-connection", self())
+
+      assert :ok =
+               Workspaces.voice_disconnect_member(
+                 owner_scope,
+                 workspace.id,
+                 voice_channel.id,
+                 disconnected_scope.user.id
+               )
+
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel.id)
+
+      assert {:ok, members} = Workspaces.list_members(owner_scope, workspace.id)
+
+      assert Enum.any?(members, &(&1.user_id == disconnected_scope.user.id))
+      assert Enum.any?(members, &(&1.user_id == retained_scope.user.id))
+
+      assert {:ok, %{occupancy: 2}} =
+               Voice.join(
+                 voice_channel.id,
+                 disconnected_scope.user.id,
+                 "eligible-rejoin",
+                 self()
+               )
+    end
+
+    test "Voice Disconnect rejects unauthorized actors and leaves a moved Voice Session alone" do
+      owner_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      target_scope = user_scope_fixture()
+
+      {:ok, workspace} =
+        Workspaces.create_workspace(owner_scope, %{name: "Voice Disconnect Safety"})
+
+      add_workspace_member!(workspace, member_scope)
+      add_workspace_member!(workspace, target_scope)
+
+      {:ok, first_voice_channel} =
+        Workspaces.create_voice_channel(owner_scope, workspace.id, %{name: "lobby"})
+
+      {:ok, second_voice_channel} =
+        Workspaces.create_voice_channel(owner_scope, workspace.id, %{name: "focus"})
+
+      on_exit(fn -> cleanup_room(first_voice_channel.id) end)
+      on_exit(fn -> cleanup_room(second_voice_channel.id) end)
+
+      assert {:ok, %{occupancy: 1}} =
+               Voice.join(
+                 first_voice_channel.id,
+                 target_scope.user.id,
+                 "target-connection",
+                 self()
+               )
+
+      assert {:error, :unauthorized} =
+               Workspaces.voice_disconnect_member(
+                 member_scope,
+                 workspace.id,
+                 first_voice_channel.id,
+                 target_scope.user.id
+               )
+
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(first_voice_channel.id)
+
+      assert {:ok, %{occupancy: 1}} =
+               Voice.join(
+                 second_voice_channel.id,
+                 target_scope.user.id,
+                 "moved-connection",
+                 self()
+               )
+
+      assert :ok =
+               Workspaces.voice_disconnect_member(
+                 owner_scope,
+                 workspace.id,
+                 first_voice_channel.id,
+                 target_scope.user.id
+               )
+
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(second_voice_channel.id)
+
+      assert :ok =
+               Workspaces.voice_disconnect_member(
+                 owner_scope,
+                 workspace.id,
+                 first_voice_channel.id,
+                 target_scope.user.id
+               )
+    end
+
     test "a Workspace Mute keeps a Voice Session connected and publishes only its effective muted state" do
       owner_scope = user_scope_fixture()
       muted_scope = user_scope_fixture()

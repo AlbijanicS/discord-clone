@@ -282,6 +282,11 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
     MemberActions.ban(socket, params, workspace_id, &refresh_member_action/2)
   end
 
+  def handle_event("voice_disconnect", params, socket) do
+    workspace_id = socket.assigns.selected_workspace.id
+    MemberActions.voice_disconnect(socket, params, workspace_id)
+  end
+
   defp refresh_member_action(socket, %{workspace_id: workspace_id}) do
     {:ok, members} = Workspaces.list_members(socket.assigns.current_scope, workspace_id)
     Presence.refresh_workspace_members(socket, members)

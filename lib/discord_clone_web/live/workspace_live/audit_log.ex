@@ -218,6 +218,11 @@ defmodule DiscordCloneWeb.WorkspaceLive.AuditLog do
     MemberActions.ban(socket, params, workspace_id, &refresh_member_action/2)
   end
 
+  def handle_event("voice_disconnect", params, socket) do
+    workspace_id = socket.assigns.selected_workspace.id
+    MemberActions.voice_disconnect(socket, params, workspace_id)
+  end
+
   def handle_event("unban_member", %{"user_id" => user_id}, socket) do
     workspace_id = socket.assigns.selected_workspace.id
     MemberActions.unban(socket, %{"user_id" => user_id}, workspace_id, &refresh_unban/2)

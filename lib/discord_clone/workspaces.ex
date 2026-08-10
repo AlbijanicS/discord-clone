@@ -596,6 +596,34 @@ defmodule DiscordClone.Workspaces do
   end
 
   @doc """
+  Ends a permitted target's current Voice Session in one Voice Channel.
+
+  This applies the existing Workspace Member moderation authorization without
+  changing durable membership or moderation state. A missing or stale matching
+  Voice Session is a successful no-op.
+  """
+  @spec voice_disconnect_member(Scope.t(), term(), term(), term()) ::
+          :ok | {:error, reason() | term()}
+  def voice_disconnect_member(
+        %Scope{user: %User{}} = scope,
+        workspace_id,
+        voice_channel_id,
+        target_user_id
+      ) do
+    with {:ok, %Workspace{} = workspace} <- fetch_workspace(scope, workspace_id),
+         {:ok, %VoiceChannel{} = voice_channel} <-
+           fetch_voice_channel(scope, workspace.id, voice_channel_id),
+         {:ok, %WorkspaceMembership{} = target_membership} <-
+           get_workspace_membership(workspace.id, target_user_id),
+         :ok <- authorize_voice_disconnect(scope, workspace, target_membership) do
+      Voice.end_user_session(voice_channel.id, target_membership.user_id)
+    end
+  end
+
+  def voice_disconnect_member(_scope, _workspace_id, _voice_channel_id, _target_user_id),
+    do: {:error, :unauthenticated}
+
+  @doc """
   Applies a mute and its audit event atomically, then broadcasts the committed change.
 
   Returns the moderation record, a tagged validation changeset, or a normalized reason.
@@ -1596,6 +1624,12 @@ defmodule DiscordClone.Workspaces do
 
   defp authorize_ban_member(scope, workspace, %WorkspaceMembership{} = target_membership) do
     if :ban in available_member_actions(scope, workspace, target_membership),
+      do: :ok,
+      else: {:error, :unauthorized}
+  end
+
+  defp authorize_voice_disconnect(scope, workspace, %WorkspaceMembership{} = target_membership) do
+    if available_member_actions(scope, workspace, target_membership) != [],
       do: :ok,
       else: {:error, :unauthorized}
   end

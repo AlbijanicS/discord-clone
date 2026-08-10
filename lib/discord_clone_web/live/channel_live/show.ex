@@ -1201,6 +1201,11 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
     MemberActions.ban(socket, params, workspace_id, &refresh_workspace_moderation/2)
   end
 
+  def handle_event("voice_disconnect", params, socket) do
+    workspace_id = socket.assigns.selected_workspace.id
+    MemberActions.voice_disconnect(socket, params, workspace_id)
+  end
+
   def handle_event("open_workspace_actions", %{"workspace_id" => workspace_id}, socket) do
     {:noreply,
      socket

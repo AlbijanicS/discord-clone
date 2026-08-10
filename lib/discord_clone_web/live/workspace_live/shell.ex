@@ -551,6 +551,35 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                         >
                           <.icon name="hero-speaker-x-mark" class="size-3.5" />
                         </span>
+                        <% roster_actions =
+                          roster_member_actions(
+                            @current_scope,
+                            @selected_workspace,
+                            @member_by_user_id,
+                            user_id
+                          ) %>
+                        <details
+                          :if={roster_actions != []}
+                          id={"voice-channel-#{voice_channel.id}-roster-member-#{user_id}-actions"}
+                          class="relative ml-auto shrink-0"
+                        >
+                          <summary
+                            class="btn btn-square btn-xs btn-ghost list-none transition hover:scale-105 [&::-webkit-details-marker]:hidden"
+                            aria-label={"Open #{user.username} Voice Channel Roster actions"}
+                          >
+                            <.icon name="hero-ellipsis-horizontal" class="size-4" />
+                          </summary>
+                          <div class="absolute right-0 z-30 mt-1 w-40 rounded border border-base-300 bg-base-100 p-1 shadow-lg">
+                            <MemberActionsMenu.menu_items
+                              id_prefix={"voice-channel-#{voice_channel.id}-roster-member-#{user_id}"}
+                              actions={roster_actions}
+                              user_id={user_id}
+                              current_scope={@current_scope}
+                              workspace={@selected_workspace}
+                              voice_channel_id={voice_channel.id}
+                            />
+                          </div>
+                        </details>
                       </div>
                     </div>
                   </div>
@@ -1109,6 +1138,19 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
           []
       end
     end)
+  end
+
+  defp roster_member_actions(current_scope, workspace, member_by_user_id, user_id) do
+    case Map.get(member_by_user_id, user_id) do
+      nil ->
+        []
+
+      membership ->
+        case Workspaces.available_member_actions(current_scope, workspace, membership) do
+          [] -> []
+          actions -> actions ++ [:voice_disconnect]
+        end
+    end
   end
 
   defp member_presence_state(online_user_ids, member) do

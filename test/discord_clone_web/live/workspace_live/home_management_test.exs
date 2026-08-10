@@ -2,6 +2,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
   use DiscordCloneWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
+  import DiscordClone.AccountsFixtures
   import DiscordCloneWeb.WorkspaceLiveTestHelpers
 
   alias DiscordClone.Workspaces
@@ -187,6 +188,121 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
              )
 
       assert :ok = Voice.leave(first_voice_channel.id, second_voice_session_id)
+    end
+
+    test "shows Voice Disconnect only for permitted roster targets", %{
+      conn: owner_conn,
+      scope: owner_scope
+    } do
+      admin_scope = user_scope_fixture()
+      member_scope = user_scope_fixture()
+      regular_scope = user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Roster actions"})
+      add_workspace_member!(workspace, admin_scope, "admin")
+      add_workspace_member!(workspace, member_scope)
+      add_workspace_member!(workspace, regular_scope)
+
+      {:ok, voice_channel} =
+        Workspaces.create_voice_channel(owner_scope, workspace.id, %{name: "Lobby"})
+
+      on_exit(fn -> cleanup_room(voice_channel.id) end)
+
+      for {scope, connection_id} <- [
+            {owner_scope, "owner"},
+            {admin_scope, "admin"},
+            {member_scope, "member"},
+            {regular_scope, "regular"}
+          ] do
+        assert {:ok, _session} =
+                 Voice.join(voice_channel.id, scope.user.id, connection_id, self())
+      end
+
+      {:ok, owner_view, _html} =
+        live(owner_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(
+               owner_view,
+               "#voice-channel-#{voice_channel.id}-roster-member-#{admin_scope.user.id}-voice-disconnect"
+             )
+
+      assert has_element?(
+               owner_view,
+               "#voice-channel-#{voice_channel.id}-roster-member-#{member_scope.user.id}-voice-disconnect"
+             )
+
+      refute has_element?(
+               owner_view,
+               "#voice-channel-#{voice_channel.id}-roster-member-#{owner_scope.user.id}-actions"
+             )
+
+      admin_conn = build_conn() |> log_in_user(admin_scope.user)
+
+      {:ok, admin_view, _html} =
+        live(admin_conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      assert has_element?(
+               admin_view,
+               "#voice-channel-#{voice_channel.id}-roster-member-#{member_scope.user.id}-voice-disconnect"
+             )
+
+      refute has_element?(
+               admin_view,
+               "#voice-channel-#{voice_channel.id}-roster-member-#{owner_scope.user.id}-actions"
+             )
+
+      refute has_element?(
+               admin_view,
+               "#voice-channel-#{voice_channel.id}-roster-member-#{admin_scope.user.id}-actions"
+             )
+
+      regular_conn = build_conn() |> log_in_user(regular_scope.user)
+
+      {:ok, regular_view, _html} =
+        live(
+          regular_conn,
+          ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}"
+        )
+
+      refute has_element?(
+               regular_view,
+               "#voice-channel-#{voice_channel.id}-roster-member-#{member_scope.user.id}-actions"
+             )
+    end
+
+    test "Voice Disconnect silently removes the target from the Voice Channel Roster", %{
+      conn: conn,
+      scope: owner_scope
+    } do
+      target_scope = user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Roster disconnect"})
+      add_workspace_member!(workspace, target_scope)
+
+      {:ok, voice_channel} =
+        Workspaces.create_voice_channel(owner_scope, workspace.id, %{name: "Lobby"})
+
+      on_exit(fn -> cleanup_room(voice_channel.id) end)
+
+      assert {:ok, _session} =
+               Voice.join(voice_channel.id, target_scope.user.id, "target-connection", self())
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      disconnect_button =
+        "#voice-channel-#{voice_channel.id}-roster-member-#{target_scope.user.id}-voice-disconnect"
+
+      assert has_element?(view, disconnect_button)
+      view |> element(disconnect_button) |> render_click()
+
+      refute has_element?(
+               view,
+               "#voice-channel-#{voice_channel.id}-roster-member-#{target_scope.user.id}"
+             )
+
+      refute has_element?(view, "#flash-info[role='alert']")
+      refute has_element?(view, "#flash-error[role='alert']")
     end
 
     test "creates, validates, renames, and deletes a voice channel from the shell", %{
@@ -1170,5 +1286,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
       assert has_element?(view, "#channel-create-toggle")
       assert has_element?(view, "#channel-#{workspace.default_channel_id}[aria-current='page']")
     end
+  end
+
+  defp cleanup_room(voice_channel_id) do
+    _ = Voice.end_channel_sessions(voice_channel_id)
+    _ = Voice.expire_idle_room(voice_channel_id)
   end
 end
