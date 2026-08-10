@@ -136,14 +136,136 @@ defmodule DiscordClone.Voice.ForwarderTest do
     assert_receive {_cast, {:deliver_rtp, ^first_id, 0, ^packet}}
   end
 
+  test "routes every ordered pair for room sizes one through five" do
+    for room_size <- 1..5 do
+      forwarder = start_forwarder()
+
+      sessions =
+        Enum.map(1..room_size, fn number ->
+          {Ecto.UUID.generate(), number * 100}
+        end)
+
+      for {voice_session_id, track_id} <- sessions do
+        register_ready_session(forwarder, voice_session_id, track_id)
+      end
+
+      assert :ok = Forwarder.sync(forwarder)
+
+      deliveries =
+        Enum.flat_map(sessions, fn {source_id, track_id} ->
+          packet =
+            ExRTP.Packet.new(<<track_id>>, sequence_number: track_id, timestamp: track_id)
+
+          assert :ok = Forwarder.forward_rtp(forwarder, source_id, track_id, packet)
+
+          receive_deliveries(packet, room_size - 1)
+          |> Enum.map(fn {destination_id, slot} -> {source_id, destination_id, slot} end)
+        end)
+
+      expected_pairs =
+        for {source_id, _} <- sessions,
+            {destination_id, _} <- sessions,
+            source_id != destination_id,
+            into: MapSet.new() do
+          {source_id, destination_id}
+        end
+
+      assert MapSet.new(
+               Enum.map(deliveries, fn {source_id, destination_id, _slot} ->
+                 {source_id, destination_id}
+               end)
+             ) == expected_pairs
+
+      refute Enum.any?(deliveries, fn {source_id, destination_id, _slot} ->
+               source_id == destination_id
+             end)
+
+      for {destination_id, _} <- sessions do
+        destination_slots =
+          for {_source_id, ^destination_id, slot} <- deliveries, do: slot
+
+        assert Enum.sort(destination_slots) == Enum.to_list(0..(room_size - 2)//1)
+      end
+    end
+  end
+
+  test "preserves existing slots and gives a replacement source the first released slot" do
+    forwarder = start_forwarder()
+
+    [{first_id, _}, {second_id, _}, {third_id, _}, {fourth_id, _}] =
+      sessions =
+      Enum.map(1..4, fn number ->
+        {Ecto.UUID.generate(), number * 100}
+      end)
+
+    for {voice_session_id, track_id} <- sessions do
+      register_ready_session(forwarder, voice_session_id, track_id)
+    end
+
+    assert :ok = Forwarder.sync(forwarder)
+
+    initial_slots =
+      slots_at_destination(
+        forwarder,
+        first_id,
+        [{second_id, 200}, {third_id, 300}, {fourth_id, 400}],
+        3
+      )
+
+    assert :ok = Forwarder.session_removed(forwarder, third_id)
+
+    replacement_id = Ecto.UUID.generate()
+    register_ready_session(forwarder, replacement_id, 500)
+    assert :ok = Forwarder.sync(forwarder)
+
+    replacement_slots =
+      slots_at_destination(
+        forwarder,
+        first_id,
+        [{second_id, 200}, {fourth_id, 400}, {replacement_id, 500}],
+        3
+      )
+
+    assert replacement_slots[second_id] == initial_slots[second_id]
+    assert replacement_slots[fourth_id] == initial_slots[fourth_id]
+    assert replacement_slots[replacement_id] == initial_slots[third_id]
+    assert MapSet.size(MapSet.new(Map.values(replacement_slots))) == 3
+  end
+
   defp start_forwarder do
-    start_supervised!({Forwarder, voice_channel_id: Ecto.UUID.generate()})
+    start_supervised!(%{
+      id: make_ref(),
+      start: {Forwarder, :start_link, [[voice_channel_id: Ecto.UUID.generate()]]}
+    })
   end
 
   defp register_ready_session(forwarder, voice_session_id, track_id) do
     assert :ok = Forwarder.session_started(forwarder, voice_session_id, self())
     assert :ok = Forwarder.receive_ready(forwarder, voice_session_id, self(), :opus)
     assert :ok = Forwarder.send_ready(forwarder, voice_session_id, self(), track_id, :opus)
+  end
+
+  defp receive_deliveries(_packet, 0), do: []
+
+  defp receive_deliveries(packet, count) do
+    Enum.map(1..count, fn _ ->
+      assert_receive {_cast, {:deliver_rtp, destination_id, slot, ^packet}}
+      {destination_id, slot}
+    end)
+  end
+
+  defp slots_at_destination(forwarder, destination_id, sources, delivery_count) do
+    Enum.reduce(sources, %{}, fn {source_id, track_id}, slots ->
+      packet = ExRTP.Packet.new(<<track_id>>, sequence_number: track_id, timestamp: track_id)
+      assert :ok = Forwarder.forward_rtp(forwarder, source_id, track_id, packet)
+
+      source_slots =
+        packet
+        |> receive_deliveries(delivery_count)
+        |> Map.new()
+
+      Map.put(slots, source_id, Map.fetch!(source_slots, destination_id))
+    end)
   end
 
   defp attach_route_diagnostics do

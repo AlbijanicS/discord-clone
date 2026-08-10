@@ -1112,7 +1112,7 @@ defmodule DiscordClone.VoiceTest do
       signaling_channels = Enum.map(1..6, &start_signaling_channel/1)
 
       results =
-        1..5
+        1..6
         |> Task.async_stream(
           fn number ->
             Voice.join(
@@ -1122,22 +1122,21 @@ defmodule DiscordClone.VoiceTest do
               Enum.at(signaling_channels, number - 1)
             )
           end,
-          max_concurrency: 5,
+          max_concurrency: 6,
           timeout: :infinity
         )
         |> Enum.map(fn {:ok, result} -> result end)
 
-      assert Enum.all?(results, &match?({:ok, %{occupancy: _, capacity: 5}}, &1))
+      {admitted, rejected} =
+        Enum.split_with(results, &match?({:ok, %{capacity: 5}}, &1))
 
-      assert {:error, %{reason: :room_full, occupancy: 5, capacity: 5} = room_full} =
-               Voice.join(
-                 voice_channel_id,
-                 Ecto.UUID.generate(),
-                 "connection-6",
-                 Enum.at(signaling_channels, 5)
-               )
+      assert length(admitted) == 5
+
+      assert [{:error, %{reason: :room_full, occupancy: 5, capacity: 5} = room_full}] =
+               rejected
 
       assert Map.keys(room_full) |> Enum.sort() == [:capacity, :occupancy, :reason]
+      assert {:ok, %{occupancy: 5, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
     end
 
     test "leave is idempotent and the final leave begins empty-room cleanup" do
