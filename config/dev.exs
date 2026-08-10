@@ -19,7 +19,22 @@ config :discord_clone, DiscordClone.Repo,
 config :discord_clone, DiscordCloneWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
-  http: [ip: {127, 0, 0, 1}],
+  url: [
+    scheme: "https",
+    host: "192.168.1.42",
+    port: 4001
+  ],
+  http: [ip: {0, 0, 0, 0}],
+  https: [
+    port: 4001,
+    cipher_suite: :strong,
+    keyfile: "priv/cert/lan-key.pem",
+    certfile: "priv/cert/lan.pem"
+  ],
+  check_origin: [
+    "//192.168.1.42:4001",
+    "//localhost:4001"
+  ],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,

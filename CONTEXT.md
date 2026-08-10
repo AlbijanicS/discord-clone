@@ -69,6 +69,46 @@ The browser tab that owns a User's active Voice Session and continues playing
 voice audio while that tab remains connected.
 _Avoid_: Voice browser, active tab
 
+**Local Mute**:
+A Voice Owner Tab's voluntary microphone-capture state. It stops that tab from
+sending audio without changing the User's Workspace moderation state. Its
+effective muted state is visible in the Voice Channel Roster.
+_Avoid_: Server mute, moderation mute
+
+**Local Deafen**:
+A Voice Owner Tab's voluntary remote-audio playback state. It silences remote
+audio and enables Local Mute, but does not change Workspace moderation state.
+Its effective deafened state is visible in the Voice Channel Roster.
+_Avoid_: Server deafen, moderation deafen
+
+**Workspace Mute**:
+A durable, Workspace-wide moderation restriction that prevents a User's Voice
+Session audio and other participation while allowing the User to remain in a
+Voice Channel as an Audio Destination. Its effective muted state is visible in
+the Voice Channel Roster without exposing whether it is voluntary or moderated.
+_Avoid_: Local mute, server mute
+
+**Workspace Timeout**:
+A durable, time-bounded Workspace-wide moderation restriction that ends a
+User's active Voice Session and prevents Voice Channel admission until expiry.
+_Avoid_: Temporary mute, Voice timeout
+
+**Voice Disconnect**:
+An owner or admin action that ends a target User's current Voice Session without
+changing Workspace membership or blocking a later eligible Voice Channel join.
+It does not disclose its reason to the target User.
+_Avoid_: Kick, timeout, Voice ban
+
+**Voice Channel Roster**:
+The live list of Users with active Voice Sessions in a Voice Channel, including
+their display identity and shared Voice control states.
+_Avoid_: Voice room, participant list
+
+**Speaking Indicator**:
+A live roster state showing that a Voice Session is currently producing accepted
+audio activity. It is not a moderation decision and does not authorize audio.
+_Avoid_: Voice activity message, talking flag
+
 **Audio Route**:
 The room-local, directed permission for accepted inbound RTP from one Voice
 Session to be delivered to another Voice Session's outbound track.
@@ -214,6 +254,18 @@ _Avoid_: Unread range
 - A **Voice Session** is controlled by one **Voice Owner Tab**
 - A User may continue using the app from other browser tabs while one
   **Voice Owner Tab** remains connected to voice
+- A **Voice Channel Roster** updates immediately when a Voice Session starts or
+  ends, without requiring a Workspace view refresh
+- A **Voice Channel Roster** combines live Voice Session states with the User
+  display identity already available to the Workspace view
+- A Workspace view shows a separate **Voice Channel Roster** for each Voice
+  Channel in that Workspace
+- A **Voice Channel Roster** is ordered by Voice Session admission and retains
+  that order until a Voice Session ends
+- A Voice Session ending clears its shared muted, deafened, and speaking states
+  from the **Voice Channel Roster** immediately
+- Owners and admins may apply their existing permitted Workspace Member actions
+  and **Voice Disconnect** from a **Voice Channel Roster** row
 - A **Voice Session** has at most four **Audio Output Slots** in a Voice
   Channel capped at five active Voice Sessions
 - A Voice join requires four usable **Audio Output Slots**; if the Voice Owner

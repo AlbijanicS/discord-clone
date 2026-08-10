@@ -41,3 +41,5 @@ npm-debug.log
 # Agent skills installed via npx skills
 /.agents/
 skills-lock.json
+
+/priv/cert/
