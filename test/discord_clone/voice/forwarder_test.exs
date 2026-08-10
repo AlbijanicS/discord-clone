@@ -232,6 +232,41 @@ defmodule DiscordClone.Voice.ForwarderTest do
     assert MapSet.size(MapSet.new(Map.values(replacement_slots))) == 3
   end
 
+  test "an ended source withdraws every destination route without disturbing other sources" do
+    forwarder = start_forwarder()
+
+    [{first_id, first_track_id}, {second_id, second_track_id}, {third_id, _third_track_id}] =
+      sessions =
+      Enum.map(1..3, fn number ->
+        {Ecto.UUID.generate(), number * 100}
+      end)
+
+    for {voice_session_id, track_id} <- sessions do
+      register_ready_session(forwarder, voice_session_id, track_id)
+    end
+
+    assert :ok = Forwarder.sync(forwarder)
+
+    ended_packet = ExRTP.Packet.new(<<1>>, sequence_number: 1, timestamp: 1, ssrc: 1)
+    assert :ok = Forwarder.forward_rtp(forwarder, first_id, first_track_id, ended_packet)
+
+    assert MapSet.new(receive_deliveries(ended_packet, 2) |> Enum.map(&elem(&1, 0))) ==
+             MapSet.new([second_id, third_id])
+
+    assert :ok = Forwarder.source_ended(forwarder, first_id, self(), first_track_id)
+    assert :ok = Forwarder.source_ended(forwarder, first_id, self(), first_track_id)
+    assert :ok = Forwarder.sync(forwarder)
+    assert :ok = Forwarder.forward_rtp(forwarder, first_id, first_track_id, ended_packet)
+    assert :ok = Forwarder.sync(forwarder)
+    refute_receive {_cast, {:deliver_rtp, _, _, ^ended_packet}}, 0
+
+    retained_packet = ExRTP.Packet.new(<<2>>, sequence_number: 2, timestamp: 2, ssrc: 2)
+    assert :ok = Forwarder.forward_rtp(forwarder, second_id, second_track_id, retained_packet)
+
+    assert MapSet.new(receive_deliveries(retained_packet, 2) |> Enum.map(&elem(&1, 0))) ==
+             MapSet.new([first_id, third_id])
+  end
+
   defp start_forwarder do
     start_supervised!(%{
       id: make_ref(),

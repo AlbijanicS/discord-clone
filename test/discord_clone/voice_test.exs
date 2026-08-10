@@ -1044,6 +1044,45 @@ defmodule DiscordClone.VoiceTest do
                      0
     end
 
+    test "a terminal peer state removes only its Session from a shared room" do
+      voice_channel_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: failed_voice_session_id}} =
+               Voice.join(voice_channel_id, Ecto.UUID.generate(), "failed-connection", self())
+
+      [failed_peer_connection] = ExWebRTC.PeerConnection.get_all_running()
+
+      assert {:ok, %{voice_session_id: healthy_voice_session_id}} =
+               Voice.join(voice_channel_id, Ecto.UUID.generate(), "healthy-connection", self())
+
+      [healthy_peer_connection] =
+        ExWebRTC.PeerConnection.get_all_running() -- [failed_peer_connection]
+
+      %{memberships: memberships} = :sys.get_state(room_server(voice_channel_id))
+      failed_session = memberships[failed_voice_session_id].session_pid
+      failed_session_monitor = Process.monitor(failed_session)
+      failed_monitor = Process.monitor(failed_peer_connection)
+      healthy_monitor = Process.monitor(healthy_peer_connection)
+
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 voice_channel_id,
+                 failed_voice_session_id,
+                 {:ex_webrtc, failed_peer_connection, {:connection_state_change, :failed}}
+               )
+
+      assert_receive {:voice_session_event, ^failed_voice_session_id,
+                      {:connection_state_change, :failed, nil}}
+
+      assert_receive {:DOWN, ^failed_monitor, :process, ^failed_peer_connection, _reason}
+      assert_receive {:DOWN, ^failed_session_monitor, :process, ^failed_session, :normal}
+      refute_receive {:DOWN, ^healthy_monitor, :process, ^healthy_peer_connection, _reason}, 0
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+
+      assert :ok = Voice.leave(voice_channel_id, healthy_voice_session_id)
+      assert_receive {:DOWN, ^healthy_monitor, :process, ^healthy_peer_connection, _reason}
+    end
+
     test "an expired runtime command retires the Voice Session and its PeerConnection" do
       voice_channel_id = Ecto.UUID.generate()
       user_id = Ecto.UUID.generate()
@@ -1177,12 +1216,13 @@ defmodule DiscordClone.VoiceTest do
       assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
     end
 
-    test "a signaling channel death removes its Voice Session" do
+    test "a signaling channel death removes only its Voice Session" do
       voice_channel_id = Ecto.UUID.generate()
 
       signaling_channel = start_signaling_channel(:connection_death)
+      healthy_signaling_channel = start_signaling_channel(:healthy_connection)
 
-      assert {:ok, _join_result} =
+      assert {:ok, %{voice_session_id: _departing_voice_session_id}} =
                Voice.join(
                  voice_channel_id,
                  Ecto.UUID.generate(),
@@ -1190,17 +1230,75 @@ defmodule DiscordClone.VoiceTest do
                  signaling_channel
                )
 
-      [peer_connection] = ExWebRTC.PeerConnection.get_all_running()
-      peer_connection_monitor = Process.monitor(peer_connection)
+      [departing_peer_connection] = ExWebRTC.PeerConnection.get_all_running()
+
+      assert {:ok, %{voice_session_id: healthy_voice_session_id}} =
+               Voice.join(
+                 voice_channel_id,
+                 Ecto.UUID.generate(),
+                 "connection-2",
+                 healthy_signaling_channel
+               )
+
+      [healthy_peer_connection] =
+        ExWebRTC.PeerConnection.get_all_running() -- [departing_peer_connection]
+
+      departing_monitor = Process.monitor(departing_peer_connection)
+      healthy_monitor = Process.monitor(healthy_peer_connection)
       Process.exit(signaling_channel, :shutdown)
 
-      assert_receive {:DOWN, ^peer_connection_monitor, :process, ^peer_connection, _reason}
-      assert :ok = Voice.await_empty_room(voice_channel_id)
-      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+      assert_receive {:DOWN, ^departing_monitor, :process, ^departing_peer_connection, _reason}
+      refute_receive {:DOWN, ^healthy_monitor, :process, ^healthy_peer_connection, _reason}, 0
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+
+      assert :ok = Voice.leave(voice_channel_id, healthy_voice_session_id)
+      assert_receive {:DOWN, ^healthy_monitor, :process, ^healthy_peer_connection, _reason}
     end
   end
 
   describe "Voice Session offer negotiation" do
+    test "leave rejects late offer, ICE, and media work for the retired Voice Session" do
+      user = user_fixture()
+      current_scope = Scope.for_user(user)
+      voice_channel_id = Ecto.UUID.generate()
+
+      assert {:ok, %{voice_session_id: retired_voice_session_id}} =
+               Voice.join(voice_channel_id, user.id, "retired-connection", self())
+
+      [retired_peer_connection] = ExWebRTC.PeerConnection.get_all_running()
+      retired_monitor = Process.monitor(retired_peer_connection)
+
+      assert :ok = Voice.leave(voice_channel_id, retired_voice_session_id)
+      assert_receive {:DOWN, ^retired_monitor, :process, ^retired_peer_connection, _reason}
+
+      assert {:error, :invalid_session} =
+               Voice.accept_offer(
+                 current_scope,
+                 voice_channel_id,
+                 retired_voice_session_id,
+                 "late-negotiation",
+                 browser_offer()
+               )
+
+      assert {:error, :invalid_session} =
+               Voice.add_ice_candidate(
+                 current_scope,
+                 voice_channel_id,
+                 retired_voice_session_id,
+                 "late-negotiation",
+                 runtime_candidate(1)
+               )
+
+      assert {:error, :not_found} =
+               Voice.dispatch_test_ex_webrtc(
+                 voice_channel_id,
+                 retired_voice_session_id,
+                 {:ex_webrtc, retired_peer_connection, {:connection_state_change, :connected}}
+               )
+
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+    end
+
     test "routes an offer through the public Voice boundary to its admitted Voice Session" do
       user = user_fixture()
       current_scope = Scope.for_user(user)
