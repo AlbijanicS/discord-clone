@@ -195,8 +195,14 @@ export function createVoicePeerAttempt({
         peerConnection.addEventListener("connectionstatechange", handleConnectionStateChange)
         peerConnection.addEventListener("track", receiveRemoteTrack)
 
+        const offer = await peerConnection.createOffer()
+        ensureActive()
+
         signalingActive = true
-        const joined = await signaling.joinVoiceChannel(channelId)
+        const joined = await signaling.joinVoiceChannel(channelId, {
+          negotiation_id: currentNegotiationId,
+          description: offer,
+        })
         ensureActive()
         signalingSessionId = joined?.signaling_session_id
         if (!signalingSessionId) throw new Error("missing signaling session")
@@ -204,8 +210,6 @@ export function createVoicePeerAttempt({
         signaling.onServerIce(receiveServerIce)
         signaling.onClose(() => fail("connection_lost"))
 
-        const offer = await peerConnection.createOffer()
-        ensureActive()
         await peerConnection.setLocalDescription(offer)
         ensureActive()
         const answer = await withDeadline(

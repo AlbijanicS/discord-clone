@@ -2,17 +2,23 @@ defmodule DiscordCloneWeb.VoiceChannel do
   use DiscordCloneWeb, :channel
 
   alias DiscordClone.{Voice, Workspaces}
-  alias DiscordClone.Voice.Diagnostics
+  alias DiscordClone.Voice.{Diagnostics, PeerConnection}
   alias DiscordCloneWeb.VoiceSignaling.{FakeHeartbeat, RealMessage}
 
   @impl true
-  def join("voice:" <> voice_channel_id, _params, socket) do
+  def join("voice:" <> voice_channel_id, params, socket) do
     case Workspaces.authorize_voice_channel_for_signaling(
            socket.assigns.current_scope,
            voice_channel_id
          ) do
       {:ok, _voice_channel} ->
-        join_voice_channel(voice_channel_id, socket)
+        with %{"description" => description} when is_map(description) <- params,
+             :ok <- PeerConnection.validate_audio_topology(description) do
+          join_voice_channel(voice_channel_id, socket)
+        else
+          _incompatible_or_missing_offer ->
+            {:error, %{reason: "incompatible_audio_output_slots"}}
+        end
 
       {:error, :not_found} ->
         {:error, %{reason: "not_found"}}

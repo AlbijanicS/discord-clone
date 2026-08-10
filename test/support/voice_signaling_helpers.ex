@@ -4,6 +4,7 @@ defmodule DiscordCloneWeb.VoiceSignalingHelpers do
       peer_connection =
         start_supervised!(%{
           id: make_ref(),
+          restart: :temporary,
           start:
             {ExWebRTC.PeerConnection, :start_link,
              [[ice_servers: [], controlling_process: self()]]}
@@ -27,7 +28,9 @@ defmodule DiscordCloneWeb.VoiceSignalingHelpers do
 
       assert {:ok, description} = ExWebRTC.PeerConnection.create_offer(peer_connection)
       assert :ok = ExWebRTC.PeerConnection.set_local_description(peer_connection, description)
-      ExWebRTC.SessionDescription.to_json(description)
+      serialized_description = ExWebRTC.SessionDescription.to_json(description)
+      :ok = ExWebRTC.PeerConnection.stop(peer_connection)
+      serialized_description
     end
   end
 end

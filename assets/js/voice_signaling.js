@@ -11,15 +11,15 @@ export function createVoiceSignaling({Socket, csrfToken} = {}) {
   }
 
   return {
-    join(voiceChannelId) {
+    join(voiceChannelId, params = {}) {
       if (channel) this.leave()
 
-      channel = ensureSocket().channel(`voice:${voiceChannelId}`, {})
+      channel = ensureSocket().channel(`voice:${voiceChannelId}`, params)
       return channel.join()
     },
 
-    joinVoiceChannel(voiceChannelId) {
-      return awaitReply(this.join(voiceChannelId))
+    joinVoiceChannel(voiceChannelId, params = {}) {
+      return awaitReply(this.join(voiceChannelId, params))
     },
 
     sendOffer(offer) {

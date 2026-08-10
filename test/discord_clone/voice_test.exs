@@ -1803,20 +1803,88 @@ defmodule DiscordClone.VoiceTest do
   describe "durable Voice lifecycle notifications" do
     test "ends only the matching user's Voice Session in a Voice Channel" do
       voice_channel_id = Ecto.UUID.generate()
-      target_user_id = Ecto.UUID.generate()
-      retained_user_id = Ecto.UUID.generate()
+      target_user = user_fixture()
+      retained_user = user_fixture()
+      third_user = user_fixture()
 
-      assert {:ok, _target_join} =
-               Voice.join(voice_channel_id, target_user_id, "target-connection", self())
+      assert {:ok, %{voice_session_id: target_session_id}} =
+               Voice.join(voice_channel_id, target_user.id, "target-connection", self())
 
-      assert {:ok, _retained_join} =
-               Voice.join(voice_channel_id, retained_user_id, "retained-connection", self())
+      assert {:ok, %{voice_session_id: retained_session_id}} =
+               Voice.join(voice_channel_id, retained_user.id, "retained-connection", self())
 
-      assert :ok = Voice.end_user_session(voice_channel_id, target_user_id)
-      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+      assert {:ok, %{voice_session_id: third_session_id}} =
+               Voice.join(voice_channel_id, third_user.id, "third-connection", self())
 
-      assert :ok = Voice.end_user_session(voice_channel_id, target_user_id)
-      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+      negotiated =
+        for {user, session_id, number} <- [
+              {target_user, target_session_id, 1},
+              {retained_user, retained_session_id, 2},
+              {third_user, third_session_id, 3}
+            ],
+            reduce: [] do
+          peer_connections ->
+            assert {:ok, _answer} =
+                     Voice.accept_offer(
+                       Scope.for_user(user),
+                       voice_channel_id,
+                       session_id,
+                       "durable-negotiation-#{number}",
+                       browser_offer()
+                     )
+
+            peer_connection =
+              peer_connection_for_session(voice_channel_id, session_id)
+
+            inbound_track = inbound_audio_transceiver(peer_connection).receiver.track
+
+            assert :ok =
+                     Voice.dispatch_test_ex_webrtc(
+                       voice_channel_id,
+                       session_id,
+                       {:ex_webrtc, peer_connection, {:track, inbound_track}}
+                     )
+
+            [
+              %{session_id: session_id, peer_connection: peer_connection, track: inbound_track}
+              | peer_connections
+            ]
+        end
+
+      assert :ok = RoomServer.sync_test_media(room_server(voice_channel_id))
+      target = Enum.find(negotiated, &(&1.session_id == target_session_id))
+      retained = Enum.find(negotiated, &(&1.session_id == retained_session_id))
+      third = Enum.find(negotiated, &(&1.session_id == third_session_id))
+      target_monitor = Process.monitor(target.peer_connection)
+      third_packets_before = outbound_packet_count(third.peer_connection)
+
+      assert :ok = Voice.end_user_session(voice_channel_id, target_user.id)
+      assert_receive {:DOWN, ^target_monitor, :process, _, _reason}
+      assert {:ok, %{occupancy: 2, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+
+      assert {:error, :not_found} =
+               Voice.dispatch_test_ex_webrtc(
+                 voice_channel_id,
+                 target_session_id,
+                 {:ex_webrtc, target.peer_connection, {:track, target.track}}
+               )
+
+      retained_packet =
+        ExRTP.Packet.new(<<10>>, payload_type: 111, sequence_number: 10, timestamp: 10, ssrc: 10)
+
+      assert :ok =
+               Voice.dispatch_test_ex_webrtc(
+                 voice_channel_id,
+                 retained_session_id,
+                 {:ex_webrtc, retained.peer_connection,
+                  {:rtp, retained.track.id, nil, retained_packet}}
+               )
+
+      assert :ok = RoomServer.sync_test_media(room_server(voice_channel_id))
+      assert outbound_packet_count(third.peer_connection) == third_packets_before + 1
+
+      assert :ok = Voice.end_user_session(voice_channel_id, target_user.id)
+      assert {:ok, %{occupancy: 2, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
     end
 
     test "does not let a late notification for an old room end a moved Voice Session" do
@@ -1840,15 +1908,48 @@ defmodule DiscordClone.VoiceTest do
       ended_voice_channel_id = Ecto.UUID.generate()
       unrelated_voice_channel_id = Ecto.UUID.generate()
 
-      for number <- 1..2 do
-        assert {:ok, %{occupancy: ^number}} =
-                 Voice.join(
-                   ended_voice_channel_id,
-                   Ecto.UUID.generate(),
-                   "ended-connection-#{number}",
-                   self()
-                 )
-      end
+      ended_sessions =
+        for number <- 1..2 do
+          user = user_fixture()
+
+          assert {:ok, %{voice_session_id: voice_session_id, occupancy: ^number}} =
+                   Voice.join(
+                     ended_voice_channel_id,
+                     user.id,
+                     "ended-connection-#{number}",
+                     self()
+                   )
+
+          %{number: number, user: user, voice_session_id: voice_session_id}
+        end
+
+      ended_sessions =
+        Enum.reduce(ended_sessions, [], fn session, negotiated ->
+          assert {:ok, _answer} =
+                   Voice.accept_offer(
+                     Scope.for_user(session.user),
+                     ended_voice_channel_id,
+                     session.voice_session_id,
+                     "ended-negotiation-#{session.number}",
+                     browser_offer()
+                   )
+
+          peer_connection =
+            peer_connection_for_session(ended_voice_channel_id, session.voice_session_id)
+
+          inbound_track = inbound_audio_transceiver(peer_connection).receiver.track
+
+          assert :ok =
+                   Voice.dispatch_test_ex_webrtc(
+                     ended_voice_channel_id,
+                     session.voice_session_id,
+                     {:ex_webrtc, peer_connection, {:track, inbound_track}}
+                   )
+
+          [Map.put(session, :peer_connection, peer_connection) | negotiated]
+        end)
+
+      assert :ok = RoomServer.sync_test_media(room_server(ended_voice_channel_id))
 
       assert {:ok, %{occupancy: 1}} =
                Voice.join(
@@ -1858,8 +1959,33 @@ defmodule DiscordClone.VoiceTest do
                  self()
                )
 
+      ended_monitors =
+        Enum.map(ended_sessions, fn session ->
+          {session.peer_connection, Process.monitor(session.peer_connection)}
+        end)
+
+      [unrelated_peer_connection] =
+        ExWebRTC.PeerConnection.get_all_running() --
+          Enum.map(ended_sessions, & &1.peer_connection)
+
+      unrelated_monitor = Process.monitor(unrelated_peer_connection)
       assert :ok = Voice.end_channel_sessions(ended_voice_channel_id)
       assert :ok = Voice.await_empty_room(ended_voice_channel_id)
+
+      for {peer_connection, monitor} <- ended_monitors do
+        assert_receive {:DOWN, ^monitor, :process, ^peer_connection, _reason}
+      end
+
+      refute_receive {:DOWN, ^unrelated_monitor, :process, ^unrelated_peer_connection, _reason}, 0
+
+      for session <- ended_sessions do
+        assert {:error, :not_found} =
+                 Voice.dispatch_test_ex_webrtc(
+                   ended_voice_channel_id,
+                   session.voice_session_id,
+                   {:ex_webrtc, session.peer_connection, {:connection_state_change, :connected}}
+                 )
+      end
 
       assert {:ok, %{occupancy: 0, capacity: 5}} =
                Voice.room_occupancy(ended_voice_channel_id)
@@ -1936,6 +2062,21 @@ defmodule DiscordClone.VoiceTest do
     |> ExWebRTC.PeerConnection.get_transceivers()
     |> Enum.filter(&(&1.current_direction == :sendonly))
     |> Enum.map(& &1.sender.track.id)
+  end
+
+  defp outbound_packet_count(peer_connection) do
+    peer_connection
+    |> ExWebRTC.PeerConnection.get_stats()
+    |> Map.values()
+    |> Enum.filter(&(&1.type == :outbound_rtp))
+    |> Enum.map(& &1.packets_sent)
+    |> Enum.sum()
+  end
+
+  defp peer_connection_for_session(voice_channel_id, voice_session_id) do
+    %{memberships: memberships} = :sys.get_state(room_server(voice_channel_id))
+    session = :sys.get_state(memberships[voice_session_id].session_pid)
+    session.peer_connection.peer_connection
   end
 
   defp negotiate_room_sessions(room_server, session_count, label) do

@@ -94,6 +94,15 @@ defmodule DiscordClone.Voice.PeerConnection do
     accept_offer_until(state, description, deadline(timeout))
   end
 
+  @doc false
+  @spec validate_audio_topology(map()) :: :ok | {:error, :incompatible_audio_output_slots}
+  def validate_audio_topology(description) do
+    case compatible_audio_topology(description) do
+      {:ok, _topology} -> :ok
+      {:error, _reason} -> {:error, :incompatible_audio_output_slots}
+    end
+  end
+
   @spec accept_offer_until(t(), map(), integer()) ::
           {:ok, map(), t()}
           | {:error, :incompatible_audio_output_slots | :negotiation_failed}

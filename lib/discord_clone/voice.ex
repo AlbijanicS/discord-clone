@@ -539,7 +539,14 @@ defmodule DiscordClone.Voice do
     end
 
     receive do
-      {:DOWN, ^room_monitor, :process, ^room_server, _reason} -> :ok
+      {:DOWN, ^room_monitor, :process, ^room_server, reason}
+      when reason in [:normal, :shutdown, :noproc] ->
+        :ok
+
+      {:DOWN, ^room_monitor, :process, ^room_server, reason} ->
+        {:error, {:room_shutdown_failed, reason}}
+    after
+      @command_timeout_ms -> {:error, :room_shutdown_timeout}
     end
   end
 end

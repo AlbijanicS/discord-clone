@@ -25,11 +25,12 @@ test("joins the dedicated Voice topic with the page CSRF token, observes unexpec
 
   const signaling = createVoiceSignaling({Socket: FakeSocket, csrfToken: "page-csrf-token"})
 
-  assert.equal(signaling.join("voice-channel-id"), joinPush)
+  const admission = {description: {type: "offer", sdp: "browser-offer"}}
+  assert.equal(signaling.join("voice-channel-id", admission), joinPush)
   assert.deepEqual(events, [
     ["new", "/voice", {params: {_csrf_token: "page-csrf-token"}}],
     ["connect"],
-    ["channel", "voice:voice-channel-id", {}],
+    ["channel", "voice:voice-channel-id", admission],
   ])
 
   let closes = 0

@@ -793,7 +793,7 @@ Tests run:
   ExWebRTC measurement. The shutdown convergence case passed 20 consecutive
   randomized repetitions after its race fix.
 - mix precommit passed: Credo found no issues, 64 JavaScript tests passed, and
-  969 ExUnit tests passed.
+  970 ExUnit tests passed.
 
 Known follow-up work:
 - The five-browser validation with five separately authenticated Users remains

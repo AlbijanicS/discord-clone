@@ -69,6 +69,7 @@ function remoteTrack(id) {
     kind: "audio",
     addEventListener(event, callback) { handlers.set(event, callback) },
     removeEventListener(event) { handlers.delete(event) },
+    hasListener(event) { return handlers.has(event) },
     end() { handlers.get("ended")?.() },
   }
 }
@@ -108,8 +109,10 @@ function attemptFixture() {
 test("preflights one microphone connection and four Audio Output Slots before admission", async () => {
   const {peer, signaling} = attemptFixture()
   const states = []
+  let admissionPayload
   let joinedAfterPreflight = false
-  signaling.joinVoiceChannel = async () => {
+  signaling.joinVoiceChannel = async (_channelId, payload) => {
+    admissionPayload = payload
     joinedAfterPreflight = peer.addedTransceivers.length === 5
     return {signaling_session_id: "server-session"}
   }
@@ -123,6 +126,10 @@ test("preflights one microphone connection and four Audio Output Slots before ad
   await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
 
   assert.equal(joinedAfterPreflight, true)
+  assert.deepEqual(admissionPayload, {
+    negotiation_id: "browser-negotiation",
+    description: {type: "offer", sdp: "browser-offer"},
+  })
   assert.deepEqual(
     peer.addedTransceivers.map(({direction, sender}) => ({direction, track: sender.track})),
     [
@@ -281,8 +288,12 @@ test("releases remote audio exactly once on explicit leave and terminal connecti
     })
 
     await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
-    peer.emit("track", {streams: [{id: "remote-stream"}], track: {id: "echo"}})
+    const transceiver = peer.addedTransceivers[1]
+    const remote = transceiver.receiver.track
+    peer.emit("track", {track: remote, transceiver})
     await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(audio.srcObject.getTracks(), [remote])
+    assert.equal(remote.hasListener("ended"), true)
     if (terminal === "leave") attempt.leave()
     else {
       peer.connectionState = "failed"
@@ -292,6 +303,7 @@ test("releases remote audio exactly once on explicit leave and terminal connecti
 
     assert.equal(audio.pauseCalls, 1)
     assert.equal(audio.srcObject, null)
+    assert.equal(remote.hasListener("ended"), false)
     assert.equal(peer.closed, true)
   }
 })
@@ -531,6 +543,7 @@ test("Leave during topic admission closes the preflighted browser peer before a 
 
   const connecting = attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
   const rejected = assert.rejects(connecting, /cancelled/)
+  await new Promise(resolve => setImmediate(resolve))
   attempt.leave()
   joined.resolve({signaling_session_id: "server-session"})
 

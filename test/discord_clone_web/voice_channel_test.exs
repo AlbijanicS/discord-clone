@@ -25,7 +25,12 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
         connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
 
       {:ok, join_payload, channel_socket} =
-        subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}")
+        subscribe_and_join(
+          socket,
+          VoiceChannel,
+          "voice:#{voice_channel.id}",
+          admission_params()
+        )
 
       %{
         channel_socket: channel_socket,
@@ -375,7 +380,12 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
                 signaling_session_id: second_signaling_session_id,
                 voice_session_id: second_voice_session_id
               }, second_channel_socket} =
-               subscribe_and_join(second_socket, VoiceChannel, first_channel_socket.topic)
+               subscribe_and_join(
+                 second_socket,
+                 VoiceChannel,
+                 first_channel_socket.topic,
+                 admission_params()
+               )
 
       refute first_signaling_session_id == second_signaling_session_id
 
@@ -827,6 +837,25 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
   end
 
   describe "authenticated Voice joins" do
+    test "rejects missing or incompatible admission offers before starting runtime state" do
+      owner = user_fixture()
+      voice_channel = create_voice_channel!(owner)
+      {:ok, socket} = connect_voice_socket(owner)
+
+      assert {:error, %{reason: "incompatible_audio_output_slots"}} =
+               subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}")
+
+      assert {:error, %{reason: "incompatible_audio_output_slots"}} =
+               subscribe_and_join(
+                 socket,
+                 VoiceChannel,
+                 "voice:#{voice_channel.id}",
+                 %{"description" => browser_offer(3)}
+               )
+
+      refute Voice.room_running?(voice_channel.id)
+    end
+
     test "denies unauthorized, missing, and malformed Voice Channels without runtime state" do
       owner = user_fixture()
       unauthorized_user = user_fixture()
@@ -879,7 +908,12 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       {:ok, socket} = connect_voice_socket(owner)
 
       assert {:error, %{reason: "room_full", occupancy: 5, capacity: 5}} =
-               subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}")
+               subscribe_and_join(
+                 socket,
+                 VoiceChannel,
+                 "voice:#{voice_channel.id}",
+                 admission_params()
+               )
 
       assert ExWebRTC.PeerConnection.get_all_running() == running_before_join
       assert {:ok, %{occupancy: 5, capacity: 5}} = Voice.room_occupancy(voice_channel.id)
@@ -891,13 +925,19 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       {:ok, socket} = connect_voice_socket(user)
 
       assert {:ok, %{voice_session_id: first_voice_session_id}, first_channel_socket} =
-               subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}")
+               subscribe_and_join(
+                 socket,
+                 VoiceChannel,
+                 "voice:#{voice_channel.id}",
+                 admission_params()
+               )
 
       assert {:ok, %{voice_session_id: second_voice_session_id}, second_channel_socket} =
                subscribe_and_join(
                  first_channel_socket,
                  VoiceChannel,
-                 first_channel_socket.topic
+                 first_channel_socket.topic,
+                 admission_params()
                )
 
       refute first_voice_session_id == second_voice_session_id
@@ -941,6 +981,10 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       "negotiation_id" => negotiation_id,
       "description" => browser_offer()
     }
+  end
+
+  defp admission_params do
+    %{"description" => browser_offer()}
   end
 
   defp assert_media_diagnostic_metadata(metadata) do
