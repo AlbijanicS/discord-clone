@@ -760,12 +760,18 @@ Final architecture/API decisions:
 - The browser keeps remote tracks distinct inside one stable aggregate
   MediaStream and one audio element. An incompatible four-lane preflight or
   answer is an explicit retryable compatibility failure.
+- Each destination Audio Output Slot owns an Opus RTP munger. It preserves the
+  outgoing RTP sequence/timestamp domain across source reuse and is updated
+  before the replacement source's first packet.
+- Every admitted Voice Session has a 15-second first-offer deadline. A
+  successful offer cancels it; expiry stops the Session so RoomServer cleanup
+  releases the otherwise unnegotiated membership.
 
 Behavior proven:
 - Pure tests cover room sizes one through five, exact directed matrices (12
   routes at four Sessions and 20 at five), no self-route, partial readiness,
-  stable slots, first-free reuse, duplicate cleanup, late work, and aggregate
-  forwarded/dropped diagnostics.
+  stable slots, first-free reuse with RTP timeline continuity, duplicate
+  cleanup, late work, and aggregate forwarded/dropped diagnostics.
 - A real five-Session ExWebRTC test sends 50 synthetic 20 ms packets from each
   source and observes all 1,000 intended destination-track deliveries with no
   self-delivery. Concurrent admission admits exactly five of six callers.
@@ -789,11 +795,11 @@ Measurements:
 
 Tests run:
 - Focused Forwarder, PeerConnection, Session, Voice runtime, authenticated
-  Voice Channel, and browser tests passed, including the real five-Session
-  ExWebRTC measurement. The shutdown convergence case passed 20 consecutive
-  randomized repetitions after its race fix.
+  Voice Channel, and browser tests passed, including RTP slot-source reuse and
+  first-offer timeout coverage. The shutdown convergence case passed 20
+  consecutive randomized repetitions after its race fix.
 - mix precommit passed: Credo found no issues, 64 JavaScript tests passed, and
-  970 ExUnit tests passed.
+  the full ExUnit suite passed.
 
 Known follow-up work:
 - The five-browser validation with five separately authenticated Users remains

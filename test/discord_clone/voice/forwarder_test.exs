@@ -232,6 +232,63 @@ defmodule DiscordClone.Voice.ForwarderTest do
     assert MapSet.size(MapSet.new(Map.values(replacement_slots))) == 3
   end
 
+  test "keeps an RTP timeline continuous when a released Audio Output Slot gets a new source" do
+    forwarder = start_forwarder()
+    destination_id = Ecto.UUID.generate()
+    first_source_id = Ecto.UUID.generate()
+    replacement_source_id = Ecto.UUID.generate()
+
+    register_ready_session(forwarder, destination_id, 100)
+    register_ready_session(forwarder, first_source_id, 200)
+    assert :ok = Forwarder.sync(forwarder)
+
+    first_packet = ExRTP.Packet.new(<<1>>, sequence_number: 8_003, timestamp: 2_920, ssrc: 1)
+    assert :ok = Forwarder.forward_rtp(forwarder, first_source_id, 200, first_packet)
+    assert_receive {_cast, {:deliver_rtp, ^destination_id, 0, ^first_packet}}
+
+    assert :ok = Forwarder.session_removed(forwarder, first_source_id)
+    register_ready_session(forwarder, replacement_source_id, 300)
+    assert :ok = Forwarder.sync(forwarder)
+
+    replacement_packet =
+      ExRTP.Packet.new(<<2>>, sequence_number: 47_120, timestamp: 918_273, ssrc: 2)
+
+    assert :ok = Forwarder.forward_rtp(forwarder, replacement_source_id, 300, replacement_packet)
+
+    assert_receive {_cast, {:deliver_rtp, ^destination_id, 0, munged_packet}}
+    assert munged_packet.sequence_number == 8_004
+    assert munged_packet.timestamp > first_packet.timestamp
+    refute munged_packet.timestamp == replacement_packet.timestamp
+  end
+
+  test "updates an Audio Output Slot RTP timeline when its source replaces an inbound track" do
+    forwarder = start_forwarder()
+    destination_id = Ecto.UUID.generate()
+    source_id = Ecto.UUID.generate()
+
+    register_ready_session(forwarder, destination_id, 100)
+    register_ready_session(forwarder, source_id, 200)
+    assert :ok = Forwarder.sync(forwarder)
+
+    first_packet = ExRTP.Packet.new(<<1>>, sequence_number: 8_003, timestamp: 2_920, ssrc: 1)
+    assert :ok = Forwarder.forward_rtp(forwarder, source_id, 200, first_packet)
+    assert_receive {_cast, {:deliver_rtp, ^destination_id, 0, ^first_packet}}
+
+    assert :ok = Forwarder.source_ended(forwarder, source_id, self(), 200)
+    assert :ok = Forwarder.send_ready(forwarder, source_id, self(), 300, :opus)
+    assert :ok = Forwarder.sync(forwarder)
+
+    replacement_packet =
+      ExRTP.Packet.new(<<2>>, sequence_number: 47_120, timestamp: 918_273, ssrc: 2)
+
+    assert :ok = Forwarder.forward_rtp(forwarder, source_id, 300, replacement_packet)
+
+    assert_receive {_cast, {:deliver_rtp, ^destination_id, 0, munged_packet}}
+    assert munged_packet.sequence_number == 8_004
+    assert munged_packet.timestamp > first_packet.timestamp
+    refute munged_packet.timestamp == replacement_packet.timestamp
+  end
+
   test "an ended source withdraws every destination route without disturbing other sources" do
     forwarder = start_forwarder()
 
@@ -320,8 +377,13 @@ defmodule DiscordClone.Voice.ForwarderTest do
   defp receive_deliveries(_packet, 0), do: []
 
   defp receive_deliveries(packet, count) do
+    receive_deliveries(packet, count, &(&1 == packet))
+  end
+
+  defp receive_deliveries(_packet, count, assert_packet) when is_function(assert_packet, 1) do
     Enum.map(1..count, fn _ ->
-      assert_receive {_cast, {:deliver_rtp, destination_id, slot, ^packet}}
+      assert_receive {_cast, {:deliver_rtp, destination_id, slot, delivered_packet}}
+      assert assert_packet.(delivered_packet)
       {destination_id, slot}
     end)
   end
@@ -333,7 +395,7 @@ defmodule DiscordClone.Voice.ForwarderTest do
 
       source_slots =
         packet
-        |> receive_deliveries(delivery_count)
+        |> receive_deliveries(delivery_count, &(&1.payload == packet.payload))
         |> Map.new()
 
       Map.put(slots, source_id, Map.fetch!(source_slots, destination_id))

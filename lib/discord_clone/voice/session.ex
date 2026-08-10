@@ -6,6 +6,7 @@ defmodule DiscordClone.Voice.Session do
   alias DiscordClone.Voice.{Diagnostics, Forwarder, PeerConnection}
 
   @command_timeout_ms 5_000
+  @negotiation_timeout_ms 15_000
   @test_environment Code.ensure_loaded?(Mix) and Mix.env() == :test
   @max_accepted_candidates 64
   @max_pending_candidates 16
@@ -83,6 +84,13 @@ defmodule DiscordClone.Voice.Session do
         voice_session_id = Keyword.fetch!(opts, :voice_session_id)
         :ok = Forwarder.session_started(forwarder, voice_session_id, self())
 
+        negotiation_timer =
+          Process.send_after(
+            self(),
+            :negotiation_timeout,
+            Keyword.get(opts, :negotiation_timeout_ms, @negotiation_timeout_ms)
+          )
+
         {:ok,
          %{
            room_server: Keyword.fetch!(opts, :room_server),
@@ -91,6 +99,7 @@ defmodule DiscordClone.Voice.Session do
            signaling_channel: signaling_channel,
            signaling_channel_monitor: Process.monitor(signaling_channel),
            peer_connection: peer_connection,
+           negotiation_timer: negotiation_timer,
            negotiation_id: nil,
            pending_candidates: [],
            accepted_candidate_count: 0,
@@ -120,6 +129,7 @@ defmodule DiscordClone.Voice.Session do
               %{
                 state
                 | peer_connection: peer_connection,
+                  negotiation_timer: cancel_negotiation_timer(state.negotiation_timer),
                   negotiation_id: negotiation_id,
                   pending_candidates: [],
                   accepted_candidate_count: accepted_candidate_count
@@ -177,6 +187,9 @@ defmodule DiscordClone.Voice.Session do
   end
 
   @impl true
+  def handle_info(:negotiation_timeout, %{negotiation_id: nil} = state),
+    do: {:stop, :normal, state}
+
   def handle_info(
         {:DOWN, signaling_channel_monitor, :process, _signaling_channel, _reason},
         %{signaling_channel_monitor: signaling_channel_monitor} = state
@@ -285,6 +298,11 @@ defmodule DiscordClone.Voice.Session do
 
   defp command_deadline do
     System.monotonic_time(:millisecond) + @command_timeout_ms
+  end
+
+  defp cancel_negotiation_timer(timer) do
+    _ = Process.cancel_timer(timer)
+    nil
   end
 
   defp send_event(state, event) do

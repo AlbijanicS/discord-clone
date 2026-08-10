@@ -4,8 +4,10 @@ defmodule DiscordClone.Voice.Forwarder do
   use GenServer
 
   alias DiscordClone.Voice.{Diagnostics, RoomRegistry, Session, SessionCoordinator}
+  alias ExWebRTC.RTP.Munger
 
   @audio_output_slots 0..3
+  @opus_clock_rate 48_000
 
   @type voice_session_id :: Ecto.UUID.t()
 
@@ -89,6 +91,7 @@ defmodule DiscordClone.Voice.Forwarder do
        sessions: %{},
        next_session_order: 0,
        slot_assignments: %{},
+       slot_mungers: %{},
        routes: %{},
        forwarded_packet_count: 0,
        dropped_packet_count: 0
@@ -197,7 +200,47 @@ defmodule DiscordClone.Voice.Forwarder do
   defp rebuild_routes(state) do
     slot_assignments = rebuild_slot_assignments(state.sessions, state.slot_assignments)
     routes = build_routes(state.sessions, slot_assignments)
-    %{state | routes: routes, slot_assignments: slot_assignments}
+
+    slot_mungers =
+      rebuild_slot_mungers(state.slot_mungers, slot_assignments, state.sessions)
+
+    %{state | routes: routes, slot_assignments: slot_assignments, slot_mungers: slot_mungers}
+  end
+
+  defp rebuild_slot_mungers(current_mungers, slot_assignments, sessions) do
+    Enum.reduce(slot_assignments, %{}, fn {destination_id, source_slots}, mungers ->
+      destination_mungers = Map.get(current_mungers, destination_id, %{})
+
+      slot_mungers =
+        Enum.reduce(source_slots, destination_mungers, fn {source_id, slot}, slot_mungers ->
+          source = source_identity(sessions, source_id)
+
+          case Map.get(slot_mungers, slot) do
+            %{source: ^source} ->
+              slot_mungers
+
+            %{munger: munger} ->
+              Map.put(slot_mungers, slot, %{source: source, munger: Munger.update(munger)})
+
+            nil ->
+              Map.put(slot_mungers, slot, %{
+                source: source,
+                munger: Munger.new(:opus, @opus_clock_rate)
+              })
+          end
+        end)
+
+      if Map.has_key?(sessions, destination_id) do
+        Map.put(mungers, destination_id, slot_mungers)
+      else
+        mungers
+      end
+    end)
+  end
+
+  defp source_identity(sessions, source_id) do
+    %{source: %{track_id: track_id}} = Map.fetch!(sessions, source_id)
+    {source_id, track_id}
   end
 
   defp rebuild_slot_assignments(sessions, current_assignments) do
@@ -305,6 +348,9 @@ defmodule DiscordClone.Voice.Forwarder do
        ) do
     case Map.get(state.sessions, destination_voice_session_id) do
       %{session: ^session} ->
+        {packet, state} =
+          munge_packet(state, destination_voice_session_id, audio_output_slot, packet)
+
         :ok =
           Session.deliver_rtp(
             session,
@@ -318,6 +364,17 @@ defmodule DiscordClone.Voice.Forwarder do
       _stale_destination ->
         record_drop(state)
     end
+  end
+
+  defp munge_packet(state, destination_voice_session_id, audio_output_slot, packet) do
+    destination_mungers = Map.fetch!(state.slot_mungers, destination_voice_session_id)
+    %{munger: munger} = slot_munger = Map.fetch!(destination_mungers, audio_output_slot)
+    {packet, munger} = Munger.munge(munger, packet)
+
+    slot_mungers =
+      Map.put(destination_mungers, audio_output_slot, %{slot_munger | munger: munger})
+
+    {packet, put_in(state, [:slot_mungers, destination_voice_session_id], slot_mungers)}
   end
 
   defp record_forward(state) do

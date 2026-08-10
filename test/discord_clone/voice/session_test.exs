@@ -73,13 +73,22 @@ defmodule DiscordClone.Voice.SessionTest do
     refute_receive {:peer_connection_rtp_sent, _, _, _}, 0
   end
 
-  defp start_session(voice_session_id) do
-    start_supervised!(
-      {Session,
-       room_server: self(),
-       voice_session_id: voice_session_id,
-       signaling_channel: self(),
-       test_peer_connection_opts: [test_rtp_observer: self()]}
-    )
+  test "stops when the first offer does not arrive before negotiation starts" do
+    session = start_session(Ecto.UUID.generate(), negotiation_timeout_ms: 10)
+    ref = Process.monitor(session)
+
+    assert_receive {:DOWN, ^ref, :process, ^session, :normal}
+  end
+
+  defp start_session(voice_session_id, opts \\ []) do
+    session_opts =
+      [
+        room_server: self(),
+        voice_session_id: voice_session_id,
+        signaling_channel: self(),
+        test_peer_connection_opts: [test_rtp_observer: self()]
+      ] ++ opts
+
+    start_supervised!({Session, session_opts})
   end
 end
