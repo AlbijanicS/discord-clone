@@ -61,6 +61,11 @@ defmodule DiscordClone.Voice.RoomServer do
     )
   end
 
+  @spec set_workspace_muted(GenServer.server(), Ecto.UUID.t(), boolean()) :: :ok
+  def set_workspace_muted(server, user_id, muted) when is_boolean(muted) do
+    GenServer.call(server, {:set_workspace_muted, user_id, muted})
+  end
+
   @spec accept_offer(
           GenServer.server(),
           Ecto.UUID.t(),
@@ -243,6 +248,24 @@ defmodule DiscordClone.Voice.RoomServer do
       {:accept_offer, negotiation_id, description},
       deadline
     )
+  end
+
+  def handle_call({:set_workspace_muted, user_id, muted}, _from, state) do
+    {memberships, changed?} =
+      Enum.reduce(state.memberships, {%{}, false}, fn {voice_session_id, membership},
+                                                      {memberships, changed?} ->
+        if membership.user_id == user_id do
+          :ok = Forwarder.set_source_muted(state.forwarder, voice_session_id, muted)
+          membership = %{membership | workspace_muted: muted}
+          {Map.put(memberships, voice_session_id, membership), true}
+        else
+          {Map.put(memberships, voice_session_id, membership), changed?}
+        end
+      end)
+
+    state = %{state | memberships: memberships}
+    if changed?, do: :ok = Voice.publish_voice_channel_roster(roster_snapshot(state))
+    {:reply, :ok, state}
   end
 
   def handle_call(
@@ -469,6 +492,7 @@ defmodule DiscordClone.Voice.RoomServer do
         user_id: user_id,
         local_muted: false,
         local_deafened: false,
+        workspace_muted: false,
         speaking: false,
         speaking_decay_timer: nil,
         speaking_decay_ref: nil,
@@ -685,7 +709,7 @@ defmodule DiscordClone.Voice.RoomServer do
       |> Enum.map(
         &%{
           user_id: &1.user_id,
-          muted: &1.local_muted,
+          muted: &1.local_muted or &1.workspace_muted,
           deafened: &1.local_deafened,
           speaking: &1.speaking
         }

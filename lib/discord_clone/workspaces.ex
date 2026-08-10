@@ -218,7 +218,8 @@ defmodule DiscordClone.Workspaces do
                join: membership in WorkspaceMembership,
                on: membership.workspace_id == voice_channel.workspace_id,
                where: voice_channel.id == ^voice_channel_id and membership.user_id == ^user_id
-           ) do
+           ),
+         :ok <- voice_admission_status(voice_channel.workspace_id, user_id) do
       {:ok, voice_channel}
     else
       _ -> {:error, :not_found}
@@ -844,6 +845,12 @@ defmodule DiscordClone.Workspaces do
       true ->
         :ok
     end
+  end
+
+  @doc false
+  @spec workspace_mute_active?(Ecto.UUID.t(), Ecto.UUID.t()) :: boolean()
+  def workspace_mute_active?(workspace_id, user_id) do
+    match?(%WorkspaceModeration{}, get_active_moderation(workspace_id, user_id, @mute_type))
   end
 
   def change_member_role(
@@ -1476,6 +1483,23 @@ defmodule DiscordClone.Workspaces do
     :ok
   end
 
+  defp apply_workspace_mute_to_voice(%WorkspaceModeration{} = moderation, muted) do
+    moderation.workspace_id
+    |> voice_channel_ids_for_workspace()
+    |> Enum.each(fn voice_channel_id ->
+      :ok = Voice.set_workspace_muted(voice_channel_id, moderation.target_user_id, muted)
+    end)
+
+    :ok
+  end
+
+  defp voice_admission_status(workspace_id, user_id) do
+    case member_participation_status(workspace_id, user_id) do
+      {:error, :timeout} -> {:error, :timeout}
+      _eligible_or_muted -> :ok
+    end
+  end
+
   defp authorize_view_workspace(%Workspace{id: workspace_id}, %User{id: user_id}) do
     authorize_view_workspace(workspace_id, user_id)
   end
@@ -1688,7 +1712,10 @@ defmodule DiscordClone.Workspaces do
         metadata: %{"moderation_type" => moderation.type}
       })
     end)
-    |> run_moderation_multi(&broadcast_moderation_changed/1)
+    |> run_moderation_multi(fn moderation ->
+      apply_workspace_mute_to_voice(moderation, true)
+      broadcast_moderation_changed(moderation)
+    end)
   end
 
   defp unmute_member_with_audit(
@@ -1700,7 +1727,10 @@ defmodule DiscordClone.Workspaces do
       actor_user_id,
       "member_unmuted",
       &base_moderation_metadata/1,
-      &broadcast_moderation_changed/1
+      fn moderation ->
+        apply_workspace_mute_to_voice(moderation, false)
+        broadcast_moderation_changed(moderation)
+      end
     )
   end
 
@@ -1741,6 +1771,13 @@ defmodule DiscordClone.Workspaces do
     end)
     |> run_moderation_multi(fn moderation ->
       :ok = Chat.schedule_workspace_timeout_expiry(moderation)
+
+      :ok =
+        end_voice_user_sessions(
+          voice_channel_ids_for_workspace(moderation.workspace_id),
+          moderation.target_user_id
+        )
+
       broadcast_moderation_changed(moderation)
     end)
   end

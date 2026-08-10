@@ -279,12 +279,13 @@ defmodule DiscordCloneWeb.VoiceChannel do
       {:ok, join_result} ->
         case join_payload(join_result, signaling_session_id) do
           {:ok, %{voice_session_id: voice_session_id} = payload} ->
-            {:ok, payload,
-             socket
-             |> assign(:voice_channel_id, voice_channel_id)
-             |> assign(:signaling_session_id, signaling_session_id)
-             |> assign(:voice_session_id, voice_session_id)
-             |> assign(:negotiation_id, nil)}
+            finalize_voice_admission(
+              voice_channel_id,
+              voice_session_id,
+              payload,
+              signaling_session_id,
+              socket
+            )
 
           :error ->
             rollback_voice_join(voice_channel_id, join_result)
@@ -320,6 +321,37 @@ defmodule DiscordCloneWeb.VoiceChannel do
   end
 
   defp rollback_voice_join(_voice_channel_id, _join_result), do: :ok
+
+  defp finalize_voice_admission(
+         voice_channel_id,
+         voice_session_id,
+         payload,
+         signaling_session_id,
+         socket
+       ) do
+    current_scope = socket.assigns.current_scope
+
+    case Workspaces.authorize_voice_channel_for_signaling(current_scope, voice_channel_id) do
+      {:ok, voice_channel} ->
+        :ok =
+          Voice.set_workspace_muted(
+            voice_channel_id,
+            current_scope.user.id,
+            Workspaces.workspace_mute_active?(voice_channel.workspace_id, current_scope.user.id)
+          )
+
+        {:ok, payload,
+         socket
+         |> assign(:voice_channel_id, voice_channel_id)
+         |> assign(:signaling_session_id, signaling_session_id)
+         |> assign(:voice_session_id, voice_session_id)
+         |> assign(:negotiation_id, nil)}
+
+      {:error, :not_found} ->
+        :ok = Voice.leave(voice_channel_id, voice_session_id)
+        {:error, %{reason: "not_found"}}
+    end
+  end
 
   defp normalize_join_error(%{reason: :room_full, occupancy: occupancy, capacity: capacity})
        when is_integer(occupancy) and occupancy >= 0 and is_integer(capacity) and capacity > 0 and

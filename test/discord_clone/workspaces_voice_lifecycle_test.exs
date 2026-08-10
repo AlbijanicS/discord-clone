@@ -3,11 +3,126 @@ defmodule DiscordClone.WorkspacesVoiceLifecycleTest do
 
   alias DiscordClone.Voice
   alias DiscordClone.Workspaces
+  alias DiscordClone.Repo
   alias DiscordClone.Workspaces.{VoiceChannel, WorkspaceMembership}
 
   import DiscordClone.AccountsFixtures
 
   describe "durable access revocation" do
+    test "a Workspace Mute keeps a Voice Session connected and publishes only its effective muted state" do
+      owner_scope = user_scope_fixture()
+      muted_scope = user_scope_fixture()
+      listener_scope = user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Voice Mute"})
+      add_workspace_member!(workspace, muted_scope)
+      add_workspace_member!(workspace, listener_scope)
+
+      {:ok, voice_channel} =
+        Workspaces.create_voice_channel(owner_scope, workspace.id, %{name: "lobby"})
+
+      on_exit(fn -> cleanup_room(voice_channel.id) end)
+
+      assert {:ok, %{voice_session_id: muted_session_id, occupancy: 1}} =
+               Voice.join(voice_channel.id, muted_scope.user.id, "muted-connection", self())
+
+      assert {:ok, %{occupancy: 2}} =
+               Voice.join(voice_channel.id, listener_scope.user.id, "listener-connection", self())
+
+      assert {:ok, _moderation} =
+               Workspaces.mute_member(owner_scope, workspace.id, muted_scope.user.id, %{})
+
+      assert {:ok, %{occupancy: 2, capacity: 5}} = Voice.room_occupancy(voice_channel.id)
+
+      assert {:ok, %{members: members}} = Voice.voice_channel_roster(voice_channel.id)
+
+      assert Enum.find(members, &(&1.user_id == muted_scope.user.id)) == %{
+               user_id: muted_scope.user.id,
+               muted: true,
+               deafened: false,
+               speaking: false
+             }
+
+      refute Enum.any?(
+               members,
+               &(Map.has_key?(&1, :workspace_muted) or Map.has_key?(&1, :reason))
+             )
+
+      assert :ok =
+               Voice.update_local_voice_state(
+                 muted_scope,
+                 voice_channel.id,
+                 muted_session_id,
+                 %{muted: false, deafened: false}
+               )
+
+      assert {:ok, _moderation} =
+               Workspaces.unmute_member(owner_scope, workspace.id, muted_scope.user.id)
+
+      assert {:ok, %{members: members}} = Voice.voice_channel_roster(voice_channel.id)
+
+      assert Enum.find(members, &(&1.user_id == muted_scope.user.id)).muted == false
+    end
+
+    test "a Workspace Timeout ends the Voice Session and blocks signaling admission until removed" do
+      owner_scope = user_scope_fixture()
+      timed_out_scope = user_scope_fixture()
+
+      {:ok, workspace} = Workspaces.create_workspace(owner_scope, %{name: "Voice Timeout"})
+      add_workspace_member!(workspace, timed_out_scope)
+
+      {:ok, voice_channel} =
+        Workspaces.create_voice_channel(owner_scope, workspace.id, %{name: "lobby"})
+
+      on_exit(fn -> cleanup_room(voice_channel.id) end)
+
+      assert {:ok, %{occupancy: 1}} =
+               Voice.join(voice_channel.id, timed_out_scope.user.id, "timeout-connection", self())
+
+      assert {:ok, _moderation} =
+               Workspaces.timeout_member(
+                 owner_scope,
+                 workspace.id,
+                 timed_out_scope.user.id,
+                 "5_minutes",
+                 %{}
+               )
+
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel.id)
+
+      assert {:error, :not_found} =
+               Workspaces.authorize_voice_channel_for_signaling(timed_out_scope, voice_channel.id)
+
+      assert {:ok, _moderation} =
+               Workspaces.remove_member_timeout(
+                 owner_scope,
+                 workspace.id,
+                 timed_out_scope.user.id
+               )
+
+      assert {:ok, _voice_channel} =
+               Workspaces.authorize_voice_channel_for_signaling(timed_out_scope, voice_channel.id)
+
+      assert {:ok, moderation} =
+               Workspaces.timeout_member(
+                 owner_scope,
+                 workspace.id,
+                 timed_out_scope.user.id,
+                 "5_minutes",
+                 %{}
+               )
+
+      expired_moderation =
+        moderation
+        |> Ecto.Changeset.change(expires_at: DateTime.add(DateTime.utc_now(:second), -1, :second))
+        |> Repo.update!()
+
+      assert {:ok, _moderation} = Workspaces.expire_member_timeout(expired_moderation.id)
+
+      assert {:ok, _voice_channel} =
+               Workspaces.authorize_voice_channel_for_signaling(timed_out_scope, voice_channel.id)
+    end
+
     test "kicking a connected member ends only that member's Voice Session" do
       owner_scope = user_scope_fixture()
       kicked_scope = user_scope_fixture()

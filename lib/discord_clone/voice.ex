@@ -136,6 +136,27 @@ defmodule DiscordClone.Voice do
   def update_local_voice_state(_scope, _voice_channel_id, _voice_session_id, _state),
     do: {:error, :invalid_session}
 
+  @doc """
+  Applies a durable Workspace Mute to the matching active Voice Session.
+
+  Workspaces owns the moderation decision; Voice applies only its runtime
+  routing and safe roster consequences.
+  """
+  @spec set_workspace_muted(term(), term(), boolean()) :: :ok | {:error, :not_found}
+  def set_workspace_muted(voice_channel_id, user_id, muted) when is_boolean(muted) do
+    with {:ok, [voice_channel_id, user_id]} <-
+           UUIDIdentifier.cast_all([voice_channel_id, user_id]) do
+      case room_server(voice_channel_id) do
+        nil -> :ok
+        room_server -> RoomServer.set_workspace_muted(room_server, user_id, muted)
+      end
+    else
+      :error -> {:error, :not_found}
+    end
+  end
+
+  def set_workspace_muted(_voice_channel_id, _user_id, _muted), do: {:error, :not_found}
+
   @spec accept_offer(Scope.t(), term(), term(), binary(), map()) ::
           {:ok, map()} | {:error, atom()}
   def accept_offer(

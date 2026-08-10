@@ -61,6 +61,14 @@ defmodule DiscordClone.Voice.Forwarder do
 
   def session_removed(_missing_forwarder, _voice_session_id), do: :ok
 
+  @spec set_source_muted(pid() | nil, voice_session_id(), boolean()) :: :ok
+  def set_source_muted(forwarder, voice_session_id, muted)
+      when is_pid(forwarder) and is_boolean(muted) do
+    GenServer.call(forwarder, {:set_source_muted, voice_session_id, muted})
+  end
+
+  def set_source_muted(_missing_forwarder, _voice_session_id, _muted), do: :ok
+
   @spec forward_rtp(pid() | nil, voice_session_id(), integer(), ExRTP.Packet.t()) :: :ok
   def forward_rtp(forwarder, voice_session_id, inbound_track_id, packet)
       when is_pid(forwarder) do
@@ -110,6 +118,7 @@ defmodule DiscordClone.Voice.Forwarder do
              session: session,
              receive_codec: nil,
              source: nil,
+             muted: false,
              started_order: started_order
            }, state.next_session_order}
 
@@ -118,6 +127,7 @@ defmodule DiscordClone.Voice.Forwarder do
              session: session,
              receive_codec: nil,
              source: nil,
+             muted: false,
              started_order: state.next_session_order
            }, state.next_session_order + 1}
       end
@@ -136,6 +146,21 @@ defmodule DiscordClone.Voice.Forwarder do
       state
       |> update_in([:sessions], &Map.delete(&1, voice_session_id))
       |> rebuild_routes()
+
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:set_source_muted, voice_session_id, muted}, _from, state) do
+    state =
+      case Map.get(state.sessions, voice_session_id) do
+        nil ->
+          state
+
+        session_state ->
+          state
+          |> put_in([:sessions, voice_session_id], %{session_state | muted: muted})
+          |> rebuild_routes()
+      end
 
     {:reply, :ok, state}
   end
@@ -304,7 +329,7 @@ defmodule DiscordClone.Voice.Forwarder do
     end)
   end
 
-  defp source_ready?(%{source: %{codec: :opus}}), do: true
+  defp source_ready?(%{source: %{codec: :opus}, muted: false}), do: true
   defp source_ready?(_session), do: false
 
   defp receive_ready?(%{receive_codec: :opus}), do: true

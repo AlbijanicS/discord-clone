@@ -67,6 +67,31 @@ defmodule DiscordClone.Voice.ForwarderTest do
     end
   end
 
+  test "a Workspace-Muted Audio Source cannot forward while remaining an Audio Destination" do
+    forwarder = start_forwarder()
+    source_id = Ecto.UUID.generate()
+    muted_destination_id = Ecto.UUID.generate()
+
+    register_ready_session(forwarder, source_id, 101)
+    register_ready_session(forwarder, muted_destination_id, 202)
+    assert :ok = Forwarder.sync(forwarder)
+
+    assert :ok = Forwarder.set_source_muted(forwarder, source_id, true)
+
+    blocked_packet = ExRTP.Packet.new(<<1>>, sequence_number: 1, timestamp: 1, ssrc: 1)
+    assert :ok = Forwarder.forward_rtp(forwarder, source_id, 101, blocked_packet)
+    assert :ok = Forwarder.sync(forwarder)
+    refute_receive {_cast, {:deliver_rtp, ^muted_destination_id, _, ^blocked_packet}}, 0
+
+    inbound_packet = ExRTP.Packet.new(<<2>>, sequence_number: 2, timestamp: 2, ssrc: 2)
+    assert :ok = Forwarder.forward_rtp(forwarder, muted_destination_id, 202, inbound_packet)
+    assert_receive {_cast, {:deliver_rtp, ^source_id, 0, ^inbound_packet}}
+
+    assert :ok = Forwarder.set_source_muted(forwarder, source_id, false)
+    assert :ok = Forwarder.forward_rtp(forwarder, source_id, 101, blocked_packet)
+    assert_receive {_cast, {:deliver_rtp, ^muted_destination_id, 0, ^blocked_packet}}
+  end
+
   test "duplicate readiness in a different order keeps each source in its destination slot" do
     forwarder = start_forwarder()
     [first_id, second_id, third_id] = Enum.map(1..3, fn _ -> Ecto.UUID.generate() end)
