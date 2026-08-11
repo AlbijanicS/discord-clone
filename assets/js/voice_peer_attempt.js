@@ -2,6 +2,9 @@ const ICE_SERVERS = []
 const MAX_PENDING_SERVER_CANDIDATES = 16
 const MAX_PENDING_SERVER_CANDIDATE_BYTES = MAX_PENDING_SERVER_CANDIDATES * 8 * 1024
 const OFFER_REPLY_TIMEOUT_MS = 10_000
+const RENEWAL_INTERVAL_MS = 30_000
+const RENEWAL_ACK_TIMEOUT_MS = 10_000
+const RENEWAL_GRACE_MS = 75_000
 const AUDIO_OUTPUT_SLOT_COUNT = 4
 const INCOMPATIBLE_AUDIO_OUTPUT_SLOTS = "incompatible_audio_output_slots"
 
@@ -28,6 +31,11 @@ export function createVoicePeerAttempt({
   let signalingSessionId = null
   let signalingActive = false
   let currentNegotiationId = null
+  let mediaState = "joining"
+  let renewalAckTimeout = null
+  let renewalDeadline = null
+  let renewalInterval = null
+  let controlPlaneInterrupted = false
 
   function fail(error = "connection_failed") {
     if (!active) return
@@ -41,11 +49,76 @@ export function createVoicePeerAttempt({
     answerApplied = false
     pendingServerCandidates = []
     pendingServerCandidateBytes = 0
+    clearRenewalTimers()
     releaseRemoteAudio()
     peerConnection?.close()
     peerConnection = null
     if (signalingActive) signaling?.leave()
     signalingActive = false
+  }
+
+  function clearRenewalTimers() {
+    clearTimeoutFn(renewalAckTimeout)
+    clearTimeoutFn(renewalDeadline)
+    clearTimeoutFn(renewalInterval)
+    renewalAckTimeout = null
+    renewalDeadline = null
+    renewalInterval = null
+  }
+
+  function schedule(callback, delay) {
+    const timeout = setTimeoutFn(callback, delay)
+    timeout?.unref?.()
+    return timeout
+  }
+
+  function publishConnectionState() {
+    onState(controlPlaneInterrupted || mediaState === "disconnected" ? "interrupted" : mediaState)
+  }
+
+  function scheduleRenewal() {
+    renewalInterval = schedule(() => {
+      renewalInterval = null
+      renewVoiceSession()
+      if (active) scheduleRenewal()
+    }, RENEWAL_INTERVAL_MS)
+  }
+
+  function setRenewalDeadline() {
+    clearTimeoutFn(renewalDeadline)
+    renewalDeadline = schedule(() => fail("connection_lost"), RENEWAL_GRACE_MS)
+  }
+
+  function receiveRenewalAcknowledgement(reply) {
+    if (!active || reply?.signaling_session_id !== signalingSessionId) return
+
+    clearTimeoutFn(renewalAckTimeout)
+    renewalAckTimeout = null
+    controlPlaneInterrupted = false
+    setRenewalDeadline()
+    publishConnectionState()
+  }
+
+  function interruptControlPlane() {
+    if (!active || controlPlaneInterrupted) return
+
+    controlPlaneInterrupted = true
+    publishConnectionState()
+  }
+
+  function renewVoiceSession() {
+    if (!active || !signalingSessionId) return
+
+    const renewal = signaling?.renewVoiceSession?.({signaling_session_id: signalingSessionId})
+    clearTimeoutFn(renewalAckTimeout)
+    renewalAckTimeout = schedule(interruptControlPlane, RENEWAL_ACK_TIMEOUT_MS)
+    renewal?.receive?.("ok", receiveRenewalAcknowledgement)?.receive?.("error", () => fail("connection_lost"))
+  }
+
+  function startRenewals() {
+    controlPlaneInterrupted = false
+    setRenewalDeadline()
+    scheduleRenewal()
   }
 
   async function playRemoteAudio() {
@@ -164,8 +237,14 @@ export function createVoicePeerAttempt({
   function handleConnectionStateChange() {
     if (!active) return
 
-    if (peerConnection.connectionState === "connected") onState("connected")
-    if (peerConnection.connectionState === "disconnected") onState("interrupted")
+    if (peerConnection.connectionState === "connected") {
+      mediaState = "connected"
+      publishConnectionState()
+    }
+    if (peerConnection.connectionState === "disconnected") {
+      mediaState = "disconnected"
+      publishConnectionState()
+    }
     if (["failed", "closed"].includes(peerConnection.connectionState)) fail("connection_lost")
   }
 
@@ -188,6 +267,7 @@ export function createVoicePeerAttempt({
       if (!PeerConnection || !signaling || !track) throw new Error("voice connection unavailable")
 
       active = true
+      mediaState = "joining"
       currentNegotiationId = negotiationId()
       onState("joining")
 
@@ -247,6 +327,7 @@ export function createVoicePeerAttempt({
         }
         pendingServerCandidates = []
         pendingServerCandidateBytes = 0
+        startRenewals()
       } catch (error) {
         if (active) fail(voiceFailure(error))
         throw error

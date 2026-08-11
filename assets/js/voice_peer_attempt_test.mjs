@@ -34,6 +34,38 @@ function deferred() {
   return {promise, reject, resolve}
 }
 
+function fakeClock() {
+  let elapsed = 0
+  let nextId = 0
+  const timers = new Map()
+
+  return {
+    advance(milliseconds) {
+      const target = elapsed + milliseconds
+
+      while (true) {
+        const due = [...timers.entries()]
+          .filter(([, timer]) => timer.at <= target)
+          .sort(([, left], [, right]) => left.at - right.at)[0]
+        if (!due) break
+
+        const [id, timer] = due
+        timers.delete(id)
+        elapsed = timer.at
+        timer.callback()
+      }
+
+      elapsed = target
+    },
+    clearTimeout(id) { timers.delete(id) },
+    setTimeout(callback, delay) {
+      const id = ++nextId
+      timers.set(id, {at: elapsed + delay, callback})
+      return id
+    },
+  }
+}
+
 function fakePeerConnection() {
   const handlers = new Map()
 
@@ -170,6 +202,129 @@ test("a connected silent microphone remains active without an RTP inactivity tim
   assert.deepEqual(states, ["joining", "connected"])
   assert.deepEqual(failures, [])
   assert.equal(peer.closed, false)
+})
+
+test("renews the active signaling session every thirty seconds while a background tab remains active", async () => {
+  const {peer, signaling} = attemptFixture()
+  const clock = fakeClock()
+  const renewals = []
+  signaling.renewVoiceSession = renewal => {
+    renewals.push(renewal)
+    return {receive() { return this }}
+  }
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    clearTimeoutFn: clock.clearTimeout,
+    negotiationId: () => "browser-negotiation",
+    setTimeoutFn: clock.setTimeout,
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  clock.advance(60_000)
+
+  assert.deepEqual(renewals, [
+    {signaling_session_id: "server-session"},
+    {signaling_session_id: "server-session"},
+  ])
+  assert.equal(peer.closed, false)
+})
+
+test("a missing renewal acknowledgement interrupts control-plane presentation and a valid delayed acknowledgement recovers only connected media", async () => {
+  const {peer, signaling} = attemptFixture()
+  const clock = fakeClock()
+  const states = []
+  let acknowledge
+  signaling.renewVoiceSession = () => ({
+    receive(status, callback) {
+      if (status === "ok") acknowledge = callback
+      return this
+    },
+  })
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    clearTimeoutFn: clock.clearTimeout,
+    negotiationId: () => "browser-negotiation",
+    onState: state => states.push(state),
+    setTimeoutFn: clock.setTimeout,
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  peer.connectionState = "connected"
+  peer.emit("connectionstatechange")
+  clock.advance(40_000)
+  assert.equal(states.at(-1), "interrupted")
+
+  peer.connectionState = "disconnected"
+  peer.emit("connectionstatechange")
+  acknowledge({signaling_session_id: "server-session"})
+  assert.equal(states.at(-1), "interrupted")
+
+  peer.connectionState = "connected"
+  peer.emit("connectionstatechange")
+  assert.equal(states.at(-1), "connected")
+})
+
+test("unacknowledged renewal expires after seventy-five seconds, while a rejected renewal is immediately terminal and stale replies do nothing", async () => {
+  for (const outcome of ["silent", "rejected"]) {
+    const {peer, signaling} = attemptFixture()
+    const clock = fakeClock()
+    const failures = []
+    let rejectRenewal
+    let acknowledge
+    signaling.leave = () => { signaling.left = (signaling.left || 0) + 1 }
+    signaling.renewVoiceSession = () => ({
+      receive(status, callback) {
+        if (status === "ok") acknowledge = callback
+        if (status === "error") rejectRenewal = callback
+        return this
+      },
+    })
+    const attempt = createVoicePeerAttempt({
+      PeerConnection: class { constructor() { return peer } },
+      clearTimeoutFn: clock.clearTimeout,
+      negotiationId: () => "browser-negotiation",
+      onFailure: failure => failures.push(failure),
+      setTimeoutFn: clock.setTimeout,
+      signaling,
+    })
+
+    await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+    clock.advance(30_000)
+    if (outcome === "silent") clock.advance(45_000)
+    else rejectRenewal({reason: "invalid_session"})
+
+    assert.equal(peer.closed, true)
+    assert.equal(signaling.left, 1)
+    assert.deepEqual(failures, ["connection_lost"])
+    acknowledge?.({signaling_session_id: "server-session"})
+    assert.deepEqual(failures, ["connection_lost"])
+  }
+})
+
+test("terminal cleanup cancels renewal traffic after the controller releases its attempt", async () => {
+  const {peer, signaling} = attemptFixture()
+  const clock = fakeClock()
+  const renewals = []
+  signaling.renewVoiceSession = renewal => {
+    renewals.push(renewal)
+    return {receive() { return this }}
+  }
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    clearTimeoutFn: clock.clearTimeout,
+    negotiationId: () => "browser-negotiation",
+    setTimeoutFn: clock.setTimeout,
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  attempt.leave()
+  clock.advance(75_000)
+
+  assert.deepEqual(renewals, [])
+  assert.equal(peer.closed, true)
 })
 
 test("reports a disconnected peer as interrupted without ending its Voice Session", async () => {

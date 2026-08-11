@@ -946,6 +946,25 @@ Automated evidence:
 - `mix precommit` passed: compilation, formatting, Credo, 70 browser tests,
   and the full ExUnit suite. One initial unrelated presence timing failure
   passed when rerun in isolation before the successful gate rerun.
+
+Phase 11 / Ticket 02 completed on 2026-08-11.
+
+- Each admitted Voice Owner Tab now renews its current server-issued Signaling
+  Session ID every 30 seconds. Renewal acknowledgements are correlated to that
+  active browser attempt only.
+- A missing acknowledgement presents an interrupted control plane after 10
+  seconds and a valid delayed acknowledgement recovers only when the media
+  plane is connected. Silence for 75 seconds retires the attempt; an
+  authoritative rejection retires it immediately.
+- Terminal retirement uses the established idempotent browser cleanup path,
+  releasing capture, playback, PeerConnection, signaling, and renewal timers.
+  Background tabs retain their cadence; whole-document `pagehide` remains the
+  release boundary.
+
+Automated evidence:
+- Deterministic browser Voice tests cover renewal cadence, interruption and
+  recovery, terminal grace, rejection, stale callbacks, and existing pagehide
+  cleanup.
 ```
 
 ## Phase 12: STUN/TURN And Real-Network Deployment

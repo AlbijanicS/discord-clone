@@ -420,6 +420,33 @@ test("a terminal connection failure releases controller-owned capture and return
   assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", workspaceId: null})
 })
 
+test("a stale terminal callback from a retired attempt cannot release a replacement Voice Owner Tab", async () => {
+  const firstTrack = track()
+  const secondTrack = track()
+  const attempts = []
+  let captures = 0
+  const controller = createVoiceController({
+    connectionFactory(options) {
+      attempts.push(options)
+      return {leave() {}}
+    },
+    mediaDevices: {
+      getUserMedia() {
+        captures += 1
+        return Promise.resolve(stream(captures === 1 ? firstTrack : secondTrack))
+      },
+    },
+  })
+
+  await controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+  controller.leave()
+  await controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+  attempts[0].onFailure("connection_lost")
+
+  assert.equal(controller.state().status, "joining")
+  assert.equal(secondTrack.stopped, false)
+})
+
 test("a Voice Owner Tab plays browser-local roster cues only from its active Voice Channel, including while interrupted", async () => {
   const cues = []
   const microphoneTrack = track()
