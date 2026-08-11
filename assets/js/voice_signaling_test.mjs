@@ -89,7 +89,7 @@ test("pushes a real offer and resolves Phoenix's correlated answer reply", async
   assert.deepEqual(await answerPromise, answer)
 })
 
-test("pushes individual ICE and heartbeat while exposing direct server ICE events", () => {
+test("pushes individual ICE and Voice Session renewal while exposing direct server ICE events", () => {
   const pushes = []
   const handlers = []
   const receives = []
@@ -99,10 +99,10 @@ test("pushes individual ICE and heartbeat while exposing direct server ICE event
       return icePush
     },
   }
-  const heartbeatPush = {
+  const renewalPush = {
     receive(status, callback) {
-      receives.push(["heartbeat", status, callback])
-      return heartbeatPush
+      receives.push(["renew", status, callback])
+      return renewalPush
     },
   }
 
@@ -114,7 +114,7 @@ test("pushes individual ICE and heartbeat while exposing direct server ICE event
         leave() { return {receive() { return this }} },
         push(event, payload) {
           pushes.push([event, payload])
-          return event === "ice_candidate" ? icePush : heartbeatPush
+          return event === "ice_candidate" ? icePush : renewalPush
         },
         on(event, callback) { handlers.push([event, callback]); return 1 },
       }
@@ -125,13 +125,13 @@ test("pushes individual ICE and heartbeat while exposing direct server ICE event
   signaling.join("voice-channel-id")
 
   const ice = {signaling_session_id: "current-id", negotiation_id: "browser-negotiation", candidate: {candidate: "client-ice"}}
-  const heartbeat = {signaling_session_id: "current-id", label: "fake-heartbeat", sequence: 4}
+  const renewal = {signaling_session_id: "current-id"}
   const receivedServerIce = []
 
   assert.equal(signaling.sendIce(ice), icePush)
-  assert.equal(signaling.sendHeartbeat(heartbeat), heartbeatPush)
+  assert.equal(signaling.renewVoiceSession(renewal), renewalPush)
   assert.equal(signaling.onServerIce(payload => receivedServerIce.push(payload)), 1)
-  assert.deepEqual(pushes, [["ice_candidate", ice], ["heartbeat", heartbeat]])
+  assert.deepEqual(pushes, [["ice_candidate", ice], ["renew", renewal]])
 
   const serverIce = {signaling_session_id: "current-id", negotiation_id: "browser-negotiation", candidate: {candidate: "server-ice"}}
   handlers[0][1](serverIce)

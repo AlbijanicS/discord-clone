@@ -930,7 +930,22 @@ Prove:
 Implementation Notes:
 
 ```text
-Not started.
+Phase 11 / Ticket 01 completed on 2026-08-11.
+
+- The authenticated `/voice` Channel accepts an explicit `renew` request that
+  carries only the existing Signaling Session ID and returns the same minimal
+  correlation acknowledgement. The private Voice Session ID stays Channel-side.
+- RoomServer now owns a runtime-only 120-second lease per admitted Voice
+  Session. Exact accepted renewals replace its deadline; expiry uses ordinary
+  membership removal, including route withdrawal, Session termination, roster
+  publication, coordinator cleanup, and existing empty-room retirement.
+- Offer, ICE, Local Mute/Deafen, and RTP paths do not touch the lease.
+
+Automated evidence:
+- Focused Voice runtime and authenticated Voice Channel suites passed.
+- `mix precommit` passed: compilation, formatting, Credo, 70 browser tests,
+  and the full ExUnit suite. One initial unrelated presence timing failure
+  passed when rerun in isolation before the successful gate rerun.
 ```
 
 ## Phase 12: STUN/TURN And Real-Network Deployment

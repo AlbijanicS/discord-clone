@@ -81,6 +81,38 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
                Voice.voice_channel_roster(voice_channel_id)
     end
 
+    test "renews only the current authenticated Voice Session", context do
+      %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context
+
+      assert_reply push(channel_socket, "renew", %{"signaling_session_id" => signaling_session_id}),
+                   :ok,
+                   %{signaling_session_id: ^signaling_session_id}
+
+      assert_reply push(channel_socket, "renew", %{"signaling_session_id" => "stale-session"}),
+                   :error,
+                   %{reason: "invalid_request"}
+    end
+
+    test "rejects renewal from a Channel whose Voice Session was replaced", context do
+      %{
+        channel_socket: channel_socket,
+        join_payload: %{voice_session_id: original_voice_session_id},
+        signaling_session_id: signaling_session_id,
+        voice_channel_id: voice_channel_id
+      } = context
+
+      user_id = channel_socket.assigns.current_scope.user.id
+
+      assert {:ok, %{voice_session_id: replacement_voice_session_id}} =
+               Voice.join(voice_channel_id, user_id, "replacement-signaling-session", self())
+
+      refute replacement_voice_session_id == original_voice_session_id
+
+      assert_reply push(channel_socket, "renew", %{"signaling_session_id" => signaling_session_id}),
+                   :error,
+                   %{reason: "invalid_session"}
+    end
+
     test "returns a correlated real answer and sends server ICE only to its connection",
          context do
       %{channel_socket: channel_socket, signaling_session_id: signaling_session_id} = context

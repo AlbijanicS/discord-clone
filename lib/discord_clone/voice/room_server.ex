@@ -4,6 +4,7 @@ defmodule DiscordClone.Voice.RoomServer do
   use GenServer
 
   @idle_timeout_ms :timer.seconds(30)
+  @voice_session_lease_timeout_ms :timer.seconds(120)
   @speaking_decay_ms 600
 
   alias DiscordClone.Voice.{
@@ -46,6 +47,12 @@ defmodule DiscordClone.Voice.RoomServer do
 
   @spec leave(GenServer.server(), Ecto.UUID.t()) :: :ok
   def leave(server, voice_session_id), do: GenServer.call(server, {:leave, voice_session_id})
+
+  @spec renew_session(GenServer.server(), Ecto.UUID.t(), Ecto.UUID.t(), binary()) ::
+          :ok | {:error, :invalid_session}
+  def renew_session(server, user_id, voice_session_id, signaling_session_id) do
+    GenServer.call(server, {:renew_session, user_id, voice_session_id, signaling_session_id})
+  end
 
   @spec update_local_voice_state(
           GenServer.server(),
@@ -170,6 +177,7 @@ defmodule DiscordClone.Voice.RoomServer do
        session_by_monitor: %{},
        session_supervisor: nil,
        forwarder: nil,
+       voice_session_lease_timeout_ms: voice_session_lease_timeout(opts),
        next_admission_order: 0,
        test_admission_observer: test_admission_observer(opts),
        test_peer_connection_opts: test_peer_connection_opts(opts),
@@ -210,6 +218,18 @@ defmodule DiscordClone.Voice.RoomServer do
 
   def handle_call({:leave, voice_session_id}, _from, state) do
     {:reply, :ok, remove_membership(state, voice_session_id)}
+  end
+
+  def handle_call({:renew_session, user_id, voice_session_id, signaling_session_id}, _from, state) do
+    case Map.get(state.memberships, voice_session_id) do
+      %{user_id: ^user_id, signaling_session_id: ^signaling_session_id} = membership ->
+        membership = renew_lease(membership, state.voice_session_lease_timeout_ms)
+
+        {:reply, :ok, put_in(state, [:memberships, voice_session_id], membership)}
+
+      _missing_or_mismatched_session ->
+        {:reply, {:error, :invalid_session}, state}
+    end
   end
 
   def handle_call(
@@ -399,6 +419,16 @@ defmodule DiscordClone.Voice.RoomServer do
     end
   end
 
+  def handle_info({:voice_session_lease_expired, voice_session_id, lease_ref}, state) do
+    case Map.get(state.memberships, voice_session_id) do
+      %{lease_ref: ^lease_ref} ->
+        {:noreply, remove_membership(state, voice_session_id)}
+
+      _stale_or_removed_session ->
+        {:noreply, state}
+    end
+  end
+
   @impl true
   def handle_cast({:signaling_channel_down, voice_session_id}, state) do
     {:noreply, remove_membership(state, voice_session_id)}
@@ -499,8 +529,12 @@ defmodule DiscordClone.Voice.RoomServer do
         admission_order: state.next_admission_order,
         signaling_session_id: signaling_session_id,
         session_pid: session_pid,
-        session_monitor: session_monitor
+        session_monitor: session_monitor,
+        lease_timer: nil,
+        lease_ref: nil
       }
+
+      membership = renew_lease(membership, state.voice_session_lease_timeout_ms)
 
       state =
         state
@@ -590,7 +624,8 @@ defmodule DiscordClone.Voice.RoomServer do
          session_monitor: session_monitor,
          signaling_session_id: signaling_session_id,
          user_id: user_id,
-         speaking_decay_timer: speaking_decay_timer
+         speaking_decay_timer: speaking_decay_timer,
+         lease_timer: lease_timer
        }, memberships} ->
         :ok = Forwarder.session_removed(state.forwarder, voice_session_id)
 
@@ -604,6 +639,7 @@ defmodule DiscordClone.Voice.RoomServer do
 
         _ = Process.demonitor(session_monitor, [:flush])
         _ = cancel_speaking_decay(speaking_decay_timer)
+        _ = cancel_lease_expiry(lease_timer)
 
         state = %{
           state
@@ -658,6 +694,14 @@ defmodule DiscordClone.Voice.RoomServer do
       Keyword.get(opts, :test_peer_connection_opts, [])
     else
       []
+    end
+  end
+
+  defp voice_session_lease_timeout(opts) do
+    if @test_environment do
+      Keyword.get(opts, :voice_session_lease_timeout_ms, @voice_session_lease_timeout_ms)
+    else
+      @voice_session_lease_timeout_ms
     end
   end
 
@@ -758,4 +802,21 @@ defmodule DiscordClone.Voice.RoomServer do
 
   defp cancel_speaking_decay(nil), do: :ok
   defp cancel_speaking_decay(timer), do: Process.cancel_timer(timer)
+
+  defp renew_lease(membership, timeout) do
+    _ = cancel_lease_expiry(membership.lease_timer)
+    lease_ref = make_ref()
+
+    lease_timer =
+      Process.send_after(
+        self(),
+        {:voice_session_lease_expired, membership.voice_session_id, lease_ref},
+        timeout
+      )
+
+    %{membership | lease_timer: lease_timer, lease_ref: lease_ref}
+  end
+
+  defp cancel_lease_expiry(nil), do: :ok
+  defp cancel_lease_expiry(timer), do: Process.cancel_timer(timer)
 end

@@ -31,8 +31,8 @@ export function createVoiceSignaling({Socket, csrfToken} = {}) {
       return channel?.push("ice_candidate", ice) ?? null
     },
 
-    sendHeartbeat(heartbeat) {
-      return channel?.push("heartbeat", heartbeat) ?? null
+    renewVoiceSession(renewal) {
+      return channel?.push("renew", renewal) ?? null
     },
 
     sendLocalVoiceState(state) {

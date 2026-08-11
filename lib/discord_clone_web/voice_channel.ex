@@ -3,7 +3,7 @@ defmodule DiscordCloneWeb.VoiceChannel do
 
   alias DiscordClone.{Voice, Workspaces}
   alias DiscordClone.Voice.{Diagnostics, PeerConnection}
-  alias DiscordCloneWeb.VoiceSignaling.{FakeHeartbeat, RealMessage}
+  alias DiscordCloneWeb.VoiceSignaling.RealMessage
 
   @impl true
   def join("voice:" <> voice_channel_id, params, socket) do
@@ -110,23 +110,23 @@ defmodule DiscordCloneWeb.VoiceChannel do
     end
   end
 
-  def handle_in("heartbeat", params, socket) do
+  def handle_in("renew", params, socket) do
     byte_count = decoded_request_byte_count(params)
 
     with :ok <- validate_signaling_session_id(params, socket),
-         {:ok, heartbeat} <- FakeHeartbeat.validate(params) do
-      Diagnostics.emit("heartbeat", :accepted, decoded_request_byte_count: byte_count)
+         :ok <-
+           Voice.renew_session(
+             socket.assigns.current_scope,
+             socket.assigns.voice_channel_id,
+             socket.assigns.voice_session_id,
+             socket.assigns.signaling_session_id
+           ) do
+      Diagnostics.emit("renew", :accepted, decoded_request_byte_count: byte_count)
 
-      {:reply,
-       {:ok,
-        %{
-          signaling_session_id: socket.assigns.signaling_session_id,
-          label: "fake-heartbeat-ack",
-          sequence: heartbeat.sequence
-        }}, socket}
+      {:reply, {:ok, %{signaling_session_id: socket.assigns.signaling_session_id}}, socket}
     else
-      :invalid_session -> reject("heartbeat", "invalid_request", byte_count, socket)
-      {:error, _errors} -> reject("heartbeat", "invalid_heartbeat", byte_count, socket)
+      :invalid_session -> reject("renew", "invalid_request", byte_count, socket)
+      {:error, _reason} -> reject("renew", "invalid_session", byte_count, socket)
     end
   end
 

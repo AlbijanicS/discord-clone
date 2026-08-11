@@ -21,6 +21,84 @@ defmodule DiscordClone.VoiceTest do
   end
 
   describe "room runtime lifecycle" do
+    test "expires an unrenewed Voice Session without affecting another room" do
+      expired_voice_channel_id = Ecto.UUID.generate()
+      healthy_voice_channel_id = Ecto.UUID.generate()
+      expired_user_id = Ecto.UUID.generate()
+      healthy_user_id = Ecto.UUID.generate()
+      running_before = ExWebRTC.PeerConnection.get_all_running()
+
+      expired_room =
+        start_room_server(expired_voice_channel_id, voice_session_lease_timeout_ms: 0)
+
+      healthy_room =
+        start_room_server(healthy_voice_channel_id,
+          voice_session_lease_timeout_ms: :timer.minutes(1)
+        )
+
+      assert {:ok, %{voice_session_id: expired_voice_session_id}} =
+               RoomServer.join(expired_room, expired_user_id, "expired-session", self())
+
+      assert {:ok, %{voice_session_id: healthy_voice_session_id}} =
+               RoomServer.join(healthy_room, healthy_user_id, "healthy-session", self())
+
+      assert :ok = RoomServer.await_empty(expired_room)
+      assert %{members: []} = RoomServer.roster(expired_room)
+      assert {:ok, %{occupancy: 1, capacity: 5}} = RoomServer.occupancy(healthy_room)
+      assert %{members: [%{user_id: ^healthy_user_id}]} = RoomServer.roster(healthy_room)
+      assert length(ExWebRTC.PeerConnection.get_all_running()) == length(running_before) + 1
+
+      assert :ok = RoomServer.leave(healthy_room, healthy_voice_session_id)
+      assert :ok = RoomServer.await_empty(healthy_room)
+
+      assert {:error, :not_found} =
+               Voice.dispatch_test_ex_webrtc(
+                 expired_voice_channel_id,
+                 expired_voice_session_id,
+                 :late_message
+               )
+    end
+
+    test "renews only the matching authenticated Voice Session" do
+      voice_channel_id = Ecto.UUID.generate()
+      user = user_fixture()
+
+      assert {:ok, %{voice_session_id: voice_session_id}} =
+               Voice.join(voice_channel_id, user.id, "current-signaling-session", self())
+
+      assert :ok =
+               Voice.renew_session(
+                 Scope.for_user(user),
+                 voice_channel_id,
+                 voice_session_id,
+                 "current-signaling-session"
+               )
+
+      assert {:error, :invalid_session} =
+               Voice.renew_session(
+                 Scope.for_user(user),
+                 voice_channel_id,
+                 Ecto.UUID.generate(),
+                 "current-signaling-session"
+               )
+
+      assert {:error, :invalid_session} =
+               Voice.renew_session(
+                 Scope.for_user(user_fixture()),
+                 voice_channel_id,
+                 voice_session_id,
+                 "current-signaling-session"
+               )
+
+      assert {:error, :invalid_session} =
+               Voice.renew_session(
+                 Scope.for_user(user),
+                 voice_channel_id,
+                 voice_session_id,
+                 "stale-signaling-session"
+               )
+    end
+
     test "starts a room for a durable Voice Channel ID without exposing its process" do
       voice_channel_id = Ecto.UUID.generate()
 
@@ -2416,6 +2494,36 @@ defmodule DiscordClone.VoiceTest do
     %{memberships: memberships} = :sys.get_state(room_server(voice_channel_id))
     session = :sys.get_state(memberships[voice_session_id].session_pid)
     session.peer_connection.peer_connection
+  end
+
+  defp start_room_server(voice_channel_id, opts) do
+    room_server =
+      start_supervised!(%{
+        id: {:voice_lease_room_server, voice_channel_id},
+        start:
+          {RoomServer, :start_link,
+           [
+             [
+               voice_channel_id: voice_channel_id,
+               room_supervisor:
+                 start_signaling_channel({:lease_room_supervisor, voice_channel_id})
+             ] ++ opts
+           ]}
+      })
+
+    _session_supervisor =
+      start_supervised!(%{
+        id: {:voice_lease_session_supervisor, voice_channel_id},
+        start: {SessionSupervisor, :start_link, [[voice_channel_id: voice_channel_id]]}
+      })
+
+    _forwarder =
+      start_supervised!(%{
+        id: {:voice_lease_forwarder, voice_channel_id},
+        start: {Forwarder, :start_link, [[voice_channel_id: voice_channel_id]]}
+      })
+
+    room_server
   end
 
   defp negotiate_room_sessions(room_server, session_count, label) do

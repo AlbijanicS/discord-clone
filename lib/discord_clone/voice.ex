@@ -103,6 +103,34 @@ defmodule DiscordClone.Voice do
   end
 
   @doc """
+  Renews the current authenticated Voice Session's runtime-only liveness lease.
+
+  The caller's User identity and exact Voice Session ID must still match the
+  canonical RoomServer membership.
+  """
+  @spec renew_session(Scope.t(), term(), term(), binary()) ::
+          :ok | {:error, :invalid_session | :unavailable}
+  def renew_session(
+        %Scope{user: %{id: user_id}},
+        voice_channel_id,
+        voice_session_id,
+        signaling_session_id
+      )
+      when is_binary(user_id) and is_binary(signaling_session_id) do
+    with {:ok, [voice_channel_id, voice_session_id]} <-
+           UUIDIdentifier.cast_all([voice_channel_id, voice_session_id]),
+         room_server when is_pid(room_server) <- room_server(voice_channel_id) do
+      safe_renew_session(room_server, user_id, voice_session_id, signaling_session_id)
+    else
+      nil -> {:error, :unavailable}
+      :error -> {:error, :invalid_session}
+    end
+  end
+
+  def renew_session(_scope, _voice_channel_id, _voice_session_id, _signaling_session_id),
+    do: {:error, :invalid_session}
+
+  @doc """
   Updates the browser-originated shared Voice state for the caller's active
   Voice Session.
 
@@ -543,6 +571,12 @@ defmodule DiscordClone.Voice do
     RoomServer.leave(room_server, voice_session_id)
   catch
     :exit, _room_stopped -> :ok
+  end
+
+  defp safe_renew_session(room_server, user_id, voice_session_id, signaling_session_id) do
+    RoomServer.renew_session(room_server, user_id, voice_session_id, signaling_session_id)
+  catch
+    :exit, _room_stopped -> {:error, :unavailable}
   end
 
   defp safe_join(voice_channel_id, user_id, signaling_session_id, signaling_channel) do

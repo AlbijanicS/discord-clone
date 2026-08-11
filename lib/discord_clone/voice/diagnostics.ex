@@ -14,7 +14,7 @@ defmodule DiscordClone.Voice.Diagnostics do
 
   @spec emit(String.t(), outcome(), keyword()) :: :ok
   def emit(operation, outcome, options \\ [])
-      when operation in ["offer", "ice_candidate", "heartbeat", "connection_state"] and
+      when operation in ["offer", "ice_candidate", "renew", "connection_state"] and
              outcome in [:accepted, :rejected, :failed] do
     metadata =
       %{operation: operation, outcome: outcome}
