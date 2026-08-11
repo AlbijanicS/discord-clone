@@ -965,6 +965,25 @@ Automated evidence:
 - Deterministic browser Voice tests cover renewal cadence, interruption and
   recovery, terminal grace, rejection, stale callbacks, and existing pagehide
   cleanup.
+
+Phase 11 / Ticket 03 completed on 2026-08-11.
+
+- Browser and server PeerConnections now each own a separate 30-second
+  disconnected recovery grace. A `connected` transition cancels only that
+  endpoint's deadline; `failed` and `closed` remain immediately terminal.
+- Browser expiry follows the established idempotent attempt cleanup. Server
+  expiry stops only the exact Voice Session, letting RoomServer's existing
+  monitor-driven lifecycle withdraw its Audio Routes, publish the roster, and
+  retain unrelated Sessions.
+- Control-plane interruption remains independent of media-plane recovery, and
+  RTP silence remains outside both recovery policies.
+
+Automated evidence:
+- Deterministic browser fake-clock tests cover interrupted presentation,
+  recovery, expiry, and stale disconnected deadlines.
+- Focused public Voice lifecycle coverage proves canonical cleanup of an
+  unrecovered server PeerConnection and survival of a recovered or unrelated
+  Session.
 ```
 
 ## Phase 12: STUN/TURN And Real-Network Deployment

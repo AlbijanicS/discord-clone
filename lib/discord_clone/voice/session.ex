@@ -7,6 +7,7 @@ defmodule DiscordClone.Voice.Session do
 
   @command_timeout_ms 5_000
   @negotiation_timeout_ms 15_000
+  @peer_connection_recovery_timeout_ms :timer.seconds(30)
   @test_environment Code.ensure_loaded?(Mix) and Mix.env() == :test
   @max_accepted_candidates 64
   @max_pending_candidates 16
@@ -101,6 +102,14 @@ defmodule DiscordClone.Voice.Session do
            peer_connection: peer_connection,
            negotiation_timer: negotiation_timer,
            negotiation_id: nil,
+           peer_connection_recovery_timeout_ms:
+             Keyword.get(
+               opts,
+               :peer_connection_recovery_timeout_ms,
+               @peer_connection_recovery_timeout_ms
+             ),
+           peer_connection_recovery_timer: nil,
+           peer_connection_recovery_ref: nil,
            pending_candidates: [],
            accepted_candidate_count: 0,
            media_counts: empty_media_counts()
@@ -191,6 +200,17 @@ defmodule DiscordClone.Voice.Session do
     do: {:stop, :normal, state}
 
   def handle_info(
+        {:peer_connection_recovery_expired, recovery_ref},
+        %{peer_connection_recovery_ref: recovery_ref} = state
+      ) do
+    send_event(state, {:connection_state_change, :failed, state.negotiation_id})
+    {:stop, :normal, state}
+  end
+
+  def handle_info({:peer_connection_recovery_expired, _stale_recovery_ref}, state),
+    do: {:noreply, state}
+
+  def handle_info(
         {:DOWN, signaling_channel_monitor, :process, _signaling_channel, _reason},
         %{signaling_channel_monitor: signaling_channel_monitor} = state
       ) do
@@ -214,7 +234,8 @@ defmodule DiscordClone.Voice.Session do
   def handle_info(_message, state), do: {:noreply, state}
 
   @impl true
-  def terminate(_reason, %{peer_connection: peer_connection}) do
+  def terminate(_reason, %{peer_connection: peer_connection} = state) do
+    _ = cancel_peer_connection_recovery_deadline(state.peer_connection_recovery_timer)
     PeerConnection.stop(peer_connection)
     :ok
   end
@@ -234,17 +255,61 @@ defmodule DiscordClone.Voice.Session do
       {:connection_state_change, connection_state} ->
         Diagnostics.emit("connection_state", :accepted, connection_state: connection_state)
 
-        if connection_state in [:failed, :closed] do
-          send_event(state, {:connection_state_change, connection_state, state.negotiation_id})
-          {:stop, :normal, state}
-        else
-          {:noreply, state}
-        end
+        handle_connection_state_change(connection_state, state)
 
       _other ->
         {:noreply, state}
     end
   end
+
+  defp handle_connection_state_change(:connected, state) do
+    {:noreply, cancel_peer_connection_recovery_deadline(state)}
+  end
+
+  defp handle_connection_state_change(:disconnected, state) do
+    {:noreply, start_peer_connection_recovery_deadline(state)}
+  end
+
+  defp handle_connection_state_change(connection_state, state)
+       when connection_state in [:failed, :closed] do
+    send_event(state, {:connection_state_change, connection_state, state.negotiation_id})
+    {:stop, :normal, state}
+  end
+
+  defp handle_connection_state_change(_connection_state, state), do: {:noreply, state}
+
+  defp start_peer_connection_recovery_deadline(%{peer_connection_recovery_timer: timer} = state)
+       when not is_nil(timer),
+       do: state
+
+  defp start_peer_connection_recovery_deadline(state) do
+    recovery_ref = make_ref()
+
+    recovery_timer =
+      Process.send_after(
+        self(),
+        {:peer_connection_recovery_expired, recovery_ref},
+        state.peer_connection_recovery_timeout_ms
+      )
+
+    %{
+      state
+      | peer_connection_recovery_timer: recovery_timer,
+        peer_connection_recovery_ref: recovery_ref
+    }
+  end
+
+  defp cancel_peer_connection_recovery_deadline(
+         %{peer_connection_recovery_timer: recovery_timer} = state
+       ) do
+    _ = cancel_peer_connection_recovery_deadline(recovery_timer)
+    %{state | peer_connection_recovery_timer: nil, peer_connection_recovery_ref: nil}
+  end
+
+  defp cancel_peer_connection_recovery_deadline(nil), do: :ok
+
+  defp cancel_peer_connection_recovery_deadline(recovery_timer),
+    do: Process.cancel_timer(recovery_timer)
 
   defp queue_candidate(state, negotiation_id, candidate) do
     pending_candidates = state.pending_candidates

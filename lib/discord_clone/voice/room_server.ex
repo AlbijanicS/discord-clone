@@ -5,6 +5,7 @@ defmodule DiscordClone.Voice.RoomServer do
 
   @idle_timeout_ms :timer.seconds(30)
   @voice_session_lease_timeout_ms :timer.seconds(120)
+  @peer_connection_recovery_timeout_ms :timer.seconds(30)
   @speaking_decay_ms 600
 
   alias DiscordClone.Voice.{
@@ -178,6 +179,7 @@ defmodule DiscordClone.Voice.RoomServer do
        session_supervisor: nil,
        forwarder: nil,
        voice_session_lease_timeout_ms: voice_session_lease_timeout(opts),
+       peer_connection_recovery_timeout_ms: peer_connection_recovery_timeout(opts),
        next_admission_order: 0,
        test_admission_observer: test_admission_observer(opts),
        test_peer_connection_opts: test_peer_connection_opts(opts),
@@ -679,6 +681,7 @@ defmodule DiscordClone.Voice.RoomServer do
            forwarder: state.forwarder,
            voice_session_id: voice_session_id,
            signaling_channel: signaling_channel,
+           peer_connection_recovery_timeout_ms: state.peer_connection_recovery_timeout_ms,
            test_peer_connection_opts: state.test_peer_connection_opts}
         )
       catch
@@ -702,6 +705,18 @@ defmodule DiscordClone.Voice.RoomServer do
       Keyword.get(opts, :voice_session_lease_timeout_ms, @voice_session_lease_timeout_ms)
     else
       @voice_session_lease_timeout_ms
+    end
+  end
+
+  defp peer_connection_recovery_timeout(opts) do
+    if @test_environment do
+      Keyword.get(
+        opts,
+        :peer_connection_recovery_timeout_ms,
+        @peer_connection_recovery_timeout_ms
+      )
+    else
+      @peer_connection_recovery_timeout_ms
     end
   end
 

@@ -348,6 +348,64 @@ test("reports a disconnected peer as interrupted without ending its Voice Sessio
   assert.equal(peer.closed, false)
 })
 
+test("recovers a disconnected peer before its thirty-second deadline and isolates a stale deadline", async () => {
+  const {peer, signaling} = attemptFixture()
+  const clock = fakeClock()
+  const failures = []
+  const states = []
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    clearTimeoutFn: clock.clearTimeout,
+    negotiationId: () => "browser-negotiation",
+    onFailure: failure => failures.push(failure),
+    onState: state => states.push(state),
+    setTimeoutFn: clock.setTimeout,
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  peer.connectionState = "connected"
+  peer.emit("connectionstatechange")
+  peer.connectionState = "disconnected"
+  peer.emit("connectionstatechange")
+  clock.advance(29_999)
+  peer.connectionState = "connected"
+  peer.emit("connectionstatechange")
+  peer.connectionState = "disconnected"
+  peer.emit("connectionstatechange")
+  clock.advance(1)
+  assert.deepEqual(failures, [])
+  clock.advance(29_999)
+
+  assert.equal(states.at(-1), "interrupted")
+  assert.deepEqual(failures, ["connection_lost"])
+  assert.equal(peer.closed, true)
+})
+
+test("ends an unrecovered disconnected peer at its thirty-second deadline", async () => {
+  const {peer, signaling} = attemptFixture()
+  const clock = fakeClock()
+  const failures = []
+  signaling.leave = () => { signaling.left = (signaling.left || 0) + 1 }
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    clearTimeoutFn: clock.clearTimeout,
+    negotiationId: () => "browser-negotiation",
+    onFailure: failure => failures.push(failure),
+    setTimeoutFn: clock.setTimeout,
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  peer.connectionState = "disconnected"
+  peer.emit("connectionstatechange")
+  clock.advance(30_000)
+
+  assert.deepEqual(failures, ["connection_lost"])
+  assert.equal(peer.closed, true)
+  assert.equal(signaling.left, 1)
+})
+
 test("forwards server roster cues to the active Voice Owner Tab", async () => {
   const {rosterCues, signaling} = attemptFixture()
   const cues = []

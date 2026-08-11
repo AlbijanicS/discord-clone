@@ -59,6 +59,79 @@ defmodule DiscordClone.VoiceTest do
                )
     end
 
+    test "expires only an unrecovered disconnected PeerConnection through canonical cleanup" do
+      voice_channel_id = Ecto.UUID.generate()
+      room_server = start_room_server(voice_channel_id, peer_connection_recovery_timeout_ms: 0)
+
+      [disconnected_session, healthy_session] =
+        negotiate_room_sessions(room_server, 2, "peer-connection-recovery")
+
+      disconnected_peer_monitor = Process.monitor(disconnected_session.peer_connection)
+      healthy_peer_monitor = Process.monitor(healthy_session.peer_connection)
+      disconnected_peer_connection = disconnected_session.peer_connection
+      healthy_peer_connection = healthy_session.peer_connection
+      healthy_user_id = healthy_session.user_id
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 disconnected_session.voice_session_id,
+                 {:ex_webrtc, disconnected_session.peer_connection,
+                  {:connection_state_change, :disconnected}}
+               )
+
+      assert_receive {:DOWN, ^disconnected_peer_monitor, :process, ^disconnected_peer_connection,
+                      _reason}
+
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+
+      assert {:ok, %{members: [%{user_id: ^healthy_user_id}]}} =
+               Voice.voice_channel_roster(voice_channel_id)
+
+      assert {:error, :not_found} =
+               Voice.dispatch_test_ex_webrtc(
+                 voice_channel_id,
+                 disconnected_session.voice_session_id,
+                 :late_rtp
+               )
+
+      refute_receive {:DOWN, ^healthy_peer_monitor, :process, ^healthy_peer_connection, _reason},
+                     0
+
+      assert :ok = RoomServer.leave(room_server, healthy_session.voice_session_id)
+      assert :ok = RoomServer.await_empty(room_server)
+    end
+
+    test "keeps a PeerConnection that recovers from disconnected in its Voice Session" do
+      voice_channel_id = Ecto.UUID.generate()
+      room_server = start_room_server(voice_channel_id, peer_connection_recovery_timeout_ms: 0)
+      [session] = negotiate_room_sessions(room_server, 1, "peer-connection-recovery")
+      user_id = session.user_id
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 session.voice_session_id,
+                 {:ex_webrtc, session.peer_connection, {:connection_state_change, :disconnected}}
+               )
+
+      assert :ok =
+               RoomServer.dispatch_test_ex_webrtc(
+                 room_server,
+                 session.voice_session_id,
+                 {:ex_webrtc, session.peer_connection, {:connection_state_change, :connected}}
+               )
+
+      assert :ok = RoomServer.sync_test_media(room_server)
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+
+      assert {:ok, %{members: [%{user_id: ^user_id}]}} =
+               Voice.voice_channel_roster(voice_channel_id)
+
+      assert :ok = RoomServer.leave(room_server, session.voice_session_id)
+      assert :ok = RoomServer.await_empty(room_server)
+    end
+
     test "renews only the matching authenticated Voice Session" do
       voice_channel_id = Ecto.UUID.generate()
       user = user_fixture()

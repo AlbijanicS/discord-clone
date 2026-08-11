@@ -5,6 +5,7 @@ const OFFER_REPLY_TIMEOUT_MS = 10_000
 const RENEWAL_INTERVAL_MS = 30_000
 const RENEWAL_ACK_TIMEOUT_MS = 10_000
 const RENEWAL_GRACE_MS = 75_000
+const PEER_CONNECTION_RECOVERY_GRACE_MS = 30_000
 const AUDIO_OUTPUT_SLOT_COUNT = 4
 const INCOMPATIBLE_AUDIO_OUTPUT_SLOTS = "incompatible_audio_output_slots"
 
@@ -32,6 +33,7 @@ export function createVoicePeerAttempt({
   let signalingActive = false
   let currentNegotiationId = null
   let mediaState = "joining"
+  let peerConnectionRecoveryDeadline = null
   let renewalAckTimeout = null
   let renewalDeadline = null
   let renewalInterval = null
@@ -50,6 +52,7 @@ export function createVoicePeerAttempt({
     pendingServerCandidates = []
     pendingServerCandidateBytes = 0
     clearRenewalTimers()
+    clearPeerConnectionRecoveryDeadline()
     releaseRemoteAudio()
     peerConnection?.close()
     peerConnection = null
@@ -64,6 +67,20 @@ export function createVoicePeerAttempt({
     renewalAckTimeout = null
     renewalDeadline = null
     renewalInterval = null
+  }
+
+  function clearPeerConnectionRecoveryDeadline() {
+    clearTimeoutFn(peerConnectionRecoveryDeadline)
+    peerConnectionRecoveryDeadline = null
+  }
+
+  function startPeerConnectionRecoveryDeadline() {
+    if (peerConnectionRecoveryDeadline) return
+
+    peerConnectionRecoveryDeadline = schedule(
+      () => fail("connection_lost"),
+      PEER_CONNECTION_RECOVERY_GRACE_MS
+    )
   }
 
   function schedule(callback, delay) {
@@ -239,10 +256,12 @@ export function createVoicePeerAttempt({
 
     if (peerConnection.connectionState === "connected") {
       mediaState = "connected"
+      clearPeerConnectionRecoveryDeadline()
       publishConnectionState()
     }
     if (peerConnection.connectionState === "disconnected") {
       mediaState = "disconnected"
+      startPeerConnectionRecoveryDeadline()
       publishConnectionState()
     }
     if (["failed", "closed"].includes(peerConnection.connectionState)) fail("connection_lost")
