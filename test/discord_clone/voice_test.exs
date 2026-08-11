@@ -369,6 +369,73 @@ defmodule DiscordClone.VoiceTest do
                Voice.room_occupancy(replacement_voice_channel_id)
     end
 
+    test "a RoomServer loss destroys its old lease without disturbing fresh or unrelated Sessions" do
+      affected_voice_channel_id = Ecto.UUID.generate()
+      unaffected_voice_channel_id = Ecto.UUID.generate()
+      user = user_fixture()
+
+      assert {:ok, %{voice_session_id: retired_voice_session_id}} =
+               Voice.join(
+                 affected_voice_channel_id,
+                 user.id,
+                 "retired-signaling-session",
+                 self()
+               )
+
+      assert {:ok, %{occupancy: 1}} =
+               Voice.join(
+                 unaffected_voice_channel_id,
+                 Ecto.UUID.generate(),
+                 "unaffected-signaling-session",
+                 self()
+               )
+
+      room_server = room_server(affected_voice_channel_id)
+      room_ref = Process.monitor(room_server)
+      Process.exit(room_server, :kill)
+
+      assert_receive {:DOWN, ^room_ref, :process, ^room_server, :killed}
+
+      assert {:error, renewal_result} =
+               Voice.renew_session(
+                 Scope.for_user(user),
+                 affected_voice_channel_id,
+                 retired_voice_session_id,
+                 "retired-signaling-session"
+               )
+
+      assert renewal_result in [:invalid_session, :unavailable]
+
+      assert {:ok, %{voice_session_id: fresh_voice_session_id, occupancy: 1}} =
+               Voice.join(
+                 affected_voice_channel_id,
+                 user.id,
+                 "fresh-signaling-session",
+                 self()
+               )
+
+      refute fresh_voice_session_id == retired_voice_session_id
+
+      assert {:error, :invalid_session} =
+               Voice.renew_session(
+                 Scope.for_user(user),
+                 affected_voice_channel_id,
+                 retired_voice_session_id,
+                 "retired-signaling-session"
+               )
+
+      assert :ok =
+               Voice.renew_session(
+                 Scope.for_user(user),
+                 affected_voice_channel_id,
+                 fresh_voice_session_id,
+                 "fresh-signaling-session"
+               )
+
+      assert {:ok, %{occupancy: 1, capacity: 5}} =
+               Voice.room_occupancy(unaffected_voice_channel_id)
+    end
+
     test "SessionCoordinator restart retires old rooms before accepting fresh joins" do
       voice_channel_id = Ecto.UUID.generate()
       user_id = Ecto.UUID.generate()
