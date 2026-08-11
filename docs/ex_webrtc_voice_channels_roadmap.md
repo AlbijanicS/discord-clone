@@ -1005,6 +1005,23 @@ Automated evidence:
   cleanup, and exact per-token socket identity. Focused Voice and Workspace
   lifecycle suites passed; one existing zero-duration peer-recovery test passed
   when rerun in isolation after a timing-sensitive combined-suite failure.
+
+Phase 11 / Ticket 05 completed on 2026-08-11.
+
+- Failure-convergence certification covers Voice Session, RoomServer, and
+  signaling failure at public lifecycle seams. A lost RoomServer has no
+  renewable stale lease; old work cannot affect a fresh Session, and unrelated
+  rooms remain active.
+- The existing deterministic browser suite certifies late SDP, ICE, renewal,
+  and opaque terminal events cannot revive a retired or replacement attempt,
+  alongside duplicate cleanup, empty-room retirement, background renewal,
+  pagehide teardown, PeerConnection recovery, terminal failure, and ordinary
+  Join restoration.
+
+Automated evidence:
+- Focused Voice, authenticated Voice Channel, Workspace lifecycle, and browser
+  attempt/controller suites passed. `mix precommit` passed with Credo, the full
+  ExUnit suite, and all browser tests.
 ```
 
 ## Phase 12: STUN/TURN And Real-Network Deployment
