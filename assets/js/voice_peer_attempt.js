@@ -116,6 +116,12 @@ export function createVoicePeerAttempt({
     publishConnectionState()
   }
 
+  function receiveVoiceSessionEnded(message) {
+    if (!active || message?.signaling_session_id !== signalingSessionId) return
+
+    fail("connection_lost")
+  }
+
   function interruptControlPlane() {
     if (!active || controlPlaneInterrupted) return
 
@@ -310,6 +316,7 @@ export function createVoicePeerAttempt({
 
         signaling.onServerIce(receiveServerIce)
         signaling.onClose(() => fail("connection_lost"))
+        signaling.onVoiceSessionEnded?.(receiveVoiceSessionEnded)
         signaling.onRosterCue?.(payload => {
           if (active && payload?.channel_id === channelId && ["join", "leave"].includes(payload?.cue)) {
             onCue({channelId, cue: payload.cue})

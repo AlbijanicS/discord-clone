@@ -344,7 +344,12 @@ defmodule DiscordClone.Voice.RoomServer do
       end
 
     state = wait_for_session_crash(state, session_monitor)
-    {:reply, :ok, remove_membership(state, voice_session_id, terminate_session?: false)}
+
+    {:reply, :ok,
+     remove_membership(state, voice_session_id,
+       notify_ended?: false,
+       terminate_session?: false
+     )}
   end
 
   def handle_call({:dispatch_test_ex_webrtc, voice_session_id, message}, _from, state) do
@@ -398,7 +403,11 @@ defmodule DiscordClone.Voice.RoomServer do
         {:noreply, state}
 
       {voice_session_id, _session_by_monitor} ->
-        {:noreply, remove_membership(state, voice_session_id, terminate_session?: false)}
+        {:noreply,
+         remove_membership(state, voice_session_id,
+           notify_ended?: false,
+           terminate_session?: false
+         )}
     end
   end
 
@@ -433,7 +442,7 @@ defmodule DiscordClone.Voice.RoomServer do
 
   @impl true
   def handle_cast({:signaling_channel_down, voice_session_id}, state) do
-    {:noreply, remove_membership(state, voice_session_id)}
+    {:noreply, remove_membership(state, voice_session_id, notify_ended?: false)}
   end
 
   def handle_cast({:accepted_inbound_rtp, voice_session_id, activity}, state) do
@@ -530,6 +539,7 @@ defmodule DiscordClone.Voice.RoomServer do
         speaking_decay_ref: nil,
         admission_order: state.next_admission_order,
         signaling_session_id: signaling_session_id,
+        signaling_channel: signaling_channel,
         session_pid: session_pid,
         session_monitor: session_monitor,
         lease_timer: nil,
@@ -625,10 +635,18 @@ defmodule DiscordClone.Voice.RoomServer do
          session_pid: session_pid,
          session_monitor: session_monitor,
          signaling_session_id: signaling_session_id,
+         signaling_channel: signaling_channel,
          user_id: user_id,
          speaking_decay_timer: speaking_decay_timer,
          lease_timer: lease_timer
        }, memberships} ->
+        if Keyword.get(opts, :notify_ended?, true) do
+          send(
+            signaling_channel,
+            {:voice_session_ended, voice_session_id, signaling_session_id}
+          )
+        end
+
         :ok = Forwarder.session_removed(state.forwarder, voice_session_id)
 
         if Keyword.get(opts, :terminate_session?, true) and Process.alive?(session_pid) do

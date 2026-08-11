@@ -42,6 +42,7 @@ defmodule DiscordClone.VoiceTest do
       assert {:ok, %{voice_session_id: healthy_voice_session_id}} =
                RoomServer.join(healthy_room, healthy_user_id, "healthy-session", self())
 
+      assert_receive {:voice_session_ended, ^expired_voice_session_id, "expired-session"}
       assert :ok = RoomServer.await_empty(expired_room)
       assert %{members: []} = RoomServer.roster(expired_room)
       assert {:ok, %{occupancy: 1, capacity: 5}} = RoomServer.occupancy(healthy_room)

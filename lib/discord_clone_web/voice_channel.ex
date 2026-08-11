@@ -160,6 +160,20 @@ defmodule DiscordCloneWeb.VoiceChannel do
   end
 
   def handle_info(
+        {:voice_session_ended, voice_session_id, signaling_session_id},
+        %{
+          assigns: %{
+            voice_session_id: voice_session_id,
+            signaling_session_id: signaling_session_id
+          }
+        } =
+          socket
+      ) do
+    push(socket, "voice_session_ended", %{signaling_session_id: signaling_session_id})
+    {:noreply, socket}
+  end
+
+  def handle_info(
         {:voice_channel_roster_changed, %{voice_channel_id: voice_channel_id, members: members}},
         %{assigns: %{voice_channel_id: voice_channel_id}} = socket
       ) do

@@ -123,11 +123,13 @@ function attemptFixture() {
   const serverIce = []
   const closes = []
   const rosterCues = []
+  const sessionEnded = []
   const signaling = {
     joinVoiceChannel: async () => ({signaling_session_id: "server-session"}),
     leave() {},
     onClose(callback) { closes.push(callback); return 1 },
     onRosterCue(callback) { rosterCues.push(callback); return 1 },
+    onVoiceSessionEnded(callback) { sessionEnded.push(callback); return 1 },
     onServerIce(callback) { serverIce.push(callback); return 1 },
     sendIce() {},
     sendOffer: async () => ({
@@ -137,7 +139,7 @@ function attemptFixture() {
     }),
   }
 
-  return {closes, peer, rosterCues, serverIce, signaling}
+  return {closes, peer, rosterCues, serverIce, sessionEnded, signaling}
 }
 
 test("preflights one microphone connection and four Audio Output Slots before admission", async () => {
@@ -325,6 +327,63 @@ test("terminal cleanup cancels renewal traffic after the controller releases its
 
   assert.deepEqual(renewals, [])
   assert.equal(peer.closed, true)
+})
+
+test("ends and releases only the matching attempt when the server ends its Voice Session", async () => {
+  const {peer, sessionEnded, signaling} = attemptFixture()
+  const failures = []
+  signaling.leave = () => { signaling.left = (signaling.left || 0) + 1 }
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    negotiationId: () => "browser-negotiation",
+    onFailure: failure => failures.push(failure),
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  sessionEnded[0]({signaling_session_id: "stale-session"})
+  assert.equal(peer.closed, false)
+
+  sessionEnded[0]({signaling_session_id: "server-session"})
+  sessionEnded[0]({signaling_session_id: "server-session"})
+
+  assert.equal(peer.closed, true)
+  assert.equal(signaling.left, 1)
+  assert.deepEqual(failures, ["connection_lost"])
+})
+
+test("ignores an ended event from a retired attempt after a replacement connects", async () => {
+  const first = attemptFixture()
+  const second = attemptFixture()
+  first.signaling.sendOffer = async () => ({
+    signaling_session_id: "server-session",
+    negotiation_id: "first-negotiation",
+    description: {type: "answer", sdp: "server-answer"},
+  })
+  second.signaling.sendOffer = async () => ({
+    signaling_session_id: "server-session",
+    negotiation_id: "second-negotiation",
+    description: {type: "answer", sdp: "server-answer"},
+  })
+  const firstAttempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return first.peer } },
+    negotiationId: () => "first-negotiation",
+    signaling: first.signaling,
+  })
+  const secondAttempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return second.peer } },
+    negotiationId: () => "second-negotiation",
+    signaling: second.signaling,
+  })
+
+  await firstAttempt.connect({channelId: "voice-1", track: {id: "first-microphone"}})
+  firstAttempt.leave()
+  await secondAttempt.connect({channelId: "voice-1", track: {id: "second-microphone"}})
+
+  first.sessionEnded[0]({signaling_session_id: "server-session"})
+
+  assert.equal(first.peer.closed, true)
+  assert.equal(second.peer.closed, false)
 })
 
 test("reports a disconnected peer as interrupted without ending its Voice Session", async () => {

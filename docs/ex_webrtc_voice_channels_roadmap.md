@@ -984,6 +984,27 @@ Automated evidence:
 - Focused public Voice lifecycle coverage proves canonical cleanup of an
   unrecovered server PeerConnection and survival of a recovered or unrelated
   Session.
+
+Phase 11 / Ticket 04 completed on 2026-08-11.
+
+- Intentional RoomServer membership removal now best-effort sends only the
+  current Signaling Session ID to its exact signaling Channel. VoiceChannel
+  projects that internal message as opaque `voice_session_ended`; cleanup still
+  proceeds when the Channel is already gone or the Session/runtime crashes.
+- The Voice Owner Tab matches that event only to its current attempt, then uses
+  its existing idempotent terminal cleanup and returns to ordinary Join. Stale
+  and duplicate events are ignored.
+- `/voice` now uses the same token-derived socket identity as LiveView, so the
+  existing logout and token-revocation broadcasts close only Voice sockets from
+  that exact authentication session and invoke normal Channel termination.
+
+Automated evidence:
+- Deterministic browser coverage proves matching, stale, and duplicate terminal
+  event handling plus PeerConnection and signaling release.
+- Authenticated signaling coverage proves the opaque payload, canonical Voice
+  cleanup, and exact per-token socket identity. Focused Voice and Workspace
+  lifecycle suites passed; one existing zero-duration peer-recovery test passed
+  when rerun in isolation after a timing-sensitive combined-suite failure.
 ```
 
 ## Phase 12: STUN/TURN And Real-Network Deployment

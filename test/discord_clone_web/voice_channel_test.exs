@@ -93,6 +93,28 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
                    %{reason: "invalid_request"}
     end
 
+    test "projects an intentional Voice Session end as opaque current-attempt correlation",
+         context do
+      %{
+        channel_socket: channel_socket,
+        join_payload: %{voice_session_id: voice_session_id},
+        signaling_session_id: signaling_session_id,
+        voice_channel_id: voice_channel_id
+      } = context
+
+      user_id = channel_socket.assigns.current_scope.user.id
+
+      assert :ok = Voice.end_user_session(voice_channel_id, user_id)
+
+      assert_push "voice_session_ended", %{signaling_session_id: ^signaling_session_id} = payload
+      assert payload == %{signaling_session_id: signaling_session_id}
+
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+
+      assert {:error, :not_found} =
+               Voice.dispatch_test_ex_webrtc(voice_channel_id, voice_session_id, :late)
+    end
+
     test "rejects renewal from a Channel whose Voice Session was replaced", context do
       %{
         channel_socket: channel_socket,
@@ -1034,6 +1056,22 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
   end
 
   describe "socket joins" do
+    test "uses the exact authentication session topic as its socket identity" do
+      user = user_fixture()
+      token = Accounts.generate_user_session_token(user)
+      other_token = Accounts.generate_user_session_token(user)
+
+      assert {:ok, socket} =
+               connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => token}})
+
+      assert {:ok, other_socket} =
+               connect(VoiceSocket, %{}, connect_info: %{session: %{"user_token" => other_token}})
+
+      assert VoiceSocket.id(socket) == "users_sessions:#{Base.url_encode64(token)}"
+      assert VoiceSocket.id(other_socket) == "users_sessions:#{Base.url_encode64(other_token)}"
+      refute VoiceSocket.id(socket) == VoiceSocket.id(other_socket)
+    end
+
     test "derives scope from the signed session and denies invalid sessions" do
       user = user_fixture()
       other_user = user_fixture()

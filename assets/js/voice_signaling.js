@@ -43,6 +43,10 @@ export function createVoiceSignaling({Socket, csrfToken} = {}) {
       return channel?.on("ice_candidate", callback) ?? null
     },
 
+    onVoiceSessionEnded(callback) {
+      return channel?.on("voice_session_ended", callback) ?? null
+    },
+
     onClose(callback) {
       return channel?.onClose(callback) ?? null
     },
