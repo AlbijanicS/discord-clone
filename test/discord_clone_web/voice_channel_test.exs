@@ -2,10 +2,20 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
   use DiscordClone.DataCase, async: false
 
   import DiscordClone.AccountsFixtures
+  import DiscordClone.VoiceICEConfigurationHelpers
+  import ExUnit.CaptureLog
   import Phoenix.ChannelTest
 
   alias DiscordClone.Accounts
   alias DiscordClone.Voice
+
+  alias DiscordClone.Voice.{
+    FakeICEProvider,
+    Forwarder,
+    RoomServer,
+    SessionSupervisor
+  }
+
   alias DiscordClone.Workspaces
   alias DiscordClone.Workspaces.VoiceChannel, as: VoiceChannelSchema
   alias DiscordClone.Workspaces.WorkspaceMembership
@@ -36,29 +46,93 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
         channel_socket: channel_socket,
         join_payload: join_payload,
         signaling_session_id: join_payload.signaling_session_id,
+        voice_session_id: channel_socket.assigns.voice_session_id,
         voice_channel_id: voice_channel.id
       }
     end
 
-    test "returns opaque signaling and Voice Session IDs", context do
+    test "returns only opaque signaling identity and the safe disabled browser projection",
+         context do
       %{join_payload: join_payload, signaling_session_id: signaling_session_id} = context
 
       assert %{
                signaling_session_id: ^signaling_session_id,
-               voice_session_id: voice_session_id,
                occupancy: 1,
-               capacity: 5
+               capacity: 5,
+               ice_config: %{ice_mode: "disabled", ice_servers: [], ice_transport_policy: "all"}
              } = join_payload
 
-      assert {:ok, ^voice_session_id} = Ecto.UUID.cast(voice_session_id)
-      refute voice_session_id == signaling_session_id
+      refute Map.has_key?(join_payload, :voice_session_id)
 
       assert Map.keys(join_payload) |> Enum.sort() == [
                :capacity,
+               :ice_config,
                :occupancy,
-               :signaling_session_id,
-               :voice_session_id
+               :signaling_session_id
              ]
+
+      assert Map.keys(join_payload.ice_config) |> Enum.sort() == [
+               :ice_mode,
+               :ice_servers,
+               :ice_transport_policy
+             ]
+    end
+
+    test "accepts only a bounded correlated browser ICE route diagnostic", context do
+      test_process = self()
+      handler_id = "ticket-07-browser-route-#{System.unique_integer()}"
+
+      :ok =
+        :telemetry.attach(
+          handler_id,
+          [:discord_clone, :voice_signaling, :operation],
+          fn _event, measurements, metadata, _config ->
+            send(test_process, {:ice_route_diagnostic, measurements, metadata})
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      diagnostic = %{
+        "signaling_session_id" => context.signaling_session_id,
+        "route_category" => "reflexive_direct",
+        "protocol" => "udp",
+        "duration_ms" => 7
+      }
+
+      assert_reply push(context.channel_socket, "ice_route", diagnostic), :ok
+
+      assert_receive {:ice_route_diagnostic, %{duration_ms: 7}, metadata}
+
+      assert metadata == %{
+               endpoint: :browser,
+               ice_mode: :disabled,
+               operation: "ice_route",
+               outcome: :accepted,
+               protocol: :udp,
+               route_category: :reflexive_direct
+             }
+
+      forbidden = Map.put(diagnostic, "address", "forbidden-address-and-identity")
+
+      assert_reply push(context.channel_socket, "ice_route", forbidden), :error, %{
+        reason: "invalid_request"
+      }
+
+      assert_receive {:ice_route_diagnostic, %{duration_ms: 0}, rejected_metadata}
+
+      assert rejected_metadata == %{
+               endpoint: :browser,
+               error_code: :invalid_request,
+               ice_mode: :disabled,
+               operation: "ice_route",
+               outcome: :rejected,
+               protocol: :unknown,
+               route_category: :unknown
+             }
+
+      refute inspect(rejected_metadata) =~ "forbidden-address-and-identity"
     end
 
     test "updates the active Voice Session's Local Mute and Local Deafen state", context do
@@ -97,7 +171,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
          context do
       %{
         channel_socket: channel_socket,
-        join_payload: %{voice_session_id: voice_session_id},
+        voice_session_id: voice_session_id,
         signaling_session_id: signaling_session_id,
         voice_channel_id: voice_channel_id
       } = context
@@ -118,7 +192,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
     test "rejects renewal from a Channel whose Voice Session was replaced", context do
       %{
         channel_socket: channel_socket,
-        join_payload: %{voice_session_id: original_voice_session_id},
+        voice_session_id: original_voice_session_id,
         signaling_session_id: signaling_session_id,
         voice_channel_id: voice_channel_id
       } = context
@@ -439,7 +513,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       %{
         channel_socket: first_channel_socket,
         signaling_session_id: first_signaling_session_id,
-        join_payload: %{voice_session_id: first_voice_session_id},
+        voice_session_id: first_voice_session_id,
         voice_channel_id: voice_channel_id
       } = context
 
@@ -449,11 +523,8 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       add_workspace_member!(voice_channel_id, second_user)
       {:ok, second_socket} = connect_voice_socket(second_user)
 
-      assert {:ok,
-              %{
-                signaling_session_id: second_signaling_session_id,
-                voice_session_id: second_voice_session_id
-              }, second_channel_socket} =
+      assert {:ok, %{signaling_session_id: second_signaling_session_id} = second_payload,
+              second_channel_socket} =
                subscribe_and_join(
                  second_socket,
                  VoiceChannel,
@@ -461,6 +532,8 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
                  admission_params()
                )
 
+      second_voice_session_id = second_channel_socket.assigns.voice_session_id
+      refute Map.has_key?(second_payload, :voice_session_id)
       refute first_signaling_session_id == second_signaling_session_id
 
       [second_peer_connection] =
@@ -604,7 +677,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       %{
         channel_socket: channel_socket,
         signaling_session_id: signaling_session_id,
-        join_payload: %{voice_session_id: voice_session_id}
+        voice_session_id: voice_session_id
       } = context
 
       negotiation_id = "current-negotiation"
@@ -676,7 +749,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
     end
 
     test "keeps disconnected peers available but releases terminal server peers", context do
-      %{channel_socket: channel_socket, join_payload: %{voice_session_id: voice_session_id}} =
+      %{channel_socket: channel_socket, voice_session_id: voice_session_id} =
         context
 
       [peer_connection] = ExWebRTC.PeerConnection.get_all_running()
@@ -706,7 +779,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
     end
 
     test "closes the owning Channel for a closed server peer", context do
-      %{channel_socket: channel_socket, join_payload: %{voice_session_id: voice_session_id}} =
+      %{channel_socket: channel_socket, voice_session_id: voice_session_id} =
         context
 
       [peer_connection] = ExWebRTC.PeerConnection.get_all_running()
@@ -792,7 +865,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       %{
         channel_socket: channel_socket,
         signaling_session_id: signaling_session_id,
-        join_payload: %{voice_session_id: voice_session_id}
+        voice_session_id: voice_session_id
       } = context
 
       handler_id = "voice-media-#{System.unique_integer([:positive])}"
@@ -933,23 +1006,337 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
   end
 
   describe "authenticated Voice joins" do
-    test "rejects missing or incompatible admission offers before starting runtime state" do
+    test "standard admission negotiates with one provider-neutral STUN and TURN bundle" do
+      put_voice_ice_configuration(
+        mode: :standard,
+        stun_urls: ["stun:127.0.0.1:9"],
+        provider: FakeICEProvider,
+        provider_secret: "durable-provider-secret",
+        provider_options: [
+          observer: self(),
+          results:
+            {:ok,
+             %{
+               urls: [
+                 "turn:127.0.0.1:9?transport=udp",
+                 "turn:127.0.0.1:9?transport=tcp",
+                 "turns:127.0.0.1:9?transport=tcp"
+               ],
+               username: "temporary-user",
+               credential: "temporary-credential",
+               expires_at: DateTime.add(DateTime.utc_now(), 120, :second)
+             }}
+        ]
+      )
+
       owner = user_fixture()
       voice_channel = create_voice_channel!(owner)
       {:ok, socket} = connect_voice_socket(owner)
 
-      assert {:error, %{reason: "incompatible_audio_output_slots"}} =
-               subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}")
+      assert {:ok, payload, channel_socket} =
+               subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}", %{})
 
-      assert {:error, %{reason: "incompatible_audio_output_slots"}} =
+      assert_receive {:voice_ice_provider_requested, _options}
+      refute_receive {:voice_ice_provider_requested, _options}
+
+      assert payload.ice_config == %{
+               ice_mode: "standard",
+               ice_servers: [
+                 %{urls: ["stun:127.0.0.1:9"]},
+                 %{
+                   urls: [
+                     "turn:127.0.0.1:9?transport=udp",
+                     "turn:127.0.0.1:9?transport=tcp",
+                     "turns:127.0.0.1:9?transport=tcp"
+                   ],
+                   username: "temporary-user",
+                   credential: "temporary-credential"
+                 }
+               ],
+               ice_transport_policy: "all"
+             }
+
+      refute inspect(payload) =~ "durable-provider-secret"
+
+      signaling_session_id = payload.signaling_session_id
+
+      assert_reply push(
+                     channel_socket,
+                     "offer",
+                     offer(signaling_session_id, "standard-negotiation")
+                   ),
+                   :ok,
+                   %{signaling_session_id: ^signaling_session_id}
+
+      assert :ok =
+               Voice.leave(
+                 voice_channel.id,
+                 channel_socket.assigns.voice_session_id
+               )
+
+      assert :ok = Voice.await_empty_room(voice_channel.id)
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel.id)
+    end
+
+    test "turn-only admission returns only temporary TURN authorization with relay policy" do
+      put_voice_ice_configuration(
+        mode: :turn_only,
+        stun_urls: ["stun:127.0.0.1:9"],
+        provider: FakeICEProvider,
+        provider_secret: "durable-provider-secret",
+        provider_options: [
+          observer: self(),
+          results:
+            {:ok,
+             %{
+               urls: [
+                 "turn:127.0.0.1:9?transport=udp",
+                 "turn:127.0.0.1:9?transport=tcp",
+                 "turns:127.0.0.1:9?transport=tcp"
+               ],
+               username: "temporary-user",
+               credential: "temporary-credential",
+               expires_at: DateTime.add(DateTime.utc_now(), 120, :second)
+             }}
+        ]
+      )
+
+      owner = user_fixture()
+      voice_channel = create_voice_channel!(owner)
+      {:ok, socket} = connect_voice_socket(owner)
+
+      assert {:ok, payload, channel_socket} =
+               subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}", %{})
+
+      assert payload.ice_config == %{
+               ice_mode: "turn_only",
+               ice_servers: [
+                 %{
+                   urls: [
+                     "turn:127.0.0.1:9?transport=udp",
+                     "turn:127.0.0.1:9?transport=tcp",
+                     "turns:127.0.0.1:9?transport=tcp"
+                   ],
+                   username: "temporary-user",
+                   credential: "temporary-credential"
+                 }
+               ],
+               ice_transport_policy: "relay"
+             }
+
+      refute inspect(payload) =~ "durable-provider-secret"
+      refute inspect(payload) =~ "stun:"
+      assert_receive {:voice_ice_provider_requested, _options}
+
+      assert :ok = Voice.leave(voice_channel.id, channel_socket.assigns.voice_session_id)
+      assert :ok = Voice.await_empty_room(voice_channel.id)
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel.id)
+    end
+
+    test "an explicit retry performs a fresh authorized admission and credential request" do
+      expires_at = DateTime.add(DateTime.utc_now(), 300, :second)
+
+      results =
+        start_supervised!(
+          {Agent,
+           fn ->
+             [
+               {:ok,
+                %{
+                  urls: ["turn:127.0.0.1:9?transport=udp"],
+                  username: "first-temporary-user",
+                  credential: "first-temporary-credential",
+                  expires_at: expires_at
+                }},
+               {:ok,
+                %{
+                  urls: ["turn:127.0.0.1:9?transport=udp"],
+                  username: "second-temporary-user",
+                  credential: "second-temporary-credential",
+                  expires_at: expires_at
+                }}
+             ]
+           end}
+        )
+
+      put_voice_ice_configuration(
+        mode: :standard,
+        stun_urls: ["stun:127.0.0.1:9"],
+        provider: FakeICEProvider,
+        provider_secret: "durable-provider-secret",
+        provider_options: [observer: self(), results: results]
+      )
+
+      owner = user_fixture()
+      voice_channel = create_voice_channel!(owner)
+      {:ok, socket} = connect_voice_socket(owner)
+
+      assert {:ok, first_payload, first_channel_socket} =
+               subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}", %{})
+
+      assert :ok = Voice.leave(voice_channel.id, first_channel_socket.assigns.voice_session_id)
+
+      assert {:ok, second_payload, second_channel_socket} =
+               subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}", %{})
+
+      [first_turn] =
+        Enum.filter(first_payload.ice_config.ice_servers, &Map.has_key?(&1, :username))
+
+      [second_turn] =
+        Enum.filter(second_payload.ice_config.ice_servers, &Map.has_key?(&1, :username))
+
+      assert first_turn.username == "first-temporary-user"
+      assert second_turn.username == "second-temporary-user"
+      refute first_turn.credential == second_turn.credential
+      assert_receive {:voice_ice_provider_requested, _options}
+      assert_receive {:voice_ice_provider_requested, _options}
+      refute_receive {:voice_ice_provider_requested, _options}
+
+      assert :ok = Voice.leave(voice_channel.id, second_channel_socket.assigns.voice_session_id)
+      assert :ok = Voice.await_empty_room(voice_channel.id)
+    end
+
+    test "standard mode resolves no provider authorization before Workspace authorization" do
+      put_voice_ice_configuration(
+        mode: :standard,
+        stun_urls: ["stun:127.0.0.1:9"],
+        provider: FakeICEProvider,
+        provider_secret: "durable-provider-secret",
+        provider_options: [observer: self(), results: {:error, :unavailable}]
+      )
+
+      owner = user_fixture()
+      unauthorized_user = user_fixture()
+      voice_channel = create_voice_channel!(owner)
+      {:ok, socket} = connect_voice_socket(unauthorized_user)
+
+      assert {:error, %{reason: "not_found"}} =
+               subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}", %{})
+
+      refute_receive {:voice_ice_provider_requested, _options}
+      refute Voice.room_running?(voice_channel.id)
+    end
+
+    test "standard provider errors reject only the attempted Voice admission" do
+      durable_secret = "forbidden-durable-provider-secret"
+      provider_body = "forbidden-provider-response-body"
+      diagnostic_handler = "ticket-04-provider-redaction-#{System.unique_integer()}"
+      test_process = self()
+
+      :ok =
+        :telemetry.attach(
+          diagnostic_handler,
+          [:discord_clone, :voice_signaling, :operation],
+          fn _event, _measurements, metadata, _config ->
+            send(test_process, {:provider_failure_diagnostic, metadata})
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(diagnostic_handler) end)
+
+      put_voice_ice_configuration(
+        mode: :standard,
+        stun_urls: ["stun:127.0.0.1:9"],
+        provider: FakeICEProvider,
+        provider_secret: durable_secret,
+        provider_options: [
+          observer: self(),
+          results: {:raise, "#{durable_secret}:#{provider_body}"}
+        ]
+      )
+
+      owner = user_fixture()
+      voice_channel = create_voice_channel!(owner)
+      {:ok, socket} = connect_voice_socket(owner)
+
+      logs =
+        capture_log(fn ->
+          assert {:error, %{reason: "unavailable"} = public_error} =
+                   subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}", %{})
+
+          refute inspect(public_error) =~ durable_secret
+          refute inspect(public_error) =~ provider_body
+        end)
+
+      assert_receive {:voice_ice_provider_requested, _options}
+      refute_receive {:provider_failure_diagnostic, _metadata}
+      refute logs =~ durable_secret
+      refute logs =~ provider_body
+      refute Voice.room_running?(voice_channel.id)
+    end
+
+    test "PeerConnection startup failure returns no temporary authorization and leaves no membership" do
+      temporary_username = "forbidden-temporary-username"
+      temporary_credential = "forbidden-temporary-credential"
+
+      put_voice_ice_configuration(
+        mode: :standard,
+        stun_urls: ["stun:127.0.0.1:9"],
+        provider: FakeICEProvider,
+        provider_secret: "forbidden-durable-provider-secret",
+        provider_options: [
+          observer: self(),
+          results:
+            {:ok,
+             %{
+               urls: ["turn:127.0.0.1:9?transport=udp"],
+               username: temporary_username,
+               credential: temporary_credential,
+               expires_at: DateTime.add(DateTime.utc_now(), 120, :second)
+             }}
+        ]
+      )
+
+      owner = user_fixture()
+      voice_channel = create_voice_channel!(owner)
+      start_failing_voice_room!(voice_channel.id)
+      {:ok, socket} = connect_voice_socket(owner)
+
+      logs =
+        capture_log(fn ->
+          assert {:error, %{reason: "unavailable"} = public_error} =
+                   subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}", %{})
+
+          refute inspect(public_error) =~ temporary_username
+          refute inspect(public_error) =~ temporary_credential
+        end)
+
+      refute logs =~ "forbidden-durable-provider-secret"
+      refute logs =~ temporary_username
+      refute logs =~ temporary_credential
+      assert_receive {:voice_ice_provider_requested, _options}
+      assert :ok = Voice.await_empty_room(voice_channel.id)
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel.id)
+    end
+
+    test "admits without an offer and ignores client negotiation fields" do
+      owner = user_fixture()
+      voice_channel = create_voice_channel!(owner)
+      {:ok, socket} = connect_voice_socket(owner)
+
+      assert {:ok,
+              %{
+                signaling_session_id: signaling_session_id,
+                occupancy: 1,
+                capacity: 5,
+                ice_config: %{ice_servers: [], ice_transport_policy: "all"}
+              } = payload, channel_socket} =
                subscribe_and_join(
                  socket,
                  VoiceChannel,
                  "voice:#{voice_channel.id}",
-                 %{"description" => browser_offer(3)}
+                 %{
+                   "description" => browser_offer(3),
+                   "negotiation_id" => "client-controlled-admission-id",
+                   "server_ice_projection" => %{"transport_policy" => "relay"}
+                 }
                )
 
-      refute Voice.room_running?(voice_channel.id)
+      assert is_binary(signaling_session_id)
+      refute Map.has_key?(payload, :voice_session_id)
+      assert is_binary(channel_socket.assigns.voice_session_id)
+      assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel.id)
     end
 
     test "denies unauthorized, missing, and malformed Voice Channels without runtime state" do
@@ -976,6 +1363,125 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       refute Voice.room_running?(voice_channel.id)
       refute Voice.room_running?(missing_voice_channel_id)
       refute Voice.room_running?("not-a-uuid")
+    end
+
+    test "rolls back admission when final Workspace authorization is lost" do
+      owner = user_fixture()
+      member = user_fixture()
+      voice_channel = create_voice_channel!(owner)
+      add_workspace_member!(voice_channel.id, member)
+      {:ok, socket} = connect_voice_socket(member)
+      readiness_gate = make_ref()
+      start_gated_voice_room!(voice_channel.id, readiness_gate)
+      test_process = self()
+
+      start_supervised!(%{
+        id: {:final_authorization_join, voice_channel.id},
+        restart: :temporary,
+        start:
+          {Task, :start_link,
+           [
+             fn ->
+               result = VoiceChannel.join("voice:#{voice_channel.id}", %{}, socket)
+               send(test_process, {:final_authorization_join_result, result})
+             end
+           ]}
+      })
+
+      assert_receive {:peer_connection_starting, ^readiness_gate, peer_connection}
+
+      WorkspaceMembership
+      |> Repo.get_by!(workspace_id: voice_channel.workspace_id, user_id: member.id)
+      |> Repo.delete!()
+
+      send(peer_connection, {:release_peer_connection_start, readiness_gate})
+
+      assert_receive {:final_authorization_join_result, {:error, %{reason: "not_found"}}}
+      assert :ok = Voice.await_empty_room(voice_channel.id)
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel.id)
+    end
+
+    test "rolls back every failed join-reply and roster finalization stage" do
+      durable_secret = "forbidden-finalization-durable-secret"
+      temporary_username = "forbidden-finalization-temporary-user"
+      temporary_credential = "forbidden-finalization-temporary-credential"
+      provider_metadata = "forbidden-finalization-provider-metadata"
+      turn_url = "turn:127.0.0.1:9?transport=udp"
+      diagnostic_handler = "ticket-04-finalization-redaction-#{System.unique_integer()}"
+      test_process = self()
+
+      :ok =
+        :telemetry.attach(
+          diagnostic_handler,
+          [:discord_clone, :voice_signaling, :operation],
+          fn _event, _measurements, metadata, _config ->
+            send(test_process, {:finalization_failure_diagnostic, metadata})
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(diagnostic_handler) end)
+
+      put_voice_ice_configuration(
+        mode: :standard,
+        stun_urls: ["stun:127.0.0.1:9"],
+        provider: FakeICEProvider,
+        provider_secret: durable_secret,
+        provider_options: [
+          observer: self(),
+          provider_private_metadata: provider_metadata,
+          results:
+            {:ok,
+             %{
+               urls: [turn_url],
+               username: temporary_username,
+               credential: temporary_credential,
+               expires_at: DateTime.add(DateTime.utc_now(), 300, :second)
+             }}
+        ]
+      )
+
+      forbidden_values = [
+        durable_secret,
+        temporary_username,
+        temporary_credential,
+        provider_metadata,
+        turn_url
+      ]
+
+      captured_logs =
+        capture_log(fn ->
+          for failure <- [:join_payload, :roster_lookup, :roster_subscription] do
+            owner = user_fixture()
+            voice_channel = create_voice_channel!(owner, "Finalization #{failure}")
+            {:ok, socket} = connect_voice_socket(owner)
+            socket = Phoenix.Socket.assign(socket, :voice_admission_failure, failure)
+
+            assert {:error, %{reason: "unavailable"} = public_error} =
+                     subscribe_and_join(socket, VoiceChannel, "voice:#{voice_channel.id}", %{})
+
+            for forbidden_value <- forbidden_values do
+              refute inspect(public_error) =~ forbidden_value
+            end
+
+            assert :ok = Voice.await_empty_room(voice_channel.id)
+            assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel.id)
+          end
+        end)
+
+      for _attempt <- 1..3 do
+        assert_receive {:voice_ice_provider_requested, _options}
+      end
+
+      diagnostics = collect_finalization_diagnostics([])
+
+      for forbidden_value <- forbidden_values do
+        refute captured_logs =~ forbidden_value
+
+        refute Enum.any?(diagnostics, fn metadata ->
+                 inspect(metadata) =~ forbidden_value
+               end)
+      end
     end
 
     test "normalizes a full-room join and releases the unused PeerConnection" do
@@ -1020,7 +1526,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       voice_channel = create_voice_channel!(user)
       {:ok, socket} = connect_voice_socket(user)
 
-      assert {:ok, %{voice_session_id: first_voice_session_id}, first_channel_socket} =
+      assert {:ok, first_payload, first_channel_socket} =
                subscribe_and_join(
                  socket,
                  VoiceChannel,
@@ -1028,7 +1534,10 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
                  admission_params()
                )
 
-      assert {:ok, %{voice_session_id: second_voice_session_id}, second_channel_socket} =
+      first_voice_session_id = first_channel_socket.assigns.voice_session_id
+      refute Map.has_key?(first_payload, :voice_session_id)
+
+      assert {:ok, second_payload, second_channel_socket} =
                subscribe_and_join(
                  first_channel_socket,
                  VoiceChannel,
@@ -1036,6 +1545,8 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
                  admission_params()
                )
 
+      second_voice_session_id = second_channel_socket.assigns.voice_session_id
+      refute Map.has_key?(second_payload, :voice_session_id)
       refute first_voice_session_id == second_voice_session_id
       assert {:ok, %{occupancy: 1, capacity: 5}} = Voice.room_occupancy(voice_channel.id)
 
@@ -1096,7 +1607,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
   end
 
   defp admission_params do
-    %{"description" => browser_offer()}
+    %{}
   end
 
   defp assert_media_diagnostic_metadata(metadata) do
@@ -1155,5 +1666,51 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
       role: "member"
     })
     |> Repo.insert!()
+  end
+
+  defp start_gated_voice_room!(voice_channel_id, readiness_gate) do
+    start_voice_room_with_peer_options!(
+      voice_channel_id,
+      :gated,
+      test_readiness_gate: {self(), readiness_gate}
+    )
+  end
+
+  defp start_failing_voice_room!(voice_channel_id) do
+    start_voice_room_with_peer_options!(voice_channel_id, :failing, audio_codecs: [:invalid])
+  end
+
+  defp start_voice_room_with_peer_options!(voice_channel_id, id_prefix, peer_options) do
+    start_supervised!(%{
+      id: {id_prefix, :voice_room, voice_channel_id},
+      start:
+        {RoomServer, :start_link,
+         [
+           [
+             voice_channel_id: voice_channel_id,
+             room_supervisor: self(),
+             test_peer_connection_opts: peer_options
+           ]
+         ]}
+    })
+
+    start_supervised!(%{
+      id: {id_prefix, :voice_sessions, voice_channel_id},
+      start: {SessionSupervisor, :start_link, [[voice_channel_id: voice_channel_id]]}
+    })
+
+    start_supervised!(%{
+      id: {id_prefix, :voice_forwarder, voice_channel_id},
+      start: {Forwarder, :start_link, [[voice_channel_id: voice_channel_id]]}
+    })
+  end
+
+  defp collect_finalization_diagnostics(diagnostics) do
+    receive do
+      {:finalization_failure_diagnostic, metadata} ->
+        collect_finalization_diagnostics([metadata | diagnostics])
+    after
+      0 -> diagnostics
+    end
   end
 end

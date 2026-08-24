@@ -9,7 +9,16 @@ defmodule DiscordClone.Voice do
 
   alias DiscordClone.Accounts.Scope
   alias DiscordClone.UUIDIdentifier
-  alias DiscordClone.Voice.{SessionCoordinator, RoomRegistry, RoomServer, RoomSupervisor}
+
+  alias DiscordClone.Voice.{
+    ICEConfigurationResolver,
+    RoomRegistry,
+    RoomServer,
+    RoomSupervisor,
+    ServerICEProjection,
+    SessionCoordinator,
+    SessionICEBundle
+  }
 
   @command_timeout_ms 5_000
 
@@ -79,18 +88,107 @@ defmodule DiscordClone.Voice do
   @spec join(term(), term(), binary(), pid()) :: {:ok, map()} | {:error, term()}
   def join(voice_channel_id, user_id, signaling_session_id, signaling_channel)
       when is_binary(signaling_session_id) and is_pid(signaling_channel) do
-    with true <- Process.alive?(signaling_channel),
-         {:ok, [voice_channel_id, user_id]} <-
-           UUIDIdentifier.cast_all([voice_channel_id, user_id]) do
-      safe_join(voice_channel_id, user_id, signaling_session_id, signaling_channel)
-    else
-      false -> {:error, :invalid_admission}
-      :error -> {:error, :not_found}
-    end
+    join(
+      voice_channel_id,
+      user_id,
+      signaling_session_id,
+      signaling_channel,
+      ServerICEProjection.disabled()
+    )
   end
 
   def join(_voice_channel_id, _user_id, _signaling_session_id, _signaling_channel),
     do: {:error, :invalid_admission}
+
+  @doc """
+  Resolves one session ICE bundle and admits the matching Voice Session.
+
+  The caller receives only the browser projection alongside the normal runtime
+  admission result. The server projection is consumed while starting the owned
+  ExWebRTC PeerConnection.
+  """
+  @spec join_with_ice_configuration(Scope.t(), term(), binary(), pid()) ::
+          {:ok, map(), SessionICEBundle.browser_projection()} | {:error, term()}
+  def join_with_ice_configuration(
+        %Scope{user: %{id: user_id}},
+        voice_channel_id,
+        signaling_session_id,
+        signaling_channel
+      )
+      when is_binary(signaling_session_id) and is_pid(signaling_channel) do
+    with true <- Process.alive?(signaling_channel),
+         {:ok, [voice_channel_id, user_id]} <-
+           UUIDIdentifier.cast_all([voice_channel_id, user_id]),
+         {:ok, ice_bundle} <- ICEConfigurationResolver.resolve(),
+         {:ok, join_result} <-
+           safe_join(
+             voice_channel_id,
+             user_id,
+             signaling_session_id,
+             signaling_channel,
+             ice_bundle.server_projection
+           ) do
+      {:ok, join_result, ice_bundle.browser_projection}
+    else
+      false ->
+        {:error, :invalid_admission}
+
+      :error ->
+        {:error, :not_found}
+
+      {:error, reason}
+      when reason in [:invalid_configuration, :invalid_provider_response, :provider_unavailable] ->
+        {:error, :unavailable}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def join_with_ice_configuration(
+        _current_scope,
+        _voice_channel_id,
+        _signaling_session_id,
+        _signaling_channel
+      ),
+      do: {:error, :invalid_admission}
+
+  @spec join(term(), term(), binary(), pid(), ServerICEProjection.t()) ::
+          {:ok, map()} | {:error, term()}
+  def join(
+        voice_channel_id,
+        user_id,
+        signaling_session_id,
+        signaling_channel,
+        server_ice_projection
+      )
+      when is_binary(signaling_session_id) and is_pid(signaling_channel) do
+    with true <- Process.alive?(signaling_channel),
+         {:ok, server_ice_projection} <- ServerICEProjection.validate(server_ice_projection),
+         {:ok, [voice_channel_id, user_id]} <-
+           UUIDIdentifier.cast_all([voice_channel_id, user_id]) do
+      safe_join(
+        voice_channel_id,
+        user_id,
+        signaling_session_id,
+        signaling_channel,
+        server_ice_projection
+      )
+    else
+      false -> {:error, :invalid_admission}
+      {:error, :invalid_server_ice_projection} -> {:error, :unavailable}
+      :error -> {:error, :not_found}
+    end
+  end
+
+  def join(
+        _voice_channel_id,
+        _user_id,
+        _signaling_session_id,
+        _signaling_channel,
+        _server_ice_projection
+      ),
+      do: {:error, :invalid_admission}
 
   @spec leave(term(), term()) :: :ok | {:error, :not_found | term()}
   def leave(voice_channel_id, voice_session_id) do
@@ -435,10 +533,23 @@ defmodule DiscordClone.Voice do
   end
 
   @doc false
-  @spec join_room(Ecto.UUID.t(), Ecto.UUID.t(), binary(), pid()) ::
+  @spec join_room(Ecto.UUID.t(), Ecto.UUID.t(), binary(), pid(), ServerICEProjection.t()) ::
           {:ok, map(), pid()} | {:error, term()}
-  def join_room(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
-    join_room(voice_channel_id, user_id, signaling_session_id, signaling_channel, 2)
+  def join_room(
+        voice_channel_id,
+        user_id,
+        signaling_session_id,
+        signaling_channel,
+        server_ice_projection
+      ) do
+    join_room(
+      voice_channel_id,
+      user_id,
+      signaling_session_id,
+      signaling_channel,
+      server_ice_projection,
+      2
+    )
   end
 
   @doc false
@@ -497,11 +608,18 @@ defmodule DiscordClone.Voice do
          user_id,
          signaling_session_id,
          signaling_channel,
+         server_ice_projection,
          attempts_left
        ) do
     with :ok <- ensure_room_id(voice_channel_id),
          room_server when is_pid(room_server) <- room_server(voice_channel_id) do
-      case RoomServer.join(room_server, user_id, signaling_session_id, signaling_channel) do
+      case RoomServer.join(
+             room_server,
+             user_id,
+             signaling_session_id,
+             signaling_channel,
+             server_ice_projection
+           ) do
         {:ok, join_result} ->
           {:ok, join_result, room_server}
 
@@ -511,6 +629,7 @@ defmodule DiscordClone.Voice do
             user_id,
             signaling_session_id,
             signaling_channel,
+            server_ice_projection,
             attempts_left - 1
           )
 
@@ -524,6 +643,7 @@ defmodule DiscordClone.Voice do
           user_id,
           signaling_session_id,
           signaling_channel,
+          server_ice_projection,
           attempts_left - 1
         )
 
@@ -536,6 +656,7 @@ defmodule DiscordClone.Voice do
           user_id,
           signaling_session_id,
           signaling_channel,
+          server_ice_projection,
           attempts_left - 1
         )
 
@@ -549,6 +670,7 @@ defmodule DiscordClone.Voice do
         user_id,
         signaling_session_id,
         signaling_channel,
+        server_ice_projection,
         attempts_left - 1
       )
 
@@ -579,8 +701,20 @@ defmodule DiscordClone.Voice do
     :exit, _room_stopped -> {:error, :unavailable}
   end
 
-  defp safe_join(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
-    SessionCoordinator.join(voice_channel_id, user_id, signaling_session_id, signaling_channel)
+  defp safe_join(
+         voice_channel_id,
+         user_id,
+         signaling_session_id,
+         signaling_channel,
+         server_ice_projection
+       ) do
+    SessionCoordinator.join(
+      voice_channel_id,
+      user_id,
+      signaling_session_id,
+      signaling_channel,
+      server_ice_projection
+    )
   catch
     :exit, _session_coordinator_unavailable -> {:error, :recovering}
   end

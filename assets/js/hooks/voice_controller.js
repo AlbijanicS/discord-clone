@@ -115,10 +115,17 @@ export function createVoiceController({
           return
         }
 
+        const liveTrack = tracks.find(track => track?.readyState !== "ended")
+        if (!liveTrack) {
+          stopTracks(tracks)
+          publish(failureState(channel, "no_device"))
+          return
+        }
+
         audioTracks = tracks
         audioTracks.forEach(track => track.addEventListener?.("ended", handleTrackEnded))
         publish({...channel, status: "capturing"})
-        startConnection(channel, tracks[0], request)
+        startConnection(channel, liveTrack, request)
       })
       .catch(error => {
         if (request === activeRequest) publish(failureState(channel, failureFor(error)))
@@ -138,7 +145,9 @@ export function createVoiceController({
 
         activeConnection = null
         clearCapture()
-        publish(idleState())
+        publish(error === "incompatible_audio_output_slots"
+          ? failureState(channel, error)
+          : idleState())
       },
       onState(status) {
         if (connection !== activeConnection || request !== activeRequest) return
@@ -160,7 +169,13 @@ export function createVoiceController({
 
     activeConnection = connection
     publish({...channel, status: "joining"})
-    connection?.connect?.({channelId: channel.channelId, track})?.catch?.(() => {})
+    connection?.connect?.({channelId: channel.channelId, track})?.catch?.(() => {
+      if (connection !== activeConnection || request !== activeRequest) return
+
+      closeConnection()
+      clearCapture()
+      publish(idleState())
+    })
   }
 
   try {
@@ -304,7 +319,7 @@ function failureState(channel, error) {
 }
 
 function retryableFailure(error) {
-  return ["permission_denied", "no_device", "unknown_error"].includes(error)
+  return ["permission_denied", "no_device", "unknown_error", "incompatible_audio_output_slots"].includes(error)
 }
 
 function failureFor(error) {

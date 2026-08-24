@@ -80,15 +80,178 @@ defmodule DiscordClone.Voice.SessionTest do
     assert_receive {:DOWN, ^ref, :process, ^session, :normal}
   end
 
+  test "unknown selected-route evidence is diagnostic and does not terminate Voice" do
+    test_process = self()
+    handler_id = "ticket-07-server-unknown-#{System.unique_integer()}"
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:discord_clone, :voice_signaling, :operation],
+        fn _event, measurements, metadata, _config ->
+          if Map.get(metadata, :operation) == "ice_route" do
+            send(test_process, {:server_route_diagnostic, measurements, metadata})
+          end
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    running_before = MapSet.new(ExWebRTC.PeerConnection.get_all_running())
+
+    session =
+      start_session(Ecto.UUID.generate(),
+        test_peer_connection_opts: [
+          test_stats_reader: fn _pid -> raise "forbidden raw stats exception" end
+        ]
+      )
+
+    [peer_connection] =
+      ExWebRTC.PeerConnection.get_all_running()
+      |> Enum.reject(&MapSet.member?(running_before, &1))
+
+    send(session, {:ex_webrtc, peer_connection, {:connection_state_change, :connected}})
+    _ = :sys.get_state(session)
+
+    assert_receive {:server_route_diagnostic, %{duration_ms: duration_ms}, metadata}
+    assert duration_ms in 0..60_000
+
+    assert metadata == %{
+             endpoint: :server,
+             error_code: :stats_unavailable,
+             ice_mode: :disabled,
+             operation: "ice_route",
+             outcome: :failed,
+             protocol: :unknown,
+             route_category: :unknown
+           }
+
+    refute inspect(metadata) =~ "forbidden raw stats exception"
+  end
+
+  test "server selected-route telemetry redacts raw stats and deduplicates unchanged categories" do
+    test_process = self()
+    handler_id = "ticket-07-server-routes-#{System.unique_integer()}"
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:discord_clone, :voice_signaling, :operation],
+        fn _event, measurements, metadata, _config ->
+          if Map.get(metadata, :operation) == "ice_route" do
+            send(test_process, {:server_route_diagnostic, measurements, metadata})
+          end
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    stats_agent =
+      start_supervised!(%{
+        id: make_ref(),
+        start:
+          {Agent, :start_link,
+           [
+             fn ->
+               [server_ice_stats(:host), server_ice_stats(:host), server_ice_stats(:relay)]
+             end
+           ]}
+      })
+
+    stats_reader = fn _peer_connection ->
+      Agent.get_and_update(stats_agent, fn [stats | remaining] -> {stats, remaining} end)
+    end
+
+    running_before = MapSet.new(ExWebRTC.PeerConnection.get_all_running())
+
+    session =
+      start_session(Ecto.UUID.generate(),
+        test_peer_connection_opts: [test_stats_reader: stats_reader]
+      )
+
+    [peer_connection] =
+      ExWebRTC.PeerConnection.get_all_running()
+      |> Enum.reject(&MapSet.member?(running_before, &1))
+
+    for _connection_event <- 1..3 do
+      send(session, {:ex_webrtc, peer_connection, {:connection_state_change, :connected}})
+      _ = :sys.get_state(session)
+    end
+
+    assert_receive {:server_route_diagnostic, %{duration_ms: host_duration}, host_metadata}
+    assert_receive {:server_route_diagnostic, %{duration_ms: relay_duration}, relay_metadata}
+    refute_receive {:server_route_diagnostic, _, _}, 0
+
+    assert host_duration in 0..60_000
+    assert relay_duration in 0..60_000
+    assert host_metadata.route_category == :host_direct
+    assert relay_metadata.route_category == :turn_relay
+
+    captured = inspect([host_metadata, relay_metadata])
+
+    for forbidden <- [
+          "forbidden-local-id",
+          "forbidden-remote-id",
+          "forbidden-address",
+          "forbidden-port",
+          "forbidden-foundation",
+          "forbidden-related-address",
+          "forbidden-url",
+          "forbidden-credential",
+          "forbidden-user-id",
+          "forbidden-voice-session-id"
+        ] do
+      refute captured =~ forbidden
+    end
+  end
+
   defp start_session(voice_session_id, opts \\ []) do
     session_opts =
-      [
-        room_server: self(),
-        voice_session_id: voice_session_id,
-        signaling_channel: self(),
-        test_peer_connection_opts: [test_rtp_observer: self()]
-      ] ++ opts
+      Keyword.merge(
+        [
+          room_server: self(),
+          voice_session_id: voice_session_id,
+          signaling_channel: self(),
+          test_peer_connection_opts: [test_rtp_observer: self()]
+        ],
+        opts
+      )
 
     start_supervised!({Session, session_opts})
+  end
+
+  defp server_ice_stats(remote_type) do
+    %{
+      "selected" => %{
+        type: :candidate_pair,
+        valid: true,
+        nominated: true,
+        state: :succeeded,
+        local_candidate_id: "local",
+        remote_candidate_id: "remote",
+        url: "forbidden-url"
+      },
+      "local" => %{
+        id: "forbidden-local-id",
+        type: :local_candidate,
+        candidate_type: :host,
+        protocol: :udp,
+        address: "forbidden-address",
+        port: "forbidden-port",
+        foundation: "forbidden-foundation",
+        credential: "forbidden-credential"
+      },
+      "remote" => %{
+        id: "forbidden-remote-id",
+        type: :remote_candidate,
+        candidate_type: remote_type,
+        protocol: :udp,
+        related_address: "forbidden-related-address",
+        user_id: "forbidden-user-id",
+        voice_session_id: "forbidden-voice-session-id"
+      }
+    }
   end
 end

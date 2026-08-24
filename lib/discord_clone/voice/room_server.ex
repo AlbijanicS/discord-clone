@@ -13,6 +13,7 @@ defmodule DiscordClone.Voice.RoomServer do
     RoomRegistry,
     Session,
     SessionCoordinator,
+    ServerICEProjection,
     SessionSupervisor
   }
 
@@ -43,7 +44,22 @@ defmodule DiscordClone.Voice.RoomServer do
   @spec join(GenServer.server(), Ecto.UUID.t(), binary(), pid()) ::
           {:ok, map()} | {:error, map() | :unavailable}
   def join(server, user_id, signaling_session_id, signaling_channel) do
-    GenServer.call(server, {:join, user_id, signaling_session_id, signaling_channel})
+    join(
+      server,
+      user_id,
+      signaling_session_id,
+      signaling_channel,
+      ServerICEProjection.disabled()
+    )
+  end
+
+  @spec join(GenServer.server(), Ecto.UUID.t(), binary(), pid(), ServerICEProjection.t()) ::
+          {:ok, map()} | {:error, map() | :unavailable}
+  def join(server, user_id, signaling_session_id, signaling_channel, server_ice_projection) do
+    GenServer.call(
+      server,
+      {:join, user_id, signaling_session_id, signaling_channel, server_ice_projection}
+    )
   end
 
   @spec leave(GenServer.server(), Ecto.UUID.t()) :: :ok
@@ -204,15 +220,26 @@ defmodule DiscordClone.Voice.RoomServer do
     end
   end
 
-  def handle_call({:join, user_id, signaling_session_id, signaling_channel}, from, state) do
+  def handle_call(
+        {:join, user_id, signaling_session_id, signaling_channel, server_ice_projection},
+        from,
+        state
+      ) do
     if session_supervisor_ready?(state) do
-      join_request(state, user_id, signaling_session_id, signaling_channel)
+      join_request(
+        state,
+        user_id,
+        signaling_session_id,
+        signaling_channel,
+        server_ice_projection
+      )
     else
       {:noreply,
        %{
          state
          | pending_joins: [
-             {from, user_id, signaling_session_id, signaling_channel} | state.pending_joins
+             {from, user_id, signaling_session_id, signaling_channel, server_ice_projection}
+             | state.pending_joins
            ]
        }}
     end
@@ -476,10 +503,16 @@ defmodule DiscordClone.Voice.RoomServer do
 
     state =
       Enum.reduce(pending_joins, state, fn {from, user_id, signaling_session_id,
-                                            signaling_channel},
+                                            signaling_channel, server_ice_projection},
                                            state ->
         {:reply, reply, state} =
-          join_request(state, user_id, signaling_session_id, signaling_channel)
+          join_request(
+            state,
+            user_id,
+            signaling_session_id,
+            signaling_channel,
+            server_ice_projection
+          )
 
         GenServer.reply(from, reply)
         state
@@ -488,7 +521,13 @@ defmodule DiscordClone.Voice.RoomServer do
     %{state | pending_joins: []}
   end
 
-  defp join_request(state, user_id, signaling_session_id, signaling_channel) do
+  defp join_request(
+         state,
+         user_id,
+         signaling_session_id,
+         signaling_channel,
+         server_ice_projection
+       ) do
     case Map.fetch(state.session_by_signaling, signaling_session_id) do
       {:ok, voice_session_id} ->
         {:reply, {:ok, session_details(state.memberships[voice_session_id], state)}, state}
@@ -497,7 +536,13 @@ defmodule DiscordClone.Voice.RoomServer do
         {:reply, {:error, room_full(state)}, state}
 
       :error ->
-        join_new_session(state, user_id, signaling_session_id, signaling_channel)
+        join_new_session(
+          state,
+          user_id,
+          signaling_session_id,
+          signaling_channel,
+          server_ice_projection
+        )
     end
   end
 
@@ -522,10 +567,22 @@ defmodule DiscordClone.Voice.RoomServer do
     nil
   end
 
-  defp join_new_session(state, user_id, signaling_session_id, signaling_channel) do
+  defp join_new_session(
+         state,
+         user_id,
+         signaling_session_id,
+         signaling_channel,
+         server_ice_projection
+       ) do
     voice_session_id = Ecto.UUID.generate()
 
-    with {:ok, session_pid} <- start_session(state, voice_session_id, signaling_channel) do
+    with {:ok, session_pid} <-
+           start_session(
+             state,
+             voice_session_id,
+             signaling_channel,
+             server_ice_projection
+           ) do
       session_monitor = Process.monitor(session_pid)
 
       membership = %{
@@ -687,7 +744,7 @@ defmodule DiscordClone.Voice.RoomServer do
     end
   end
 
-  defp start_session(state, voice_session_id, signaling_channel) do
+  defp start_session(state, voice_session_id, signaling_channel, server_ice_projection) do
     session_supervisor = SessionSupervisor.name(state.voice_channel_id)
 
     if is_pid(GenServer.whereis(session_supervisor)) do
@@ -699,6 +756,7 @@ defmodule DiscordClone.Voice.RoomServer do
            forwarder: state.forwarder,
            voice_session_id: voice_session_id,
            signaling_channel: signaling_channel,
+           server_ice_projection: server_ice_projection,
            peer_connection_recovery_timeout_ms: state.peer_connection_recovery_timeout_ms,
            test_peer_connection_opts: state.test_peer_connection_opts}
         )

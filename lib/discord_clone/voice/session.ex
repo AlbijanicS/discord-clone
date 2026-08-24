@@ -3,7 +3,7 @@ defmodule DiscordClone.Voice.Session do
 
   use GenServer, restart: :temporary
 
-  alias DiscordClone.Voice.{Diagnostics, Forwarder, PeerConnection}
+  alias DiscordClone.Voice.{Diagnostics, Forwarder, PeerConnection, ServerICEProjection}
 
   @command_timeout_ms 5_000
   @negotiation_timeout_ms 15_000
@@ -72,6 +72,9 @@ defmodule DiscordClone.Voice.Session do
   def init(opts) do
     signaling_channel = Keyword.fetch!(opts, :signaling_channel)
 
+    server_ice_projection =
+      Keyword.get(opts, :server_ice_projection, ServerICEProjection.disabled())
+
     peer_connection_opts =
       if @test_environment do
         Keyword.get(opts, :test_peer_connection_opts, [])
@@ -79,7 +82,27 @@ defmodule DiscordClone.Voice.Session do
         []
       end
 
-    case PeerConnection.start(peer_connection_opts) do
+    case ServerICEProjection.validate(server_ice_projection) do
+      {:ok, server_ice_projection} ->
+        start_peer_connection(
+          opts,
+          signaling_channel,
+          server_ice_projection,
+          peer_connection_opts
+        )
+
+      {:error, :invalid_server_ice_projection} ->
+        {:stop, :peer_connection_unavailable}
+    end
+  end
+
+  defp start_peer_connection(
+         opts,
+         signaling_channel,
+         server_ice_projection,
+         peer_connection_opts
+       ) do
+    case PeerConnection.start(server_ice_projection, peer_connection_opts) do
       {:ok, peer_connection} ->
         forwarder = Keyword.get(opts, :forwarder)
         voice_session_id = Keyword.fetch!(opts, :voice_session_id)
@@ -100,6 +123,8 @@ defmodule DiscordClone.Voice.Session do
            signaling_channel: signaling_channel,
            signaling_channel_monitor: Process.monitor(signaling_channel),
            peer_connection: peer_connection,
+           ice_mode: server_ice_projection.ice_mode,
+           last_ice_route_category: nil,
            negotiation_timer: negotiation_timer,
            negotiation_id: nil,
            peer_connection_recovery_timeout_ms:
@@ -263,7 +288,12 @@ defmodule DiscordClone.Voice.Session do
   end
 
   defp handle_connection_state_change(:connected, state) do
-    {:noreply, cancel_peer_connection_recovery_deadline(state)}
+    state =
+      state
+      |> cancel_peer_connection_recovery_deadline()
+      |> report_selected_ice_route()
+
+    {:noreply, state}
   end
 
   defp handle_connection_state_change(:disconnected, state) do
@@ -277,6 +307,26 @@ defmodule DiscordClone.Voice.Session do
   end
 
   defp handle_connection_state_change(_connection_state, state), do: {:noreply, state}
+
+  defp report_selected_ice_route(state) do
+    route = PeerConnection.selected_ice_route(state.peer_connection)
+
+    if route.route_category == state.last_ice_route_category do
+      state
+    else
+      Diagnostics.emit_ice_route(
+        state.ice_mode,
+        :server,
+        route.route_category,
+        route.protocol,
+        route.outcome,
+        route.duration_ms,
+        error_code: route.error_code
+      )
+
+      %{state | last_ice_route_category: route.route_category}
+    end
+  end
 
   defp start_peer_connection_recovery_deadline(%{peer_connection_recovery_timer: timer} = state)
        when not is_nil(timer),

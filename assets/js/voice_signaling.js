@@ -39,6 +39,10 @@ export function createVoiceSignaling({Socket, csrfToken} = {}) {
       return channel?.push("local_voice_state", state) ?? null
     },
 
+    reportIceRoute(diagnostic) {
+      return channel?.push("ice_route", diagnostic) ?? null
+    },
+
     onServerIce(callback) {
       return channel?.on("ice_candidate", callback) ?? null
     },

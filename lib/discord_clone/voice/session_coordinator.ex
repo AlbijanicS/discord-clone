@@ -4,18 +4,38 @@ defmodule DiscordClone.Voice.SessionCoordinator do
   use GenServer
 
   alias DiscordClone.Voice
-  alias DiscordClone.Voice.RoomServer
+  alias DiscordClone.Voice.{DeploymentCapacity, RoomServer, ServerICEProjection}
 
   @recovery_timeout_ms :timer.seconds(5)
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, :ok, opts)
 
-  @spec join(Ecto.UUID.t(), Ecto.UUID.t(), binary(), pid()) :: {:ok, map()} | {:error, term()}
+  @spec join(Ecto.UUID.t(), Ecto.UUID.t(), binary(), pid()) ::
+          {:ok, map()} | {:error, term()}
   def join(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
+    join(
+      voice_channel_id,
+      user_id,
+      signaling_session_id,
+      signaling_channel,
+      ServerICEProjection.disabled()
+    )
+  end
+
+  @spec join(Ecto.UUID.t(), Ecto.UUID.t(), binary(), pid(), ServerICEProjection.t()) ::
+          {:ok, map()} | {:error, term()}
+  def join(
+        voice_channel_id,
+        user_id,
+        signaling_session_id,
+        signaling_channel,
+        server_ice_projection
+      ) do
     GenServer.call(
       __MODULE__,
-      {:join, voice_channel_id, user_id, signaling_session_id, signaling_channel}
+      {:join, voice_channel_id, user_id, signaling_session_id, signaling_channel,
+       server_ice_projection}
     )
   end
 
@@ -95,7 +115,8 @@ defmodule DiscordClone.Voice.SessionCoordinator do
   def handle_call(:await_ready, _from, state), do: {:reply, :ok, state}
 
   def handle_call(
-        {:join, _voice_channel_id, _user_id, _signaling_session_id, _signaling_channel},
+        {:join, _voice_channel_id, _user_id, _signaling_session_id, _signaling_channel,
+         _server_ice_projection},
         _from,
         %{recovery_status: :recovering} = state
       ) do
@@ -103,7 +124,8 @@ defmodule DiscordClone.Voice.SessionCoordinator do
   end
 
   def handle_call(
-        {:join, _voice_channel_id, _user_id, _signaling_session_id, _signaling_channel},
+        {:join, _voice_channel_id, _user_id, _signaling_session_id, _signaling_channel,
+         _server_ice_projection},
         _from,
         %{recovery_status: :recovery_failed} = state
       ) do
@@ -111,7 +133,8 @@ defmodule DiscordClone.Voice.SessionCoordinator do
   end
 
   def handle_call(
-        {:join, voice_channel_id, user_id, signaling_session_id, signaling_channel},
+        {:join, voice_channel_id, user_id, signaling_session_id, signaling_channel,
+         server_ice_projection},
         _from,
         state
       ) do
@@ -122,7 +145,8 @@ defmodule DiscordClone.Voice.SessionCoordinator do
           voice_channel_id,
           user_id,
           signaling_session_id,
-          signaling_channel
+          signaling_channel,
+          server_ice_projection
         )
 
       %{voice_channel_id: ^voice_channel_id, signaling_session_id: ^signaling_session_id} ->
@@ -131,7 +155,8 @@ defmodule DiscordClone.Voice.SessionCoordinator do
           voice_channel_id,
           user_id,
           signaling_session_id,
-          signaling_channel
+          signaling_channel,
+          server_ice_projection
         )
 
       current_session ->
@@ -141,7 +166,8 @@ defmodule DiscordClone.Voice.SessionCoordinator do
           voice_channel_id,
           user_id,
           signaling_session_id,
-          signaling_channel
+          signaling_channel,
+          server_ice_projection
         )
     end
   end
@@ -232,9 +258,16 @@ defmodule DiscordClone.Voice.SessionCoordinator do
          voice_channel_id,
          user_id,
          signaling_session_id,
-         signaling_channel
+         signaling_channel,
+         server_ice_projection
        ) do
-    case Voice.join_room(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
+    case Voice.join_room(
+           voice_channel_id,
+           user_id,
+           signaling_session_id,
+           signaling_channel,
+           server_ice_projection
+         ) do
       {:ok, join_result, room_server} ->
         state =
           put_session(
@@ -254,7 +287,8 @@ defmodule DiscordClone.Voice.SessionCoordinator do
           voice_channel_id,
           user_id,
           signaling_session_id,
-          signaling_channel
+          signaling_channel,
+          server_ice_projection
         )
 
       error ->
@@ -271,7 +305,8 @@ defmodule DiscordClone.Voice.SessionCoordinator do
          voice_channel_id,
          user_id,
          signaling_session_id,
-         signaling_channel
+         signaling_channel,
+         server_ice_projection
        ) do
     with :ok <- target_available?(voice_channel_id, current_voice_channel_id),
          :ok <- Voice.leave_room(current_voice_channel_id, current_voice_session_id) do
@@ -280,7 +315,8 @@ defmodule DiscordClone.Voice.SessionCoordinator do
         voice_channel_id,
         user_id,
         signaling_session_id,
-        signaling_channel
+        signaling_channel,
+        server_ice_projection
       )
     else
       {:error, %{reason: :room_full} = room_full} -> {:reply, {:error, room_full}, state}
@@ -307,24 +343,42 @@ defmodule DiscordClone.Voice.SessionCoordinator do
          voice_channel_id,
          user_id,
          signaling_session_id,
-         signaling_channel
+         signaling_channel,
+         server_ice_projection
        ) do
-    case Voice.join_room(voice_channel_id, user_id, signaling_session_id, signaling_channel) do
-      {:ok, %{voice_session_id: _voice_session_id} = join_result, room_server} ->
-        state =
-          put_session(
-            state,
-            voice_channel_id,
-            user_id,
-            signaling_session_id,
-            join_result,
-            room_server
-          )
+    with :ok <- deployment_capacity_available?(state),
+         {:ok, %{voice_session_id: _voice_session_id} = join_result, room_server} <-
+           Voice.join_room(
+             voice_channel_id,
+             user_id,
+             signaling_session_id,
+             signaling_channel,
+             server_ice_projection
+           ) do
+      state =
+        put_session(
+          state,
+          voice_channel_id,
+          user_id,
+          signaling_session_id,
+          join_result,
+          room_server
+        )
 
-        {:reply, {:ok, join_result}, state}
+      {:reply, {:ok, join_result}, state}
+    else
+      error -> {:reply, error, state}
+    end
+  end
 
-      error ->
-        {:reply, error, state}
+  defp deployment_capacity_available?(state) do
+    capacity = DeploymentCapacity.max_active_sessions()
+    occupancy = map_size(state.sessions_by_user)
+
+    if occupancy < capacity do
+      :ok
+    else
+      {:error, %{reason: :deployment_full, occupancy: occupancy, capacity: capacity}}
     end
   end
 

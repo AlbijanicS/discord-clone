@@ -65,6 +65,15 @@ function stream(...tracks) {
   }
 }
 
+function disabledAdmission() {
+  return {
+    signaling_session_id: "server-session",
+    occupancy: 1,
+    capacity: 5,
+    ice_config: {ice_mode: "disabled", ice_servers: [], ice_transport_policy: "all"},
+  }
+}
+
 function tabNetwork() {
   const listeners = new Set()
 
@@ -217,6 +226,41 @@ test("capture succeeds before one connection attempt receives the owned track an
   assert.equal(controller.state().status, "connected")
 })
 
+test("capture with no live audio track never starts admission and releases returned tracks", async () => {
+  for (const capturedTracks of [[], [Object.assign(track(), {readyState: "ended"})]]) {
+    let connectionAttempts = 0
+    const controller = createVoiceController({
+      connectionFactory() { connectionAttempts += 1 },
+      mediaDevices: {getUserMedia: () => Promise.resolve(stream(...capturedTracks))},
+    })
+
+    await controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+
+    assert.equal(connectionAttempts, 0)
+    assert.equal(capturedTracks.every(capturedTrack => capturedTrack.stopped), true)
+    assert.equal(controller.state().status, "no_device")
+  }
+})
+
+test("a rejected connection attempt releases capture even without a failure callback", async () => {
+  const microphoneTrack = track()
+  const controller = createVoiceController({
+    connectionFactory() {
+      return {
+        connect: () => Promise.reject(new Error("admission failed")),
+        leave() {},
+      }
+    },
+    mediaDevices: {getUserMedia: () => Promise.resolve(stream(microphoneTrack))},
+  })
+
+  await controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(microphoneTrack.stopped, true)
+  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", workspaceId: null})
+})
+
 test("Local Deafen silences playback, enables Local Mute, and undeafens without resuming transmission", async () => {
   const microphoneTrack = track()
   const localStates = []
@@ -275,7 +319,7 @@ test("local mute and unmute keep the established Voice connection and capture re
         PeerConnection: class { constructor() { return peer } },
         negotiationId: () => "browser-negotiation",
         signaling: {
-          joinVoiceChannel: async () => ({signaling_session_id: "server-session"}),
+          joinVoiceChannel: async () => disabledAdmission(),
           leave() {},
           onClose() {},
           onServerIce() {},
@@ -370,7 +414,7 @@ test("takeover and teardown release the active remote audio attempt exactly once
         PeerConnection: class { constructor() { return peer } },
         negotiationId: () => "browser-negotiation",
         signaling: {
-          joinVoiceChannel: async () => ({signaling_session_id: "server-session"}),
+          joinVoiceChannel: async () => disabledAdmission(),
           leave() {},
           onClose() {},
           onServerIce() {},
@@ -418,6 +462,31 @@ test("a terminal connection failure releases controller-owned capture and return
 
   assert.equal(microphoneTrack.stopped, true)
   assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", workspaceId: null})
+})
+
+test("a four-slot compatibility failure releases capture and preserves an explicit retry", async () => {
+  const microphoneTrack = track()
+  let attempt
+  const controller = createVoiceController({
+    connectionFactory(options) {
+      attempt = options
+      return {leave() {}}
+    },
+    mediaDevices: {getUserMedia: () => Promise.resolve(stream(microphoneTrack))},
+  })
+
+  await controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
+  attempt.onFailure("incompatible_audio_output_slots")
+
+  assert.equal(microphoneTrack.stopped, true)
+  assert.deepEqual(controller.state(), {
+    channelId: "voice-1",
+    channelName: "lobby",
+    error: "incompatible_audio_output_slots",
+    retryable: true,
+    status: "incompatible_audio_output_slots",
+    workspaceId: "workspace-1",
+  })
 })
 
 test("a stale terminal callback from a retired attempt cannot release a replacement Voice Owner Tab", async () => {

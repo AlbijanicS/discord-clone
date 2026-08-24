@@ -87,6 +87,7 @@ function fakePeerConnection() {
     },
     close() { this.closed = true },
     createOffer() { return Promise.resolve({type: "offer", sdp: "browser-offer"}) },
+    getStats() { return Promise.resolve(new Map()) },
     setLocalDescription(description) { this.localDescription = description; return Promise.resolve() },
     setRemoteDescription(description) { this.remoteDescription = description; return Promise.resolve() },
     emit(event, payload) { handlers.get(event)?.(payload) },
@@ -118,6 +119,230 @@ function remoteAudio({play = () => Promise.resolve()} = {}) {
   }
 }
 
+function disabledAdmission(overrides = {}) {
+  return {
+    signaling_session_id: "server-session",
+    occupancy: 1,
+    capacity: 5,
+    ice_config: {ice_mode: "disabled", ice_servers: [], ice_transport_policy: "all"},
+    ...overrides,
+  }
+}
+
+function standardAdmission(overrides = {}) {
+  return disabledAdmission({
+    ice_config: {
+      ice_servers: [
+        {urls: ["stun:stun.example.test:3478"]},
+        {
+          urls: [
+            "turn:turn.example.test:3478?transport=udp",
+            "turn:turn.example.test:3478?transport=tcp",
+            "turns:turn.example.test:5349?transport=tcp",
+          ],
+          username: "temporary-user",
+          credential: "temporary-credential",
+        },
+      ],
+      ice_transport_policy: "all",
+      ice_mode: "standard",
+    },
+    ...overrides,
+  })
+}
+
+function turnOnlyAdmission(overrides = {}) {
+  return disabledAdmission({
+    ice_config: {
+      ice_servers: [
+        {
+          urls: [
+            "turn:turn.example.test:3478?transport=udp",
+            "turn:turn.example.test:3478?transport=tcp",
+            "turns:turn.example.test:5349?transport=tcp",
+          ],
+          username: "temporary-user",
+          credential: "temporary-credential",
+        },
+      ],
+      ice_transport_policy: "relay",
+      ice_mode: "turn_only",
+    },
+    ...overrides,
+  })
+}
+
+function selectedRouteStats({localType = "host", remoteType = "host", localProtocol = "udp", remoteProtocol = localProtocol} = {}) {
+  return new Map([
+    ["transport", {id: "forbidden-transport-id", type: "transport", selectedCandidatePairId: "selected-pair"}],
+    ["selected-pair", {id: "forbidden-pair-id", type: "candidate-pair", localCandidateId: "local", remoteCandidateId: "remote", url: "turn:forbidden.example.test"}],
+    ["local", {id: "forbidden-local-id", type: "local-candidate", candidateType: localType, protocol: localProtocol, address: "forbidden-address", port: 50_000, foundation: "forbidden-foundation", usernameFragment: "forbidden-ufrag"}],
+    ["remote", {id: "forbidden-remote-id", type: "remote-candidate", candidateType: remoteType, protocol: remoteProtocol, address: "forbidden-remote", port: 34_789, relatedAddress: "forbidden-related-address", relatedPort: 34_790, credential: "forbidden-credential", sdp: "forbidden-sdp"}],
+  ])
+}
+
+test("reports only the standardized selected ICE route and deduplicates unchanged categories", async () => {
+  const {peer, signaling} = attemptFixture()
+  const diagnostics = []
+  signaling.reportIceRoute = diagnostic => diagnostics.push(diagnostic)
+  peer.getStats = async () => selectedRouteStats({remoteType: "relay"})
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    negotiationId: () => "browser-negotiation",
+    now: () => 25,
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  peer.connectionState = "connected"
+  peer.emit("connectionstatechange")
+  await Promise.resolve()
+  peer.emit("connectionstatechange")
+  await Promise.resolve()
+
+  assert.deepEqual(diagnostics, [{
+    signaling_session_id: "server-session",
+    route_category: "turn_relay",
+    protocol: "udp",
+    duration_ms: 0,
+  }])
+  assert.equal(JSON.stringify(diagnostics).includes("forbidden"), false)
+})
+
+test("emits one new diagnostic when the selected route category later changes", async () => {
+  const {peer, signaling} = attemptFixture()
+  const diagnostics = []
+  const reports = [selectedRouteStats(), selectedRouteStats({remoteType: "relay"})]
+  peer.getStats = async () => reports.shift()
+  signaling.reportIceRoute = diagnostic => diagnostics.push(diagnostic)
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    negotiationId: () => "browser-negotiation",
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  let selectedPairChanged
+  peer.addedTransceivers[0].sender.transport = {
+    iceTransport: {
+      addEventListener(_event, callback) { selectedPairChanged = callback },
+      removeEventListener() {},
+    },
+  }
+  peer.connectionState = "connected"
+  peer.emit("connectionstatechange")
+  await Promise.resolve()
+  selectedPairChanged()
+  await Promise.resolve()
+
+  assert.deepEqual(diagnostics.map(({route_category}) => route_category), ["host_direct", "turn_relay"])
+})
+
+test("ignores an older selected-route observation that completes after a newer one", async () => {
+  const {peer, signaling} = attemptFixture()
+  const diagnostics = []
+  const older = deferred()
+  const newer = deferred()
+  const reports = [older.promise, newer.promise]
+  peer.getStats = () => reports.shift()
+  signaling.reportIceRoute = diagnostic => diagnostics.push(diagnostic)
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    negotiationId: () => "browser-negotiation",
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  peer.connectionState = "connected"
+  peer.emit("connectionstatechange")
+  peer.emit("connectionstatechange")
+
+  newer.resolve(selectedRouteStats({remoteType: "relay"}))
+  await Promise.resolve()
+  older.resolve(selectedRouteStats())
+  await Promise.resolve()
+
+  assert.deepEqual(diagnostics.map(({route_category}) => route_category), ["turn_relay"])
+})
+
+test("classifies every selected route category with exact precedence and bounded protocol", async () => {
+  const cases = [
+    [{localType: "host", remoteType: "host"}, "host_direct", "udp"],
+    [{localType: "host", remoteType: "srflx"}, "reflexive_direct", "udp"],
+    [{localType: "prflx", remoteType: "relay"}, "turn_relay", "udp"],
+    [{localType: "host", remoteType: "unsupported"}, "unknown", "udp"],
+    [{localType: "host", remoteType: "host", remoteProtocol: "tcp"}, "host_direct", "unknown"],
+  ]
+
+  for (const [statsOptions, route_category, protocol] of cases) {
+    const {peer, signaling} = attemptFixture()
+    const diagnostics = []
+    signaling.reportIceRoute = diagnostic => diagnostics.push(diagnostic)
+    peer.getStats = async () => selectedRouteStats(statsOptions)
+    const attempt = createVoicePeerAttempt({
+      PeerConnection: class { constructor() { return peer } },
+      negotiationId: () => "browser-negotiation",
+      signaling,
+    })
+    await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+    peer.connectionState = "connected"
+    peer.emit("connectionstatechange")
+    await Promise.resolve()
+
+    assert.equal(diagnostics[0].route_category, route_category)
+    assert.equal(diagnostics[0].protocol, protocol)
+  }
+})
+
+test("uses only the transport-selected pair even when an unselected relay pair exists", async () => {
+  const {peer, signaling} = attemptFixture()
+  const diagnostics = []
+  const stats = selectedRouteStats()
+  stats.set("relay-pair", {id: "relay-pair", type: "candidate-pair", localCandidateId: "relay", remoteCandidateId: "remote"})
+  stats.set("relay", {id: "relay", type: "local-candidate", candidateType: "relay", protocol: "udp"})
+  peer.getStats = async () => stats
+  signaling.reportIceRoute = diagnostic => diagnostics.push(diagnostic)
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    negotiationId: () => "browser-negotiation",
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  peer.connectionState = "connected"
+  peer.emit("connectionstatechange")
+  await Promise.resolve()
+
+  assert.equal(diagnostics[0].route_category, "host_direct")
+})
+
+test("stats rejection reports unknown without ending Voice and stale completion after leave emits nothing", async () => {
+  const {peer, signaling} = attemptFixture()
+  const diagnostics = []
+  signaling.reportIceRoute = diagnostic => diagnostics.push(diagnostic)
+  peer.getStats = async () => { throw new Error("forbidden raw stats failure") }
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class { constructor() { return peer } },
+    negotiationId: () => "browser-negotiation",
+    signaling,
+  })
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+  peer.connectionState = "connected"
+  peer.emit("connectionstatechange")
+  await Promise.resolve()
+  assert.equal(peer.closed, false)
+  assert.equal(diagnostics[0].route_category, "unknown")
+  assert.equal(JSON.stringify(diagnostics).includes("forbidden"), false)
+
+  const pending = deferred()
+  peer.getStats = () => pending.promise
+  peer.emit("connectionstatechange")
+  attempt.leave()
+  pending.resolve(selectedRouteStats({remoteType: "relay"}))
+  await Promise.resolve()
+  assert.equal(diagnostics.length, 1)
+})
+
 function attemptFixture() {
   const peer = fakePeerConnection()
   const serverIce = []
@@ -125,7 +350,7 @@ function attemptFixture() {
   const rosterCues = []
   const sessionEnded = []
   const signaling = {
-    joinVoiceChannel: async () => ({signaling_session_id: "server-session"}),
+    joinVoiceChannel: async () => disabledAdmission(),
     leave() {},
     onClose(callback) { closes.push(callback); return 1 },
     onRosterCue(callback) { rosterCues.push(callback); return 1 },
@@ -142,18 +367,23 @@ function attemptFixture() {
   return {closes, peer, rosterCues, serverIce, sessionEnded, signaling}
 }
 
-test("preflights one microphone connection and four Audio Output Slots before admission", async () => {
+test("admits before constructing one configured microphone connection and four Audio Output Slots", async () => {
   const {peer, signaling} = attemptFixture()
   const states = []
-  let admissionPayload
-  let joinedAfterPreflight = false
-  signaling.joinVoiceChannel = async (_channelId, payload) => {
-    admissionPayload = payload
-    joinedAfterPreflight = peer.addedTransceivers.length === 5
-    return {signaling_session_id: "server-session"}
+  const constructorConfigurations = []
+  let admissionArguments
+  signaling.joinVoiceChannel = async (...args) => {
+    admissionArguments = args
+    assert.deepEqual(constructorConfigurations, [])
+    return disabledAdmission()
   }
   const attempt = createVoicePeerAttempt({
-    PeerConnection: class { constructor() { return peer } },
+    PeerConnection: class {
+      constructor(configuration) {
+        constructorConfigurations.push(configuration)
+        return peer
+      }
+    },
     negotiationId: () => "browser-negotiation",
     onState: state => states.push(state),
     signaling,
@@ -161,11 +391,8 @@ test("preflights one microphone connection and four Audio Output Slots before ad
 
   await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
 
-  assert.equal(joinedAfterPreflight, true)
-  assert.deepEqual(admissionPayload, {
-    negotiation_id: "browser-negotiation",
-    description: {type: "offer", sdp: "browser-offer"},
-  })
+  assert.deepEqual(admissionArguments, ["voice-1"])
+  assert.deepEqual(constructorConfigurations, [{iceServers: [], iceTransportPolicy: "all"}])
   assert.deepEqual(
     peer.addedTransceivers.map(({direction, sender}) => ({direction, track: sender.track})),
     [
@@ -183,6 +410,149 @@ test("preflights one microphone connection and four Audio Output Slots before ad
   peer.connectionState = "connected"
   peer.emit("connectionstatechange")
   assert.deepEqual(states, ["joining", "connected"])
+})
+
+test("constructs the final PeerConnection from the admitted standard ICE projection", async () => {
+  const {peer, signaling} = attemptFixture()
+  const constructorConfigurations = []
+  signaling.joinVoiceChannel = async () => standardAdmission()
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class {
+      constructor(configuration) {
+        constructorConfigurations.push(configuration)
+        return peer
+      }
+    },
+    negotiationId: () => "browser-negotiation",
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+
+  assert.deepEqual(constructorConfigurations, [{
+    iceServers: [
+      {urls: ["stun:stun.example.test:3478"]},
+      {
+        urls: [
+          "turn:turn.example.test:3478?transport=udp",
+          "turn:turn.example.test:3478?transport=tcp",
+          "turns:turn.example.test:5349?transport=tcp",
+        ],
+        username: "temporary-user",
+        credential: "temporary-credential",
+      },
+    ],
+    iceTransportPolicy: "all",
+  }])
+})
+
+test("constructs the final PeerConnection with the admitted TURN-only relay policy", async () => {
+  const {peer, signaling} = attemptFixture()
+  const constructorConfigurations = []
+  signaling.joinVoiceChannel = async () => turnOnlyAdmission()
+  const attempt = createVoicePeerAttempt({
+    PeerConnection: class {
+      constructor(configuration) {
+        constructorConfigurations.push(configuration)
+        return peer
+      }
+    },
+    negotiationId: () => "browser-negotiation",
+    signaling,
+  })
+
+  await attempt.connect({channelId: "voice-1", track: {id: "microphone"}})
+
+  assert.deepEqual(constructorConfigurations, [{
+    iceServers: [
+      {
+        urls: [
+          "turn:turn.example.test:3478?transport=udp",
+          "turn:turn.example.test:3478?transport=tcp",
+          "turns:turn.example.test:5349?transport=tcp",
+        ],
+        username: "temporary-user",
+        credential: "temporary-credential",
+      },
+    ],
+    iceTransportPolicy: "relay",
+  }])
+})
+
+test("rejects malformed or server-only admission configuration before PeerConnection construction", async () => {
+  const malformedAdmissions = [
+    disabledAdmission({voice_session_id: "private-session"}),
+    disabledAdmission({ice_config: {ice_servers: [], ice_transport_policy: "all", udp_port_range: [50_000, 50_031]}}),
+    disabledAdmission({ice_config: {ice_servers: [{urls: "https://provider.example.test/ice"}], ice_transport_policy: "all"}}),
+    disabledAdmission({ice_config: {ice_servers: [{urls: "turn:turn.example.test:3478"}], ice_transport_policy: "all"}}),
+    disabledAdmission({ice_config: {ice_servers: [{urls: "stun:stun.example.test:3478", provider: "vendor"}], ice_transport_policy: "all"}}),
+    disabledAdmission({ice_config: {ice_servers: [], ice_transport_policy: "relay"}}),
+    disabledAdmission({ice_config: {ice_servers: [{urls: "stun:stun.example.test:3478"}], ice_transport_policy: "relay"}}),
+    disabledAdmission({ice_config: {ice_servers: [], ice_transport_policy: "unknown"}}),
+  ]
+
+  for (const admission of malformedAdmissions) {
+    const {signaling} = attemptFixture()
+    const failures = []
+    let peerCreations = 0
+    let leaves = 0
+    signaling.joinVoiceChannel = async () => admission
+    signaling.leave = () => { leaves += 1 }
+    const attempt = createVoicePeerAttempt({
+      PeerConnection: class { constructor() { peerCreations += 1 } },
+      onFailure: failure => failures.push(failure),
+      signaling,
+    })
+
+    await assert.rejects(attempt.connect({channelId: "voice-1", track: {id: "microphone"}}))
+    assert.equal(peerCreations, 0)
+    assert.equal(leaves, 1)
+    assert.deepEqual(failures, ["connection_failed"])
+  }
+})
+
+test("construction, every transceiver stage, offer, and local-description failures leave exactly once", async () => {
+  const stages = ["constructor", "send", "send-result", "receive-1", "receive-2", "receive-3", "receive-4", "offer", "local-description"]
+
+  for (const stage of stages) {
+    const {signaling} = attemptFixture()
+    const peer = fakePeerConnection()
+    const failures = []
+    let leaves = 0
+    signaling.leave = () => { leaves += 1 }
+
+    if (stage.startsWith("receive-") || stage === "send" || stage === "send-result") {
+      const failingIndex = stage === "send" ? 0 : Number(stage.split("-")[1])
+      const addTransceiver = peer.addTransceiver
+      peer.addTransceiver = function(kindOrTrack, init) {
+        if (this.addedTransceivers.length === failingIndex) throw new Error(`${stage} unavailable`)
+        if (stage === "send-result" && this.addedTransceivers.length === 0) return null
+        return addTransceiver.call(this, kindOrTrack, init)
+      }
+    }
+    if (stage === "offer") peer.createOffer = async () => { throw new Error("offer unavailable") }
+    if (stage === "local-description") peer.setLocalDescription = async () => { throw new Error("local description unavailable") }
+
+    const attempt = createVoicePeerAttempt({
+      PeerConnection: class {
+        constructor() {
+          if (stage === "constructor") throw new Error("constructor unavailable")
+          return peer
+        }
+      },
+      onFailure: failure => failures.push(failure),
+      signaling,
+    })
+
+    await assert.rejects(attempt.connect({channelId: "voice-1", track: {id: "microphone"}}))
+    attempt.leave()
+
+    assert.equal(leaves, 1)
+    assert.deepEqual(failures, [stage === "offer" || stage === "local-description"
+      ? "connection_failed"
+      : "incompatible_audio_output_slots"])
+    assert.equal(peer.closed, stage !== "constructor")
+  }
 })
 
 test("a connected silent microphone remains active without an RTP inactivity timeout", async () => {
@@ -516,11 +886,13 @@ test("keeps four remote tracks separate in one stable aggregate playback stream"
   assert.deepEqual(aggregateStream.getTracks(), [remoteTracks[0], remoteTracks[2], remoteTracks[3]])
 })
 
-test("a failed four-slot preflight is retryable and never requests server admission", async () => {
+test("a failed four-slot construction leaves the admitted Voice Session with a retryable result", async () => {
   const {peer, signaling} = attemptFixture()
   const failures = []
   let joins = 0
-  signaling.joinVoiceChannel = async () => { joins += 1 }
+  let leaves = 0
+  signaling.joinVoiceChannel = async () => { joins += 1; return disabledAdmission() }
+  signaling.leave = () => { leaves += 1 }
   peer.addTransceiver = function(kindOrTrack, init) {
     if (this.addedTransceivers.length === 4) throw new Error("fifth media lane unavailable")
     return fakePeerConnection().addTransceiver.call(this, kindOrTrack, init)
@@ -534,7 +906,8 @@ test("a failed four-slot preflight is retryable and never requests server admiss
 
   await assert.rejects(attempt.connect({channelId: "voice-1", track: {id: "microphone"}}))
 
-  assert.equal(joins, 0)
+  assert.equal(joins, 1)
+  assert.equal(leaves, 1)
   assert.equal(peer.closed, true)
   assert.deepEqual(failures, ["incompatible_audio_output_slots"])
 })
@@ -840,7 +1213,7 @@ test("an offer reply that exceeds ten seconds is terminal", async () => {
   assert.deepEqual(failures, ["connection_failed"])
 })
 
-test("Leave during topic admission closes the preflighted browser peer before a late reply", async () => {
+test("Leave during topic admission never constructs a browser peer and ignores a late reply", async () => {
   const {peer, signaling} = attemptFixture()
   const joined = deferred()
   let peerCreations = 0
@@ -856,11 +1229,11 @@ test("Leave during topic admission closes the preflighted browser peer before a 
   const rejected = assert.rejects(connecting, /cancelled/)
   await new Promise(resolve => setImmediate(resolve))
   attempt.leave()
-  joined.resolve({signaling_session_id: "server-session"})
+  joined.resolve(disabledAdmission())
 
   await rejected
-  assert.equal(peerCreations, 1)
-  assert.equal(peer.closed, true)
+  assert.equal(peerCreations, 0)
+  assert.equal(peer.closed, false)
   assert.equal(leaves, 1)
 })
 

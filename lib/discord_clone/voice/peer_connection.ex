@@ -5,11 +5,11 @@ defmodule DiscordClone.Voice.PeerConnection do
   alias ExRTP.Packet.Extension.AudioLevel
   alias ExWebRTC.{ICECandidate, MediaStreamTrack, PeerConnection, SessionDescription}
   alias ExWebRTC.SDPUtils
+  alias DiscordClone.Voice.ServerICEProjection
 
   @audio_output_slot_count 4
   @command_timeout_ms 5_000
   @startup_timeout_ms 5_000
-  @ice_servers []
   @audio_level_uri "urn:ietf:params:rtp-hdrext:ssrc-audio-level"
   @mid_uri "urn:ietf:params:rtp-hdrext:sdes:mid"
   @test_environment Code.ensure_loaded?(Mix) and Mix.env() == :test
@@ -21,6 +21,7 @@ defmodule DiscordClone.Voice.PeerConnection do
     :audio_output_slot_track_ids,
     :test_candidate_observer,
     :test_rtp_observer,
+    :test_stats_reader,
     remote_description?: false
   ]
 
@@ -31,14 +32,17 @@ defmodule DiscordClone.Voice.PeerConnection do
           audio_output_slot_track_ids: %{optional(non_neg_integer()) => integer()} | nil,
           test_candidate_observer: pid() | nil,
           test_rtp_observer: pid() | nil,
+          test_stats_reader: (pid() -> map()) | nil,
           remote_description?: boolean()
         }
 
-  @spec start(keyword()) :: {:ok, t()} | {:error, :peer_connection_unavailable}
-  def start(options \\ []) do
+  @spec start(ServerICEProjection.t(), keyword()) ::
+          {:ok, t()} | {:error, :peer_connection_unavailable}
+  def start(%ServerICEProjection{} = server_ice_projection, test_options \\ []) do
     peer_connection_options =
-      options
-      |> Keyword.put_new(:ice_servers, @ice_servers)
+      test_options
+      |> Keyword.delete(:test_stats_reader)
+      |> Keyword.merge(server_ice_options(server_ice_projection))
       |> Keyword.put_new(:rtp_header_extensions, [
         %{type: :all, uri: @mid_uri},
         %{type: :audio, uri: @audio_level_uri}
@@ -47,14 +51,15 @@ defmodule DiscordClone.Voice.PeerConnection do
 
     case PeerConnection.start_link(peer_connection_options) do
       {:ok, peer_connection} ->
-        case await_ready(peer_connection, options) do
+        case await_ready(peer_connection, test_options) do
           :ok ->
             {:ok,
              %__MODULE__{
                peer_connection: peer_connection,
                audio_output_slot_track_ids: %{},
-               test_candidate_observer: test_candidate_observer(options),
-               test_rtp_observer: test_rtp_observer(options)
+               test_candidate_observer: test_candidate_observer(test_options),
+               test_rtp_observer: test_rtp_observer(test_options),
+               test_stats_reader: test_stats_reader(test_options)
              }}
 
           {:error, _reason} ->
@@ -70,6 +75,124 @@ defmodule DiscordClone.Voice.PeerConnection do
   catch
     :exit, _reason -> {:error, :peer_connection_unavailable}
   end
+
+  @type ice_route :: %{
+          route_category: :host_direct | :reflexive_direct | :turn_relay | :unknown,
+          protocol: :udp | :tcp | :tls | :unknown,
+          outcome: :accepted | :failed,
+          error_code: :stats_unavailable | nil,
+          duration_ms: non_neg_integer()
+        }
+
+  @spec get_stats(t()) :: {:ok, map()} | {:error, :stats_unavailable}
+  def get_stats(%__MODULE__{} = state) do
+    stats =
+      case state.test_stats_reader do
+        reader when is_function(reader, 1) -> reader.(state.peer_connection)
+        _reader -> PeerConnection.get_stats(state.peer_connection)
+      end
+
+    if is_map(stats), do: {:ok, stats}, else: {:error, :stats_unavailable}
+  rescue
+    _error -> {:error, :stats_unavailable}
+  catch
+    :exit, _reason -> {:error, :stats_unavailable}
+  end
+
+  @spec selected_ice_route(t()) :: ice_route()
+  def selected_ice_route(%__MODULE__{} = state) do
+    started_at = System.monotonic_time(:millisecond)
+
+    case get_stats(state) do
+      {:ok, stats} ->
+        stats
+        |> classify_ice_route()
+        |> Map.merge(%{
+          outcome: :accepted,
+          error_code: nil,
+          duration_ms: bounded_duration(started_at)
+        })
+
+      {:error, :stats_unavailable} ->
+        unknown_ice_route(started_at)
+    end
+  end
+
+  defp classify_ice_route(stats) when is_map(stats) do
+    pairs =
+      stats
+      |> Map.values()
+      |> Enum.filter(&selected_pair?/1)
+
+    case pairs do
+      [%{local_candidate_id: local_id, remote_candidate_id: remote_id}] ->
+        classify_candidates(Map.get(stats, local_id), Map.get(stats, remote_id))
+
+      _ambiguous ->
+        %{route_category: :unknown, protocol: :unknown}
+    end
+  end
+
+  defp classify_ice_route(_stats), do: %{route_category: :unknown, protocol: :unknown}
+
+  defp selected_pair?(%{type: :candidate_pair, valid: true, nominated: true, state: :succeeded}),
+    do: true
+
+  defp selected_pair?(_stats), do: false
+
+  defp classify_candidates(
+         %{type: :local_candidate, candidate_type: local_type, protocol: local_protocol},
+         %{type: :remote_candidate, candidate_type: remote_type, protocol: remote_protocol}
+       ) do
+    %{
+      route_category: route_category(local_type, remote_type),
+      protocol: protocol(local_protocol, remote_protocol)
+    }
+  end
+
+  defp classify_candidates(_local, _remote),
+    do: %{route_category: :unknown, protocol: :unknown}
+
+  defp route_category(local, remote) when local == :relay or remote == :relay, do: :turn_relay
+
+  defp route_category(local, remote)
+       when local in [:srflx, :prflx] or remote in [:srflx, :prflx],
+       do: :reflexive_direct
+
+  defp route_category(:host, :host), do: :host_direct
+  defp route_category(_local, _remote), do: :unknown
+
+  defp protocol(protocol, protocol) when protocol in [:udp, :tcp, :tls], do: protocol
+  defp protocol(_local, _remote), do: :unknown
+
+  defp unknown_ice_route(started_at) do
+    %{
+      route_category: :unknown,
+      protocol: :unknown,
+      outcome: :failed,
+      error_code: :stats_unavailable,
+      duration_ms: bounded_duration(started_at)
+    }
+  end
+
+  defp bounded_duration(started_at) do
+    System.monotonic_time(:millisecond)
+    |> Kernel.-(started_at)
+    |> max(0)
+    |> min(60_000)
+  end
+
+  defp server_ice_options(%ServerICEProjection{} = projection) do
+    [
+      ice_servers: projection.ice_servers,
+      ice_transport_policy: projection.transport_policy
+    ]
+    |> maybe_put_option(:host_to_srflx_ip_mapper, projection.host_to_srflx_ip_mapper)
+    |> maybe_put_option(:ice_port_range, projection.udp_port_range)
+  end
+
+  defp maybe_put_option(options, _key, nil), do: options
+  defp maybe_put_option(options, key, value), do: Keyword.put(options, key, value)
 
   defp await_ready(peer_connection, options) do
     await_test_readiness_gate(options)
@@ -405,6 +528,12 @@ defmodule DiscordClone.Voice.PeerConnection do
   defp test_rtp_observer(options) do
     if @test_environment do
       Keyword.get(options, :test_rtp_observer)
+    end
+  end
+
+  defp test_stats_reader(options) do
+    if @test_environment do
+      Keyword.get(options, :test_stats_reader)
     end
   end
 

@@ -25,12 +25,11 @@ test("joins the dedicated Voice topic with the page CSRF token, observes unexpec
 
   const signaling = createVoiceSignaling({Socket: FakeSocket, csrfToken: "page-csrf-token"})
 
-  const admission = {description: {type: "offer", sdp: "browser-offer"}}
-  assert.equal(signaling.join("voice-channel-id", admission), joinPush)
+  assert.equal(signaling.join("voice-channel-id"), joinPush)
   assert.deepEqual(events, [
     ["new", "/voice", {params: {_csrf_token: "page-csrf-token"}}],
     ["connect"],
-    ["channel", "voice:voice-channel-id", admission],
+    ["channel", "voice:voice-channel-id", {}],
   ])
 
   let closes = 0
@@ -143,4 +142,25 @@ test("pushes individual ICE and Voice Session renewal while exposing direct serv
   receives.at(-1)[2]({reason: "invalid_request"})
 
   assert.deepEqual(receivedError, {reason: "invalid_request"})
+})
+
+test("pushes only the caller-provided bounded ICE route diagnostic", () => {
+  const pushes = []
+  class FakeSocket {
+    connect() {}
+    channel() {
+      return {
+        join() { return {receive() { return this }} },
+        leave() {},
+        push(event, payload) { pushes.push([event, payload]); return {receive() { return this }} },
+      }
+    }
+  }
+
+  const signaling = createVoiceSignaling({Socket: FakeSocket})
+  signaling.join("voice-channel-id")
+  const diagnostic = {signaling_session_id: "opaque", route_category: "host_direct", protocol: "udp", duration_ms: 4}
+  signaling.reportIceRoute(diagnostic)
+
+  assert.deepEqual(pushes, [["ice_route", diagnostic]])
 })

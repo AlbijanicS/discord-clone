@@ -1,4 +1,3 @@
-const ICE_SERVERS = []
 const MAX_PENDING_SERVER_CANDIDATES = 16
 const MAX_PENDING_SERVER_CANDIDATE_BYTES = MAX_PENDING_SERVER_CANDIDATES * 8 * 1024
 const OFFER_REPLY_TIMEOUT_MS = 10_000
@@ -13,6 +12,7 @@ export function createVoicePeerAttempt({
   PeerConnection = globalThis.RTCPeerConnection,
   MediaStream = globalThis.MediaStream,
   negotiationId = createNegotiationId,
+  now = () => globalThis.performance?.now?.() ?? Date.now(),
   onFailure = () => {},
   onCue = () => {},
   onPlayback = () => {},
@@ -27,6 +27,8 @@ export function createVoicePeerAttempt({
   let aggregatePlaybackStream = null
   let audioOutputSlots = []
   let peerConnection = null
+  let sendingTransceiver = null
+  let selectedIceTransport = null
   let pendingServerCandidates = []
   let pendingServerCandidateBytes = 0
   let signalingSessionId = null
@@ -38,6 +40,8 @@ export function createVoicePeerAttempt({
   let renewalDeadline = null
   let renewalInterval = null
   let controlPlaneInterrupted = false
+  let lastRouteCategory = null
+  let statsGeneration = 0
 
   function fail(error = "connection_failed") {
     if (!active) return
@@ -48,12 +52,16 @@ export function createVoicePeerAttempt({
 
   function cleanup() {
     active = false
+    statsGeneration += 1
     answerApplied = false
     pendingServerCandidates = []
     pendingServerCandidateBytes = 0
     clearRenewalTimers()
     clearPeerConnectionRecoveryDeadline()
     releaseRemoteAudio()
+    selectedIceTransport?.removeEventListener?.("selectedcandidatepairchange", reportSelectedIceRoute)
+    selectedIceTransport = null
+    sendingTransceiver = null
     peerConnection?.close()
     peerConnection = null
     if (signalingActive) signaling?.leave()
@@ -192,16 +200,17 @@ export function createVoicePeerAttempt({
     slot.onEnded = null
   }
 
-  function preflight(track) {
+  function constructPeerConnection(track, configuration) {
     try {
       if (!PeerConnection || !MediaStream) throw new Error("required WebRTC APIs are unavailable")
 
-      peerConnection = new PeerConnection({iceServers: ICE_SERVERS})
+      peerConnection = new PeerConnection(configuration)
       if (typeof peerConnection.addTransceiver !== "function") {
         throw new Error("audio transceivers are unavailable")
       }
 
-      peerConnection.addTransceiver(track, {direction: "sendonly"})
+      sendingTransceiver = peerConnection.addTransceiver(track, {direction: "sendonly"})
+      if (!sendingTransceiver?.sender) throw new Error("sending transceiver is unavailable")
       audioOutputSlots = Array.from({length: AUDIO_OUTPUT_SLOT_COUNT}, (_unused, index) => {
         const transceiver = peerConnection.addTransceiver("audio", {direction: "recvonly"})
         if (!transceiver?.receiver?.track || transceiver.receiver.track.kind !== "audio") {
@@ -264,6 +273,8 @@ export function createVoicePeerAttempt({
       mediaState = "connected"
       clearPeerConnectionRecoveryDeadline()
       publishConnectionState()
+      observeSelectedPairChanges()
+      reportSelectedIceRoute()
     }
     if (peerConnection.connectionState === "disconnected") {
       mediaState = "disconnected"
@@ -271,6 +282,36 @@ export function createVoicePeerAttempt({
       publishConnectionState()
     }
     if (["failed", "closed"].includes(peerConnection.connectionState)) fail("connection_lost")
+  }
+
+  function observeSelectedPairChanges() {
+    const iceTransport = sendingTransceiver?.sender?.transport?.iceTransport
+    if (!iceTransport || iceTransport === selectedIceTransport) return
+
+    selectedIceTransport?.removeEventListener?.("selectedcandidatepairchange", reportSelectedIceRoute)
+    selectedIceTransport = iceTransport
+    selectedIceTransport.addEventListener?.("selectedcandidatepairchange", reportSelectedIceRoute)
+  }
+
+  async function reportSelectedIceRoute() {
+    const generation = ++statsGeneration
+    const startedAt = now()
+    let route = {route_category: "unknown", protocol: "unknown"}
+
+    try {
+      route = classifySelectedIceRoute(await peerConnection?.getStats?.())
+    } catch (_) {
+      // Unknown diagnostics must never disturb a working Voice connection.
+    }
+
+    if (!active || generation !== statsGeneration || route.route_category === lastRouteCategory) return
+
+    lastRouteCategory = route.route_category
+    signaling?.reportIceRoute?.({
+      signaling_session_id: signalingSessionId,
+      ...route,
+      duration_ms: boundedDuration(now() - startedAt),
+    })
   }
 
   function sendLocalIce(event) {
@@ -289,30 +330,21 @@ export function createVoicePeerAttempt({
 
   return {
     async connect({channelId, track}) {
-      if (!PeerConnection || !signaling || !track) throw new Error("voice connection unavailable")
+      if (!signaling || !track) throw new Error("voice connection unavailable")
 
       active = true
+      lastRouteCategory = null
       mediaState = "joining"
-      currentNegotiationId = negotiationId()
       onState("joining")
 
       try {
-        preflight(track)
-        peerConnection.addEventListener("icecandidate", sendLocalIce)
-        peerConnection.addEventListener("connectionstatechange", handleConnectionStateChange)
-        peerConnection.addEventListener("track", receiveRemoteTrack)
-
-        const offer = await peerConnection.createOffer()
-        ensureActive()
-
         signalingActive = true
-        const joined = await signaling.joinVoiceChannel(channelId, {
-          negotiation_id: currentNegotiationId,
-          description: offer,
-        })
+        const joined = await signaling.joinVoiceChannel(channelId)
         ensureActive()
-        signalingSessionId = joined?.signaling_session_id
-        if (!signalingSessionId) throw new Error("missing signaling session")
+
+        const admission = voiceAdmission(joined)
+        signalingSessionId = admission.signalingSessionId
+        currentNegotiationId = negotiationId()
 
         signaling.onServerIce(receiveServerIce)
         signaling.onClose(() => fail("connection_lost"))
@@ -322,6 +354,15 @@ export function createVoicePeerAttempt({
             onCue({channelId, cue: payload.cue})
           }
         })
+        ensureActive()
+
+        constructPeerConnection(track, admission.peerConfiguration)
+        peerConnection.addEventListener("icecandidate", sendLocalIce)
+        peerConnection.addEventListener("connectionstatechange", handleConnectionStateChange)
+        peerConnection.addEventListener("track", receiveRemoteTrack)
+
+        const offer = await peerConnection.createOffer()
+        ensureActive()
 
         await peerConnection.setLocalDescription(offer)
         ensureActive()
@@ -376,6 +417,121 @@ export function createVoicePeerAttempt({
       if (active) signaling?.sendLocalVoiceState?.(state)
     },
   }
+}
+
+function voiceAdmission(joined) {
+  if (!plainObject(joined) || !exactKeys(joined, [
+    "capacity",
+    "ice_config",
+    "occupancy",
+    "signaling_session_id",
+  ])) throw new Error("invalid Voice admission")
+
+  const iceConfig = joined.ice_config
+  if (
+    typeof joined.signaling_session_id !== "string" ||
+    joined.signaling_session_id.length === 0 ||
+    !Number.isInteger(joined.occupancy) ||
+    joined.occupancy < 0 ||
+    !Number.isInteger(joined.capacity) ||
+    joined.capacity <= 0 ||
+    joined.occupancy > joined.capacity ||
+    !plainObject(iceConfig) ||
+    !exactKeys(iceConfig, ["ice_mode", "ice_servers", "ice_transport_policy"]) ||
+    !["disabled", "standard", "turn_only"].includes(iceConfig.ice_mode) ||
+    !Array.isArray(iceConfig.ice_servers) ||
+    !["all", "relay"].includes(iceConfig.ice_transport_policy)
+  ) throw new Error("invalid Voice admission")
+
+  const iceServers = iceConfig.ice_servers.map(browserIceServer)
+  if (
+    iceConfig.ice_transport_policy === "relay" &&
+    (iceServers.length === 0 || !iceServers.every(turnOnlyIceServer))
+  ) throw new Error("invalid Voice admission")
+
+  return {
+    signalingSessionId: joined.signaling_session_id,
+    peerConfiguration: {iceServers, iceTransportPolicy: iceConfig.ice_transport_policy},
+  }
+}
+
+function classifySelectedIceRoute(report) {
+  if (!report || typeof report.values !== "function" || typeof report.get !== "function") {
+    return {route_category: "unknown", protocol: "unknown"}
+  }
+
+  const transports = [...report.values()].filter(item => item?.type === "transport" && item.selectedCandidatePairId)
+  if (transports.length !== 1) return {route_category: "unknown", protocol: "unknown"}
+
+  const pair = report.get(transports[0].selectedCandidatePairId)
+  const local = pair?.type === "candidate-pair" ? report.get(pair.localCandidateId) : null
+  const remote = pair?.type === "candidate-pair" ? report.get(pair.remoteCandidateId) : null
+  if (local?.type !== "local-candidate" || remote?.type !== "remote-candidate") {
+    return {route_category: "unknown", protocol: "unknown"}
+  }
+
+  const types = [local.candidateType, remote.candidateType]
+
+  let route_category = "unknown"
+  if (types.includes("relay")) route_category = "turn_relay"
+  else if (types.some(type => ["srflx", "prflx"].includes(type))) route_category = "reflexive_direct"
+  else if (types.every(type => type === "host")) route_category = "host_direct"
+
+  const protocols = [local?.protocol, remote?.protocol]
+  const protocol = protocols[0] === protocols[1] && ["udp", "tcp", "tls"].includes(protocols[0])
+    ? protocols[0]
+    : "unknown"
+
+  return {route_category, protocol}
+}
+
+function boundedDuration(value) {
+  return Number.isFinite(value) ? Math.max(0, Math.min(Math.round(value), 60_000)) : 0
+}
+
+function turnOnlyIceServer(server) {
+  const urls = typeof server.urls === "string" ? [server.urls] : server.urls
+  return urls.every(url => /^turns?:/i.test(url))
+}
+
+function browserIceServer(server) {
+  if (
+    !plainObject(server) ||
+    !Object.hasOwn(server, "urls") ||
+    !Object.keys(server).every(key => ["credential", "urls", "username"].includes(key))
+  ) throw new Error("invalid Voice admission")
+
+  const urls = typeof server.urls === "string" ? [server.urls] : server.urls
+  if (!Array.isArray(urls) || urls.length === 0 || !urls.every(standardIceUrl)) {
+    throw new Error("invalid Voice admission")
+  }
+
+  const hasTurn = urls.some(url => /^turns?:/i.test(url))
+  const hasUsername = Object.hasOwn(server, "username")
+  const hasCredential = Object.hasOwn(server, "credential")
+  if (
+    hasUsername !== hasCredential ||
+    hasTurn !== hasUsername ||
+    (hasUsername && (typeof server.username !== "string" || server.username.length === 0)) ||
+    (hasCredential && (typeof server.credential !== "string" || server.credential.length === 0))
+  ) throw new Error("invalid Voice admission")
+
+  return {
+    urls: server.urls,
+    ...(hasUsername ? {username: server.username, credential: server.credential} : {}),
+  }
+}
+
+function standardIceUrl(url) {
+  return typeof url === "string" && /^(stun|stuns|turn|turns):[^\s]+$/i.test(url)
+}
+
+function plainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
+function exactKeys(value, keys) {
+  return Object.keys(value).sort().join("\0") === [...keys].sort().join("\0")
 }
 
 function voiceFailure(error) {

@@ -24,6 +24,15 @@ config :discord_clone, DiscordCloneWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
 if config_env() == :prod do
+  voice_ice_mode =
+    case System.get_env("VOICE_ICE_MODE") do
+      "standard" -> :standard
+      "turn_only" -> :turn_only
+      _missing_or_invalid -> raise "VOICE_ICE_MODE must be standard or turn_only in production"
+    end
+
+  config :discord_clone, DiscordClone.Voice.ICEConfigurationResolver, mode: voice_ice_mode
+
   database_url =
     System.get_env("DATABASE_URL") ||
       raise """
@@ -60,11 +69,9 @@ if config_env() == :prod do
   config :discord_clone, DiscordCloneWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [
-      # Enable IPv6 and bind on all interfaces.
-      # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
-      # See the documentation on https://hexdocs.pm/bandit/Bandit.html#t:options/0
-      # for details about using IPv6 vs IPv4 and loopback vs public addresses.
-      ip: {0, 0, 0, 0, 0, 0, 0, 0}
+      # Caddy terminates public TLS on the same VM and proxies HTTP/WebSocket
+      # traffic to this private IPv4 loopback listener.
+      ip: {127, 0, 0, 1}
     ],
     secret_key_base: secret_key_base
 

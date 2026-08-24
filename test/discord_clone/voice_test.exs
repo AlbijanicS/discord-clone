@@ -2,11 +2,20 @@ defmodule DiscordClone.VoiceTest do
   use DiscordClone.DataCase, async: false
 
   import DiscordClone.AccountsFixtures
+  import DiscordClone.VoiceICEConfigurationHelpers
   import DiscordCloneWeb.VoiceSignalingHelpers
 
   alias DiscordClone.Accounts.Scope
   alias DiscordClone.Voice
-  alias DiscordClone.Voice.{Forwarder, RoomServer, SessionSupervisor}
+
+  alias DiscordClone.Voice.{
+    FakeICEProvider,
+    Forwarder,
+    ICEConfigurationResolver,
+    RoomServer,
+    ServerICEProjection,
+    SessionSupervisor
+  }
 
   setup do
     on_exit(fn ->
@@ -21,6 +30,447 @@ defmodule DiscordClone.VoiceTest do
   end
 
   describe "room runtime lifecycle" do
+    test "normalizes hosted provider failures before any Voice runtime starts" do
+      :ok = preserve_voice_ice_configuration()
+
+      Application.put_env(:discord_clone, ICEConfigurationResolver,
+        mode: :standard,
+        stun_urls: ["stun:stun.example.test:3478"],
+        provider: FakeICEProvider,
+        provider_secret: "forbidden-durable-provider-secret",
+        internal_ipv4: "10.20.0.4",
+        external_ipv4: "34.118.200.24",
+        udp_port_range: 50_000..50_031,
+        max_active_sessions: 20,
+        provider_options: [
+          observer: self(),
+          results:
+            {:ok,
+             %{
+               urls: ["turn:turn.example.test:3478?transport=udp"],
+               username: "temporary-user",
+               credential: "temporary-credential",
+               expires_at: DateTime.add(DateTime.utc_now(), 30, :second)
+             }}
+        ]
+      )
+
+      voice_channel_id = Ecto.UUID.generate()
+      user = user_fixture()
+
+      assert {:error, :unavailable} =
+               Voice.join_with_ice_configuration(
+                 Scope.for_user(user),
+                 voice_channel_id,
+                 "provider-failure-session",
+                 self()
+               )
+
+      assert_receive {:voice_ice_provider_requested, _options}
+      refute Voice.room_running?(voice_channel_id)
+      assert {:ok, %{members: []}} = Voice.voice_channel_roster(voice_channel_id)
+    end
+
+    test "negotiates and cleans up a standard bundle resolved through the provider boundary" do
+      :ok = preserve_voice_ice_configuration()
+
+      stun_url = start_test_stun_server({192, 0, 2, 88})
+
+      Application.put_env(:discord_clone, ICEConfigurationResolver,
+        mode: :standard,
+        stun_urls: [stun_url],
+        provider: FakeICEProvider,
+        provider_secret: "durable-provider-secret",
+        internal_ipv4: "10.20.0.4",
+        external_ipv4: "34.118.200.24",
+        udp_port_range: 50_000..50_031,
+        max_active_sessions: 20,
+        provider_options: [
+          observer: self(),
+          results:
+            {:ok,
+             %{
+               urls: ["turn:127.0.0.1:9?transport=udp"],
+               username: "temporary-user",
+               credential: "temporary-credential",
+               expires_at: DateTime.add(DateTime.utc_now(), 120, :second)
+             }}
+        ]
+      )
+
+      voice_channel_id = Ecto.UUID.generate()
+      user = user_fixture()
+
+      assert {:ok, %{voice_session_id: voice_session_id}, browser_projection} =
+               Voice.join_with_ice_configuration(
+                 Scope.for_user(user),
+                 voice_channel_id,
+                 "standard-ice-session",
+                 self()
+               )
+
+      assert_receive {:voice_ice_provider_requested, _options}
+      assert browser_projection.ice_transport_policy == "all"
+      assert Enum.count(browser_projection.ice_servers) == 2
+
+      assert [peer_connection] = ExWebRTC.PeerConnection.get_all_running()
+      configuration = ExWebRTC.PeerConnection.get_configuration(peer_connection)
+      assert configuration.ice_port_range == 50_000..50_031
+      assert configuration.host_to_srflx_ip_mapper.({10, 20, 0, 4}) == {34, 118, 200, 24}
+      assert configuration.host_to_srflx_ip_mapper.({127, 0, 0, 1}) == nil
+      assert configuration.host_to_srflx_ip_mapper.({172, 17, 0, 1}) == nil
+      assert configuration.host_to_srflx_ip_mapper.({10, 20, 0, 5}) == nil
+
+      assert {:ok, %{"type" => "answer"}} =
+               Voice.accept_offer(
+                 Scope.for_user(user),
+                 voice_channel_id,
+                 voice_session_id,
+                 "standard-ice-negotiation",
+                 browser_offer()
+               )
+
+      stun_candidate =
+        await_server_ice_candidate(
+          voice_session_id,
+          "standard-ice-negotiation",
+          &String.contains?(&1["candidate"], " 192.0.2.88 ")
+        )
+
+      assert stun_candidate["candidate"] =~ " typ srflx "
+      assert :ok = Voice.leave(voice_channel_id, voice_session_id)
+      assert :ok = Voice.await_empty_room(voice_channel_id)
+      assert {:ok, %{occupancy: 0, capacity: 5}} = Voice.room_occupancy(voice_channel_id)
+    end
+
+    test "threads TURN-only relay policy through public admission to the owned ExWebRTC peer" do
+      :ok = preserve_voice_ice_configuration()
+
+      Application.put_env(:discord_clone, ICEConfigurationResolver,
+        mode: :turn_only,
+        stun_urls: ["stun:stun.example.test:3478"],
+        provider: FakeICEProvider,
+        provider_secret: "durable-provider-secret",
+        internal_ipv4: "10.20.0.4",
+        external_ipv4: "34.118.200.24",
+        udp_port_range: 50_000..50_031,
+        max_active_sessions: 20,
+        provider_options: [
+          observer: self(),
+          results:
+            {:ok,
+             %{
+               urls: [
+                 "turn:turn.example.test:3478?transport=udp",
+                 "turn:turn.example.test:3478?transport=tcp",
+                 "turns:turn.example.test:5349?transport=tcp"
+               ],
+               username: "temporary-user",
+               credential: "temporary-credential",
+               expires_at: DateTime.add(DateTime.utc_now(), 120, :second)
+             }}
+        ]
+      )
+
+      voice_channel_id = Ecto.UUID.generate()
+      user = user_fixture()
+      running_before = MapSet.new(ExWebRTC.PeerConnection.get_all_running())
+
+      assert {:ok, %{voice_session_id: voice_session_id}, browser_projection} =
+               Voice.join_with_ice_configuration(
+                 Scope.for_user(user),
+                 voice_channel_id,
+                 "turn-only-session",
+                 self()
+               )
+
+      assert browser_projection.ice_transport_policy == "relay"
+
+      refute Enum.any?(browser_projection.ice_servers, fn server ->
+               Enum.any?(List.wrap(server.urls), &String.starts_with?(&1, "stun:"))
+             end)
+
+      assert [peer_connection] =
+               ExWebRTC.PeerConnection.get_all_running()
+               |> Enum.reject(&MapSet.member?(running_before, &1))
+
+      configuration = ExWebRTC.PeerConnection.get_configuration(peer_connection)
+      assert configuration.ice_transport_policy == :relay
+
+      assert [server] = configuration.ice_servers
+      assert server.urls == ["turn:turn.example.test:3478?transport=udp"]
+
+      peer_monitor = Process.monitor(peer_connection)
+      assert :ok = Voice.leave(voice_channel_id, voice_session_id)
+      assert_receive {:DOWN, ^peer_monitor, :process, ^peer_connection, _reason}
+      assert :ok = Voice.await_empty_room(voice_channel_id)
+    end
+
+    test "threads one server ICE projection through public admission to ExWebRTC" do
+      voice_channel_id = Ecto.UUID.generate()
+      user = user_fixture()
+      stun_url = start_test_stun_server({192, 0, 2, 77})
+
+      assert {:ok, server_ice_projection} =
+               ServerICEProjection.new(
+                 ice_servers: [%{urls: stun_url}],
+                 transport_policy: :all,
+                 host_to_srflx_ip_mapper: fn _host_address -> {203, 0, 113, 10} end,
+                 udp_port_range: 50_000..50_031
+               )
+
+      assert {:ok, %{voice_session_id: voice_session_id}} =
+               Voice.join(
+                 voice_channel_id,
+                 user.id,
+                 "configured-ice-session",
+                 self(),
+                 server_ice_projection
+               )
+
+      assert {:ok, %{"type" => "answer"}} =
+               Voice.accept_offer(
+                 Scope.for_user(user),
+                 voice_channel_id,
+                 voice_session_id,
+                 "configured-ice-negotiation",
+                 browser_offer()
+               )
+
+      candidate =
+        await_server_ice_candidate(
+          voice_session_id,
+          "configured-ice-negotiation",
+          &String.contains?(&1["candidate"], " 203.0.113.10 ")
+        )
+
+      assert candidate["candidate"] =~ " 203.0.113.10 "
+
+      assert [port] =
+               Regex.run(~r/ 203\.0\.113\.10 (\d+) typ srflx/, candidate["candidate"],
+                 capture: :all_but_first
+               )
+
+      assert String.to_integer(port) in 50_000..50_031
+
+      stun_candidate =
+        await_server_ice_candidate(
+          voice_session_id,
+          "configured-ice-negotiation",
+          &String.contains?(&1["candidate"], " 192.0.2.77 ")
+        )
+
+      assert stun_candidate["candidate"] =~ " 192.0.2.77 "
+      assert stun_candidate["candidate"] =~ " typ srflx "
+    end
+
+    test "preserves disabled all-candidate negotiation and applies relay-only policy" do
+      disabled_voice_channel_id = Ecto.UUID.generate()
+      disabled_user = user_fixture()
+
+      assert {:ok, %{voice_session_id: disabled_voice_session_id}} =
+               Voice.join(
+                 disabled_voice_channel_id,
+                 disabled_user.id,
+                 "disabled-ice-session",
+                 self()
+               )
+
+      assert {:ok, %{"type" => "answer"}} =
+               Voice.accept_offer(
+                 Scope.for_user(disabled_user),
+                 disabled_voice_channel_id,
+                 disabled_voice_session_id,
+                 "disabled-ice-negotiation",
+                 browser_offer()
+               )
+
+      disabled_candidates =
+        collect_server_ice_candidates(
+          disabled_voice_session_id,
+          "disabled-ice-negotiation"
+        )
+
+      assert disabled_candidates != []
+
+      assert Enum.all?(disabled_candidates, fn candidate ->
+               candidate["candidate"] =~ " typ host"
+             end)
+
+      relay_voice_channel_id = Ecto.UUID.generate()
+      relay_user = user_fixture()
+
+      assert {:ok, relay_projection} =
+               ServerICEProjection.new(transport_policy: :relay)
+
+      assert {:ok, %{voice_session_id: relay_voice_session_id}} =
+               Voice.join(
+                 relay_voice_channel_id,
+                 relay_user.id,
+                 "relay-only-session",
+                 self(),
+                 relay_projection
+               )
+
+      assert {:ok, %{"type" => "answer"}} =
+               Voice.accept_offer(
+                 Scope.for_user(relay_user),
+                 relay_voice_channel_id,
+                 relay_voice_session_id,
+                 "relay-only-negotiation",
+                 browser_offer()
+               )
+
+      assert [] =
+               collect_server_ice_candidates(
+                 relay_voice_session_id,
+                 "relay-only-negotiation"
+               )
+    end
+
+    test "keeps ICE configuration scoped to the Voice Session that actually starts" do
+      voice_channel_id = Ecto.UUID.generate()
+      user = user_fixture()
+
+      assert {:ok, first_projection} =
+               ServerICEProjection.new(
+                 host_to_srflx_ip_mapper: fn _host_address -> {203, 0, 113, 11} end,
+                 udp_port_range: 50_000..50_015
+               )
+
+      assert {:ok, later_projection} =
+               ServerICEProjection.new(
+                 host_to_srflx_ip_mapper: fn _host_address -> {198, 51, 100, 22} end,
+                 udp_port_range: 50_016..50_031
+               )
+
+      assert {:ok, %{voice_session_id: first_voice_session_id}} =
+               Voice.join(
+                 voice_channel_id,
+                 user.id,
+                 "same-signaling-session",
+                 self(),
+                 first_projection
+               )
+
+      assert {:ok, %{voice_session_id: ^first_voice_session_id}} =
+               Voice.join(
+                 voice_channel_id,
+                 user.id,
+                 "same-signaling-session",
+                 self(),
+                 later_projection
+               )
+
+      assert {:ok, %{"type" => "answer"}} =
+               Voice.accept_offer(
+                 Scope.for_user(user),
+                 voice_channel_id,
+                 first_voice_session_id,
+                 "first-negotiation",
+                 browser_offer()
+               )
+
+      first_candidate =
+        await_server_ice_candidate(
+          first_voice_session_id,
+          "first-negotiation",
+          &String.contains?(&1["candidate"], " 203.0.113.11 ")
+        )
+
+      refute first_candidate["candidate"] =~ " 198.51.100.22 "
+      assert :ok = Voice.leave(voice_channel_id, first_voice_session_id)
+
+      assert {:ok, %{voice_session_id: later_voice_session_id}} =
+               Voice.join(
+                 voice_channel_id,
+                 user.id,
+                 "later-signaling-session",
+                 self(),
+                 later_projection
+               )
+
+      refute later_voice_session_id == first_voice_session_id
+
+      assert {:ok, %{"type" => "answer"}} =
+               Voice.accept_offer(
+                 Scope.for_user(user),
+                 voice_channel_id,
+                 later_voice_session_id,
+                 "later-negotiation",
+                 browser_offer()
+               )
+
+      later_candidate =
+        await_server_ice_candidate(
+          later_voice_session_id,
+          "later-negotiation",
+          &String.contains?(&1["candidate"], " 198.51.100.22 ")
+        )
+
+      refute later_candidate["candidate"] =~ " 203.0.113.11 "
+    end
+
+    test "rejects an invalid projection without leaving runtime ownership" do
+      voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+      running_before = MapSet.new(ExWebRTC.PeerConnection.get_all_running())
+      invalid_projection = %{ServerICEProjection.disabled() | transport_policy: :invalid}
+
+      assert {:error, :unavailable} =
+               Voice.join(
+                 voice_channel_id,
+                 user_id,
+                 "invalid-ice-session",
+                 self(),
+                 invalid_projection
+               )
+
+      refute Voice.room_running?(voice_channel_id)
+      assert {:ok, %{members: []}} = Voice.voice_channel_roster(voice_channel_id)
+      assert MapSet.new(ExWebRTC.PeerConnection.get_all_running()) == running_before
+
+      assert {:ok, %{occupancy: 1}} =
+               Voice.join(
+                 Ecto.UUID.generate(),
+                 user_id,
+                 "healthy-session-after-invalid-ice",
+                 self()
+               )
+    end
+
+    test "PeerConnection startup failure leaves no membership, route, roster, or coordinator residue" do
+      failed_voice_channel_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+      running_before = MapSet.new(ExWebRTC.PeerConnection.get_all_running())
+
+      failed_room =
+        start_room_server(failed_voice_channel_id,
+          test_peer_connection_opts: [audio_codecs: [:invalid]]
+        )
+
+      assert {:error, :unavailable} =
+               Voice.join(
+                 failed_voice_channel_id,
+                 user_id,
+                 "failed-peer-connection-session",
+                 self(),
+                 ServerICEProjection.disabled()
+               )
+
+      assert {:ok, %{occupancy: 0, capacity: 5}} = RoomServer.occupancy(failed_room)
+      assert %{members: []} = RoomServer.roster(failed_room)
+      assert MapSet.new(ExWebRTC.PeerConnection.get_all_running()) == running_before
+
+      assert {:ok, %{occupancy: 1}} =
+               Voice.join(
+                 Ecto.UUID.generate(),
+                 user_id,
+                 "healthy-session-after-startup-failure",
+                 self()
+               )
+    end
+
     test "expires an unrenewed Voice Session without affecting another room" do
       expired_voice_channel_id = Ecto.UUID.generate()
       healthy_voice_channel_id = Ecto.UUID.generate()
@@ -2529,6 +2979,93 @@ defmodule DiscordClone.VoiceTest do
   defp room_server(voice_channel_id) do
     {:via, Registry, {DiscordClone.Voice.RoomRegistry, {:room, voice_channel_id}}}
     |> GenServer.whereis()
+  end
+
+  defp await_server_ice_candidate(voice_session_id, negotiation_id, predicate, attempts \\ 10)
+
+  defp await_server_ice_candidate(_voice_session_id, _negotiation_id, _predicate, 0) do
+    flunk("expected a matching server ICE candidate")
+  end
+
+  defp await_server_ice_candidate(voice_session_id, negotiation_id, predicate, attempts) do
+    receive do
+      {:voice_session_event, ^voice_session_id, {:ice_candidate, ^negotiation_id, candidate}} ->
+        if predicate.(candidate) do
+          candidate
+        else
+          await_server_ice_candidate(
+            voice_session_id,
+            negotiation_id,
+            predicate,
+            attempts - 1
+          )
+        end
+    after
+      1_000 -> flunk("expected a server ICE candidate")
+    end
+  end
+
+  defp collect_server_ice_candidates(voice_session_id, negotiation_id, candidates \\ []) do
+    receive do
+      {:voice_session_event, ^voice_session_id, {:ice_candidate, ^negotiation_id, candidate}} ->
+        collect_server_ice_candidates(voice_session_id, negotiation_id, [candidate | candidates])
+
+      {:voice_session_event, ^voice_session_id, {:end_of_candidates, ^negotiation_id}} ->
+        Enum.reverse(candidates)
+    after
+      1_000 -> flunk("expected server ICE gathering to complete")
+    end
+  end
+
+  defp start_test_stun_server(mapped_address) do
+    test_pid = self()
+    server_ref = make_ref()
+
+    _server =
+      start_supervised!(%{
+        id: server_ref,
+        start:
+          {Task, :start_link,
+           [
+             fn ->
+               {:ok, socket} =
+                 :gen_udp.open(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+
+               {:ok, {_address, port}} = :inet.sockname(socket)
+               send(test_pid, {:test_stun_server_ready, server_ref, port})
+               serve_test_stun(socket, mapped_address)
+             end
+           ]}
+      })
+
+    assert_receive {:test_stun_server_ready, ^server_ref, port}
+    "stun:127.0.0.1:#{port}"
+  end
+
+  defp serve_test_stun(socket, mapped_address) do
+    case :gen_udp.recv(socket, 0) do
+      {:ok, {client_address, client_port, raw_request}} ->
+        {:ok, request} = ExSTUN.Message.decode(raw_request)
+
+        response =
+          ExSTUN.Message.new(
+            request.transaction_id,
+            %ExSTUN.Message.Type{class: :success_response, method: :binding},
+            [
+              %ExSTUN.Message.Attribute.XORMappedAddress{
+                address: mapped_address,
+                port: client_port
+              }
+            ]
+          )
+          |> ExSTUN.Message.encode()
+
+        :ok = :gen_udp.send(socket, client_address, client_port, response)
+        serve_test_stun(socket, mapped_address)
+
+      {:error, :closed} ->
+        :ok
+    end
   end
 
   defp browser_offer_with_audio_level do

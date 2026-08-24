@@ -1,24 +1,20 @@
 defmodule DiscordCloneWeb.VoiceChannel do
   use DiscordCloneWeb, :channel
 
+  @test_environment Code.ensure_loaded?(Mix) and Mix.env() == :test
+
   alias DiscordClone.{Voice, Workspaces}
-  alias DiscordClone.Voice.{Diagnostics, PeerConnection}
+  alias DiscordClone.Voice.Diagnostics
   alias DiscordCloneWeb.VoiceSignaling.RealMessage
 
   @impl true
-  def join("voice:" <> voice_channel_id, params, socket) do
+  def join("voice:" <> voice_channel_id, _params, socket) do
     case Workspaces.authorize_voice_channel_for_signaling(
            socket.assigns.current_scope,
            voice_channel_id
          ) do
       {:ok, _voice_channel} ->
-        with %{"description" => description} when is_map(description) <- params,
-             :ok <- PeerConnection.validate_audio_topology(description) do
-          join_voice_channel(voice_channel_id, socket)
-        else
-          _incompatible_or_missing_offer ->
-            {:error, %{reason: "incompatible_audio_output_slots"}}
-        end
+        join_voice_channel(voice_channel_id, socket)
 
       {:error, :not_found} ->
         {:error, %{reason: "not_found"}}
@@ -107,6 +103,35 @@ defmodule DiscordCloneWeb.VoiceChannel do
 
       {:ok, {:error, error_code}} ->
         reject("ice_candidate", error_code, decoded_request_byte_count(params), socket)
+    end
+  end
+
+  def handle_in("ice_route", params, socket) do
+    case browser_ice_route(params, socket) do
+      {:ok, route_category, protocol, duration_ms} ->
+        Diagnostics.emit_ice_route(
+          socket.assigns.ice_mode,
+          :browser,
+          route_category,
+          protocol,
+          :accepted,
+          duration_ms
+        )
+
+        {:reply, :ok, socket}
+
+      :error ->
+        Diagnostics.emit_ice_route(
+          socket.assigns.ice_mode,
+          :browser,
+          :unknown,
+          :unknown,
+          :rejected,
+          0,
+          error_code: :invalid_request
+        )
+
+        {:reply, {:error, %{reason: "invalid_request"}}, socket}
     end
   end
 
@@ -310,15 +335,18 @@ defmodule DiscordCloneWeb.VoiceChannel do
   defp join_voice_channel(voice_channel_id, socket) do
     signaling_session_id = new_signaling_session_id()
 
-    case Voice.join(
+    case Voice.join_with_ice_configuration(
+           socket.assigns.current_scope,
            voice_channel_id,
-           socket.assigns.current_scope.user.id,
            signaling_session_id,
            self()
          ) do
-      {:ok, join_result} ->
-        case join_payload(join_result, signaling_session_id) do
-          {:ok, %{voice_session_id: voice_session_id} = payload} ->
+      {:ok, join_result, browser_ice_projection} ->
+        browser_ice_projection =
+          maybe_invalidate_browser_projection(browser_ice_projection, socket)
+
+        case join_payload(join_result, signaling_session_id, browser_ice_projection) do
+          {:ok, voice_session_id, payload} ->
             finalize_voice_admission(
               voice_channel_id,
               voice_session_id,
@@ -339,21 +367,22 @@ defmodule DiscordCloneWeb.VoiceChannel do
 
   defp join_payload(
          %{voice_session_id: voice_session_id, occupancy: occupancy, capacity: capacity},
-         signaling_session_id
+         signaling_session_id,
+         browser_ice_projection
        )
        when is_binary(voice_session_id) and is_binary(signaling_session_id) and
               is_integer(occupancy) and occupancy >= 0 and is_integer(capacity) and capacity > 0 and
-              occupancy <= capacity do
-    {:ok,
+              occupancy <= capacity and is_map(browser_ice_projection) do
+    {:ok, voice_session_id,
      %{
        signaling_session_id: signaling_session_id,
-       voice_session_id: voice_session_id,
        occupancy: occupancy,
-       capacity: capacity
+       capacity: capacity,
+       ice_config: browser_ice_projection
      }}
   end
 
-  defp join_payload(_join_result, _signaling_session_id), do: :error
+  defp join_payload(_join_result, _signaling_session_id, _browser_ice_projection), do: :error
 
   defp rollback_voice_join(voice_channel_id, %{voice_session_id: voice_session_id})
        when is_binary(voice_session_id) do
@@ -380,13 +409,14 @@ defmodule DiscordCloneWeb.VoiceChannel do
             Workspaces.workspace_mute_active?(voice_channel.workspace_id, current_scope.user.id)
           )
 
-        with {:ok, %{members: members}} <- Voice.voice_channel_roster(voice_channel_id),
-             :ok <- Voice.subscribe_to_voice_channel_roster(voice_channel_id) do
+        with {:ok, %{members: members}} <- admission_roster(voice_channel_id, socket),
+             :ok <- subscribe_to_admission_roster(voice_channel_id, socket) do
           {:ok, payload,
            socket
            |> assign(:voice_channel_id, voice_channel_id)
            |> assign(:signaling_session_id, signaling_session_id)
            |> assign(:voice_session_id, voice_session_id)
+           |> assign(:ice_mode, ice_mode(payload.ice_config.ice_mode))
            |> assign(:negotiation_id, nil)
            |> assign(:voice_roster_member_ids, MapSet.new(members, & &1.user_id))}
         else
@@ -414,6 +444,64 @@ defmodule DiscordCloneWeb.VoiceChannel do
     do: {:error, %{reason: "recovery_timeout"}}
 
   defp normalize_join_error(_reason), do: {:error, %{reason: "unavailable"}}
+
+  defp browser_ice_route(
+         %{
+           "signaling_session_id" => signaling_session_id,
+           "route_category" => route_category,
+           "protocol" => protocol,
+           "duration_ms" => duration_ms
+         } = params,
+         socket
+       )
+       when map_size(params) == 4 and is_binary(signaling_session_id) and
+              route_category in ["host_direct", "reflexive_direct", "turn_relay", "unknown"] and
+              protocol in ["udp", "tcp", "tls", "unknown"] and is_integer(duration_ms) and
+              duration_ms >= 0 and duration_ms <= 60_000 do
+    if signaling_session_id == socket.assigns.signaling_session_id do
+      {:ok, route_category(route_category), protocol(protocol), duration_ms}
+    else
+      :error
+    end
+  end
+
+  defp browser_ice_route(_params, _socket), do: :error
+
+  defp ice_mode("disabled"), do: :disabled
+  defp ice_mode("standard"), do: :standard
+  defp ice_mode("turn_only"), do: :turn_only
+
+  defp route_category("host_direct"), do: :host_direct
+  defp route_category("reflexive_direct"), do: :reflexive_direct
+  defp route_category("turn_relay"), do: :turn_relay
+  defp route_category("unknown"), do: :unknown
+
+  defp protocol("udp"), do: :udp
+  defp protocol("tcp"), do: :tcp
+  defp protocol("tls"), do: :tls
+  defp protocol("unknown"), do: :unknown
+
+  defp maybe_invalidate_browser_projection(browser_ice_projection, socket) do
+    if admission_failure_stage?(socket, :join_payload),
+      do: :invalid,
+      else: browser_ice_projection
+  end
+
+  defp admission_roster(voice_channel_id, socket) do
+    if admission_failure_stage?(socket, :roster_lookup),
+      do: {:error, :unavailable},
+      else: Voice.voice_channel_roster(voice_channel_id)
+  end
+
+  defp subscribe_to_admission_roster(voice_channel_id, socket) do
+    if admission_failure_stage?(socket, :roster_subscription),
+      do: {:error, :unavailable},
+      else: Voice.subscribe_to_voice_channel_roster(voice_channel_id)
+  end
+
+  defp admission_failure_stage?(socket, stage) do
+    @test_environment and socket.assigns[:voice_admission_failure] == stage
+  end
 
   defp normalize_error_code(error_code) when is_binary(error_code), do: error_code
   defp normalize_error_code(error_code) when is_atom(error_code), do: Atom.to_string(error_code)

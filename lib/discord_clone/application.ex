@@ -5,8 +5,19 @@ defmodule DiscordClone.Application do
 
   use Application
 
+  alias DiscordClone.Voice.ICEConfigurationResolver
+
   @impl true
   def start(_type, _args) do
+    with :ok <- ICEConfigurationResolver.validate_static_configuration() do
+      start_supervisor()
+    else
+      {:error, :invalid_configuration} ->
+        {:error, {:invalid_voice_ice_configuration, :invalid_configuration}}
+    end
+  end
+
+  defp start_supervisor do
     children = [
       DiscordCloneWeb.Telemetry,
       DiscordClone.Repo,

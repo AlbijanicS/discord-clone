@@ -1,7 +1,7 @@
 defmodule DiscordClone.Voice.PeerConnectionTest do
   use ExUnit.Case, async: false
 
-  alias DiscordClone.Voice.PeerConnection
+  alias DiscordClone.Voice.{PeerConnection, ServerICEProjection}
   alias DiscordCloneWeb.VoiceSignaling.RealMessage
   import DiscordCloneWeb.VoiceSignalingHelpers
 
@@ -40,9 +40,99 @@ defmodule DiscordClone.Voice.PeerConnectionTest do
     running_before = MapSet.new(ExWebRTC.PeerConnection.get_all_running())
 
     assert {:error, :peer_connection_unavailable} =
-             PeerConnection.start(audio_codecs: [:invalid])
+             PeerConnection.start(ServerICEProjection.disabled(), audio_codecs: [:invalid])
 
     assert MapSet.new(ExWebRTC.PeerConnection.get_all_running()) == running_before
+  end
+
+  test "exposes ExWebRTC statistics through the public application wrapper" do
+    peer_connection = start_supervised_peer_connection()
+
+    assert {:ok, stats} = PeerConnection.get_stats(peer_connection)
+    assert is_map(stats)
+  end
+
+  test "classifies only one complete valid nominated succeeded ICE pair" do
+    stats = %{
+      "selected" => %{
+        type: :candidate_pair,
+        valid: true,
+        nominated: true,
+        state: :succeeded,
+        local_candidate_id: "local-forbidden-id",
+        remote_candidate_id: "remote-forbidden-id"
+      },
+      "local-forbidden-id" => %{
+        type: :local_candidate,
+        candidate_type: :host,
+        protocol: :udp,
+        address: "192.0.2.10",
+        port: 50_000
+      },
+      "remote-forbidden-id" => %{
+        type: :remote_candidate,
+        candidate_type: :relay,
+        protocol: :udp,
+        address: "198.51.100.20",
+        port: 34_789
+      }
+    }
+
+    peer_connection = start_supervised_peer_connection(test_stats_reader: fn _pid -> stats end)
+
+    assert %{route_category: :turn_relay, protocol: :udp, outcome: :accepted} =
+             PeerConnection.selected_ice_route(peer_connection)
+  end
+
+  test "classifies all safe server categories and rejects ambiguous or incomplete evidence" do
+    peer_connection =
+      start_supervised_peer_connection(test_stats_reader: fn _pid -> Process.get(:ice_stats) end)
+
+    for {local_type, remote_type, expected} <- [
+          {:host, :host, :host_direct},
+          {:host, :srflx, :reflexive_direct},
+          {:prflx, :relay, :turn_relay}
+        ] do
+      Process.put(:ice_stats, server_ice_stats(local_type, remote_type))
+
+      assert %{route_category: ^expected, protocol: :udp, outcome: :accepted} =
+               PeerConnection.selected_ice_route(peer_connection)
+    end
+
+    for stats <- [
+          %{},
+          Map.delete(server_ice_stats(:host, :host), "remote"),
+          server_ice_stats(:host, :unsupported),
+          Map.put(
+            server_ice_stats(:host, :host),
+            "second",
+            Map.put(server_ice_stats(:host, :host)["selected"], :id, "second")
+          )
+        ] do
+      Process.put(:ice_stats, stats)
+
+      assert %{route_category: :unknown, protocol: protocol, outcome: :accepted} =
+               PeerConnection.selected_ice_route(peer_connection)
+
+      assert protocol in [:udp, :unknown]
+    end
+  end
+
+  test "reduces stats failure to bounded unknown evidence" do
+    peer_connection =
+      start_supervised_peer_connection(
+        test_stats_reader: fn _pid -> raise "forbidden raw exception and credential" end
+      )
+
+    assert %{
+             route_category: :unknown,
+             protocol: :unknown,
+             outcome: :failed,
+             error_code: :stats_unavailable,
+             duration_ms: duration_ms
+           } = PeerConnection.selected_ice_route(peer_connection)
+
+    assert duration_ms in 0..60_000
   end
 
   test "returns accepted source media without echoing and sends through its destination track" do
@@ -274,7 +364,7 @@ defmodule DiscordClone.Voice.PeerConnectionTest do
     assert :ok = PeerConnection.stop(peer_connection)
   end
 
-  defp start_supervised_peer_connection do
+  defp start_supervised_peer_connection(options \\ []) do
     peer_connection =
       start_supervised!(%{
         id: make_ref(),
@@ -282,6 +372,41 @@ defmodule DiscordClone.Voice.PeerConnectionTest do
           {ExWebRTC.PeerConnection, :start_link, [[ice_servers: [], controlling_process: self()]]}
       })
 
-    %PeerConnection{peer_connection: peer_connection}
+    %PeerConnection{
+      peer_connection: peer_connection,
+      test_stats_reader: Keyword.get(options, :test_stats_reader)
+    }
+  end
+
+  defp server_ice_stats(local_type, remote_type) do
+    %{
+      "selected" => %{
+        id: "selected",
+        type: :candidate_pair,
+        valid: true,
+        nominated: true,
+        state: :succeeded,
+        local_candidate_id: "local",
+        remote_candidate_id: "remote"
+      },
+      "local" => %{
+        id: "local",
+        type: :local_candidate,
+        candidate_type: local_type,
+        protocol: :udp,
+        address: "forbidden-local-address",
+        port: 50_000,
+        foundation: "forbidden-foundation"
+      },
+      "remote" => %{
+        id: "remote",
+        type: :remote_candidate,
+        candidate_type: remote_type,
+        protocol: :udp,
+        address: "forbidden-remote-address",
+        port: 34_789,
+        related_address: "forbidden-related-address"
+      }
+    }
   end
 end

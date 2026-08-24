@@ -18,6 +18,13 @@ defmodule DiscordCloneWeb.Router do
   end
 
   scope "/", DiscordCloneWeb do
+    pipe_through :api
+
+    get "/healthz", HealthController, :health
+    get "/readyz", HealthController, :ready
+  end
+
+  scope "/", DiscordCloneWeb do
     pipe_through :browser
 
     get "/", PageController, :home
