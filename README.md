@@ -40,7 +40,7 @@ Build on the ARM64 VM after syncing the source:
 
 ```sh
 cd /tmp/discord_clone_build
-mix deps.get --only prod
+MIX_ENV=prod mix deps.get --only prod
 MIX_ENV=prod mix assets.deploy
 MIX_ENV=prod mix release
 sudo rsync -a --delete _build/prod/rel/discord_clone/ /opt/discord_clone/
