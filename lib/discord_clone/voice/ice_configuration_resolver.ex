@@ -234,7 +234,7 @@ defmodule DiscordClone.Voice.ICEConfigurationResolver do
          authorization,
          media_configuration
        ) do
-    udp_turn_urls = Enum.filter(authorization.urls, &server_turn_url?/1)
+    udp_turn_urls = preferred_server_turn_urls(authorization.urls)
 
     if udp_turn_urls == [] do
       {:error, :invalid_provider_response}
@@ -309,6 +309,22 @@ defmodule DiscordClone.Voice.ICEConfigurationResolver do
     case parse_ice_url(url) do
       {:ok, %{scheme: :turn, transport: transport}} when transport in [nil, :udp] -> true
       _unsupported_url -> false
+    end
+  end
+
+  defp preferred_server_turn_urls(urls) do
+    udp_urls = Enum.filter(urls, &server_turn_url?/1)
+
+    case Enum.find(udp_urls, &default_turn_port?/1) || List.first(udp_urls) do
+      nil -> []
+      url -> [url]
+    end
+  end
+
+  defp default_turn_port?(url) do
+    case parse_ice_url(url) do
+      {:ok, %{port: 3478}} -> true
+      _other_port -> false
     end
   end
 

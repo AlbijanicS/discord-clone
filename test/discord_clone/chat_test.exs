@@ -1108,6 +1108,17 @@ defmodule DiscordClone.ChatTest do
       refute_receive {:message_created, _message}
     end
 
+    test "persists messages longer than the database string default" do
+      scope = user_scope_fixture()
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+      content = String.duplicate("long message ", 99) <> "long message"
+
+      assert {:ok, message} =
+               Chat.send_message(scope, workspace.default_channel_id, %{"content" => content})
+
+      assert message.content == content
+    end
+
     test "does not broadcast successful sends back to the sender process" do
       scope = user_scope_fixture()
       {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})

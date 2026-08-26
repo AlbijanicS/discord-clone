@@ -172,6 +172,7 @@ defmodule DiscordClone.Voice.ICEConfigurationResolverTest do
       {:ok,
        %{
          urls: [
+           "turn:turn.example.test:53?transport=udp",
            "turn:turn.example.test:3478?transport=udp",
            "turn:turn.example.test:3478?transport=tcp",
            "turns:turn.example.test:5349?transport=tcp"
@@ -200,6 +201,7 @@ defmodule DiscordClone.Voice.ICEConfigurationResolverTest do
                %{urls: ["stun:stun.example.test:3478"]},
                %{
                  urls: [
+                   "turn:turn.example.test:53?transport=udp",
                    "turn:turn.example.test:3478?transport=udp",
                    "turn:turn.example.test:3478?transport=tcp",
                    "turns:turn.example.test:5349?transport=tcp"

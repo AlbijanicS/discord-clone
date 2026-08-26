@@ -70,7 +70,7 @@ VOICE_ICE_MODE=standard
 VOICE_STUN_URLS=stun:stun.cloudflare.com:3478
 VOICE_INTERNAL_IPV4=<EC2 private IPv4>
 VOICE_EXTERNAL_IPV4=<Elastic IPv4>
-VOICE_TURN_CREDENTIAL_TTL_SECONDS=86400
+VOICE_TURN_CREDENTIAL_TTL_SECONDS=3600
 CLOUDFLARE_TURN_KEY_ID=<Cloudflare TURN key ID>
 CLOUDFLARE_TURN_API_TOKEN=<Cloudflare TURN key API token>
 PHX_SERVER=true
@@ -126,6 +126,44 @@ different networks. For the relay proof, temporarily set `VOICE_ICE_MODE` to
 `turn_only`, restart the service, test two-way audio, then restore `standard`.
 Record the result using the acceptance matrix in
 [`docs/phase_12_aws_private_alpha_deployment_contract.md`](docs/phase_12_aws_private_alpha_deployment_contract.md).
+
+The one-hour TURN credential lifetime limits how long a credential remains
+useful if a client or diagnostic captures it. Keep the Cloudflare TURN key only
+in `/etc/discord-clone.env`, and replace the key after any suspected exposure.
+
+### Pause or remove the private alpha
+
+For a reversible pause, stop the public services before stopping the EC2
+instance:
+
+```sh
+sudo systemctl disable --now discord-clone caddy
+sudo systemctl --no-pager --full status discord-clone caddy
+```
+
+Then choose **Instance state > Stop instance** in the EC2 console. A stopped
+instance does not serve traffic or incur EC2 instance-usage charges, but its EBS
+volumes and allocated public IPv4 address can still incur charges. Delete the
+Cloudflare TURN key in **Realtime > TURN** as well; stopping Phoenix prevents new
+credential generation, while deleting the key removes the long-lived authority
+used to issue credentials. Existing short-lived credentials expire within the
+configured one-hour TTL.
+
+To resume a stopped instance, start it in EC2, create a new Cloudflare TURN key,
+replace `CLOUDFLARE_TURN_KEY_ID` and `CLOUDFLARE_TURN_API_TOKEN` in
+`/etc/discord-clone.env`, and run:
+
+```sh
+sudo systemctl enable --now caddy discord-clone
+sudo systemctl --no-pager --full status caddy discord-clone
+```
+
+For the lowest ongoing AWS cost, first export and download a PostgreSQL backup,
+then terminate the EC2 instance, verify that every unneeded EBS volume was
+deleted, and release the Elastic IP address. Termination and volume deletion are
+irreversible; a retained EBS volume or snapshot continues to incur storage
+charges. A replacement VM also requires restoring the database and updating DNS
+if its public address changes.
 
 Ready to run in production? Please [check our deployment guides](https://hexdocs.pm/phoenix/deployment.html).
 
