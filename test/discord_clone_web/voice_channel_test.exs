@@ -1081,7 +1081,7 @@ defmodule DiscordCloneWeb.VoiceChannelTest do
     test "turn-only admission returns only temporary TURN authorization with relay policy" do
       put_voice_ice_configuration(
         mode: :turn_only,
-        stun_urls: ["stun:127.0.0.1:9"],
+        stun_urls: [],
         provider: FakeICEProvider,
         provider_secret: "durable-provider-secret",
         provider_options: [

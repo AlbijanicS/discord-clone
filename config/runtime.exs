@@ -24,6 +24,29 @@ config :discord_clone, DiscordCloneWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
 if config_env() == :prod do
+  required_env = fn name ->
+    case System.get_env(name) do
+      value when is_binary(value) ->
+        value = String.trim(value)
+        if value == "", do: raise("#{name} must not be blank"), else: value
+
+      _missing ->
+        raise "environment variable #{name} is missing"
+    end
+  end
+
+  bounded_integer_env = fn name, minimum, maximum ->
+    value = required_env.(name)
+
+    case Integer.parse(value) do
+      {integer, ""} when integer >= minimum and integer <= maximum ->
+        integer
+
+      _invalid ->
+        raise "#{name} must be between #{minimum} and #{maximum} seconds"
+    end
+  end
+
   voice_ice_mode =
     case System.get_env("VOICE_ICE_MODE") do
       "standard" -> :standard
@@ -31,14 +54,41 @@ if config_env() == :prod do
       _missing_or_invalid -> raise "VOICE_ICE_MODE must be standard or turn_only in production"
     end
 
-  config :discord_clone, DiscordClone.Voice.ICEConfigurationResolver, mode: voice_ice_mode
+  voice_stun_urls =
+    case voice_ice_mode do
+      :standard ->
+        "VOICE_STUN_URLS"
+        |> required_env.()
+        |> String.split(",", trim: true)
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
 
-  database_url =
-    System.get_env("DATABASE_URL") ||
-      raise """
-      environment variable DATABASE_URL is missing.
-      For example: ecto://USER:PASS@HOST/DATABASE
-      """
+      :turn_only ->
+        []
+    end
+
+  voice_ice_configuration = [
+    mode: voice_ice_mode,
+    stun_urls: voice_stun_urls,
+    provider: DiscordClone.Voice.ICEProviders.Cloudflare,
+    provider_options: [
+      key_id: required_env.("CLOUDFLARE_TURN_KEY_ID"),
+      ttl_seconds: bounded_integer_env.("VOICE_TURN_CREDENTIAL_TTL_SECONDS", 120, 172_800)
+    ],
+    provider_secret: required_env.("CLOUDFLARE_TURN_API_TOKEN"),
+    provider_timeout_ms: 3_000,
+    minimum_credential_lifetime_seconds: 60,
+    internal_ipv4: required_env.("VOICE_INTERNAL_IPV4"),
+    external_ipv4: required_env.("VOICE_EXTERNAL_IPV4"),
+    udp_port_range: 50_000..50_031,
+    max_active_sessions: 20
+  ]
+
+  config :discord_clone,
+         DiscordClone.Voice.ICEConfigurationResolver,
+         voice_ice_configuration
+
+  database_url = required_env.("DATABASE_URL")
 
   maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
 
@@ -55,14 +105,9 @@ if config_env() == :prod do
   # want to use a different value for prod and you most likely don't want
   # to check this value into version control, so we use an environment
   # variable instead.
-  secret_key_base =
-    System.get_env("SECRET_KEY_BASE") ||
-      raise """
-      environment variable SECRET_KEY_BASE is missing.
-      You can generate one by calling: mix phx.gen.secret
-      """
+  secret_key_base = required_env.("SECRET_KEY_BASE")
 
-  host = System.get_env("PHX_HOST") || "example.com"
+  host = required_env.("PHX_HOST")
 
   config :discord_clone, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 

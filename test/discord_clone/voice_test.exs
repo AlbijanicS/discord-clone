@@ -148,7 +148,7 @@ defmodule DiscordClone.VoiceTest do
 
       Application.put_env(:discord_clone, ICEConfigurationResolver,
         mode: :turn_only,
-        stun_urls: ["stun:stun.example.test:3478"],
+        stun_urls: [],
         provider: FakeICEProvider,
         provider_secret: "durable-provider-secret",
         internal_ipv4: "10.20.0.4",

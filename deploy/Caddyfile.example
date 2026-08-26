@@ -1,0 +1,5 @@
+# Replace this placeholder with the same hostname used for PHX_HOST.
+alpha.example.com {
+  encode zstd gzip
+  reverse_proxy 127.0.0.1:4000
+}

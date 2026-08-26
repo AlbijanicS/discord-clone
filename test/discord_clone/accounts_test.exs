@@ -130,6 +130,25 @@ defmodule DiscordClone.AccountsTest do
     end
   end
 
+  describe "provision_user/1" do
+    test "creates a confirmed account that can authenticate with its password" do
+      email = unique_user_email()
+      password = valid_user_password()
+
+      assert {:ok, %User{} = user} =
+               Accounts.provision_user(%{
+                 email: email,
+                 username: unique_user_username(),
+                 password: password
+               })
+
+      assert user.confirmed_at
+      assert user.hashed_password
+      user_id = user.id
+      assert %User{id: ^user_id} = Accounts.get_user_by_email_and_password(email, password)
+    end
+  end
+
   describe "sudo_mode?/2" do
     test "validates the authenticated_at time" do
       now = DateTime.utc_now()

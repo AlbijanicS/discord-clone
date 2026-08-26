@@ -123,7 +123,8 @@ defmodule DiscordClone.Voice.ICEConfigurationResolverTest do
            "temporary-user",
            "temporary-credential",
            future_expiry()
-         )}
+         )},
+        stun_urls: if(mode == :turn_only, do: [], else: ["stun:stun.example.test:3478"])
       )
 
       assert :ok = ICEConfigurationResolver.validate_static_configuration()
@@ -435,7 +436,7 @@ defmodule DiscordClone.Voice.ICEConfigurationResolverTest do
       Keyword.merge(
         [
           mode: mode,
-          stun_urls: ["stun:stun.example.test:3478"],
+          stun_urls: if(mode == :turn_only, do: [], else: ["stun:stun.example.test:3478"]),
           provider: FakeICEProvider,
           provider_secret: "durable-provider-secret",
           provider_options: [observer: self(), results: result_or_results],

@@ -100,6 +100,7 @@ defmodule DiscordClone.MixProject do
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
       "assets.build": ["compile", "tailwind discord_clone", "esbuild discord_clone"],
       "assets.deploy": [
+        "compile",
         "tailwind discord_clone --minify",
         "esbuild discord_clone --minify",
         "phx.digest"

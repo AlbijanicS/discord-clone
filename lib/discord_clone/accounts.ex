@@ -86,6 +86,21 @@ defmodule DiscordClone.Accounts do
   end
 
   @doc """
+  Provisions a confirmed password account through an operator-only release command.
+
+  This intentionally bypasses email confirmation and must not be exposed as a
+  public web endpoint.
+  """
+  @spec provision_user(map()) :: {:ok, User.t()} | {:error, Ecto.Changeset.t()}
+  def provision_user(attrs) do
+    %User{}
+    |> User.registration_changeset(attrs)
+    |> User.password_changeset(attrs)
+    |> User.confirm_changeset()
+    |> Repo.insert()
+  end
+
+  @doc """
   Returns an `%Ecto.Changeset{}` for registering a user.
   """
   def change_user_registration(user, attrs \\ %{}, opts \\ []) do

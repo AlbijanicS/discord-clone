@@ -1,0 +1,23 @@
+[Unit]
+Description=DiscordClone Phoenix release
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=discord-clone
+Group=discord-clone
+WorkingDirectory=/opt/discord_clone
+EnvironmentFile=/etc/discord-clone.env
+Environment=RELEASE_DISTRIBUTION=none
+ExecStart=/opt/discord_clone/bin/server
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+SyslogIdentifier=discord-clone
+
+[Install]
+WantedBy=multi-user.target

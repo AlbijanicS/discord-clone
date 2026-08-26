@@ -129,7 +129,7 @@ full SDP credentials or TURN credentials.
 | 9. Capped 3-5 user room | Complete | 2026-08-10 | Four preallocated receive lanes, stable first-free routing slots, and the complete five-Session matrix are automated; the separate five-browser manual pass remains follow-up work. |
 | 10. Voice controls and UI polish | Not started |  |  |
 | 11. Disconnects, cleanup, and recovery | Not started |  |  |
-| 12. STUN/TURN and real-network deployment | Not started |  |  |
+| 12. STUN/TURN and real-network deployment | Implementation complete; hosted acceptance pending | 2026-08-26 | Cloudflare TURN adapter, fail-closed runtime configuration, AWS/Caddy/systemd release contract, private account provisioning, and TURN-only diagnostics are implemented. The real-network acceptance matrix remains to be run on the EC2 host. |
 | 13. Automated testing layers | Not started |  |  |
 | 14. Observability and performance limits | Not started |  |  |
 | 15. Final docs and demonstration | Not started |  |  |
@@ -1049,7 +1049,27 @@ Prove:
 Implementation Notes:
 
 ```text
-Not started.
+Local implementation completed on 2026-08-26.
+
+- Production startup now requires an explicit standard or TURN-only ICE mode,
+  Cloudflare TURN credentials, the EC2 private IPv4, Elastic IPv4, and the
+  bounded ExWebRTC UDP range. Configuration is validated without contacting
+  Cloudflare so a temporary provider outage does not prevent application boot.
+- The Cloudflare adapter requests short-lived ICE credentials and returns one
+  provider-neutral authorization used by both browser and ExWebRTC projections.
+  Durable and temporary credentials are excluded from logs.
+- Standard mode combines configured STUN with TURN. TURN-only mode deliberately
+  accepts no STUN URLs and projects relay-only browser/server policy.
+- Public registration and magic-link login are disabled for the private alpha;
+  confirmed password users are provisioned through the release command.
+- Caddy, systemd, release overlays, health/readiness checks, security-group
+  boundaries, acceptance evidence, and teardown are defined in
+  docs/phase_12_aws_private_alpha_deployment_contract.md. That AWS contract is
+  authoritative for Phase 12 operations; earlier GCP documents are historical
+  design research only.
+- Hosted proof is still required: run the contract's two-network standard-mode
+  test and forced TURN-only test, retain only privacy-safe evidence, then return
+  the host to standard mode.
 ```
 
 ## Phase 13: Automated Testing Layers

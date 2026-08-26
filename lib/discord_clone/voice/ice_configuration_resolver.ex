@@ -133,7 +133,8 @@ defmodule DiscordClone.Voice.ICEConfigurationResolver do
   defp validate_hosted_configuration(options) do
     with true <- Keyword.keyword?(options),
          true <- Enum.all?(Keyword.keys(options), &(&1 in @hosted_configuration_keys)),
-         {:ok, _stun_urls} <- validate_stun_urls(Keyword.get(options, :stun_urls)),
+         {:ok, _stun_urls} <-
+           validate_stun_urls(Keyword.get(options, :mode), Keyword.get(options, :stun_urls)),
          {:ok, _provider, _provider_options} <- provider_config(options),
          true <- non_blank_string?(Keyword.get(options, :provider_secret)),
          true <- valid_provider_timeout?(Keyword.get(options, :provider_timeout_ms)),
@@ -146,13 +147,14 @@ defmodule DiscordClone.Voice.ICEConfigurationResolver do
     end
   end
 
-  defp validate_stun_urls(urls) when is_list(urls) and urls != [] do
+  defp validate_stun_urls(:standard, urls) when is_list(urls) and urls != [] do
     if Enum.all?(urls, &stun_url?/1),
       do: {:ok, urls},
       else: {:error, :invalid_configuration}
   end
 
-  defp validate_stun_urls(_urls), do: {:error, :invalid_configuration}
+  defp validate_stun_urls(:turn_only, []), do: {:ok, []}
+  defp validate_stun_urls(_mode, _urls), do: {:error, :invalid_configuration}
 
   defp provider_config(options) do
     provider = Keyword.get(options, :provider)

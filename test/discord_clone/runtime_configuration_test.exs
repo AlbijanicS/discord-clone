@@ -2,11 +2,17 @@ defmodule DiscordClone.RuntimeConfigurationTest do
   use ExUnit.Case, async: false
 
   @runtime_environment %{
+    "CLOUDFLARE_TURN_API_TOKEN" => "durable-provider-secret",
+    "CLOUDFLARE_TURN_KEY_ID" => "turn-key-id",
     "DATABASE_URL" => "ecto://placeholder:placeholder@localhost/placeholder",
     "PHX_HOST" => "alpha.example.test",
     "PORT" => "4100",
     "SECRET_KEY_BASE" => String.duplicate("placeholder", 8),
-    "VOICE_ICE_MODE" => "standard"
+    "VOICE_EXTERNAL_IPV4" => "34.118.200.24",
+    "VOICE_ICE_MODE" => "standard",
+    "VOICE_INTERNAL_IPV4" => "10.20.0.4",
+    "VOICE_STUN_URLS" => "stun:stun.cloudflare.com:3478",
+    "VOICE_TURN_CREDENTIAL_TTL_SECONDS" => "3600"
   }
 
   setup do
@@ -31,8 +37,58 @@ defmodule DiscordClone.RuntimeConfigurationTest do
     assert endpoint_config[:http][:port] == 4100
     assert endpoint_config[:url] == [host: "alpha.example.test", port: 443, scheme: "https"]
 
-    assert runtime_config[:discord_clone][DiscordClone.Voice.ICEConfigurationResolver] ==
-             [mode: :standard]
+    assert runtime_config[:discord_clone][DiscordClone.Voice.ICEConfigurationResolver] == [
+             mode: :standard,
+             stun_urls: ["stun:stun.cloudflare.com:3478"],
+             provider: DiscordClone.Voice.ICEProviders.Cloudflare,
+             provider_options: [key_id: "turn-key-id", ttl_seconds: 3_600],
+             provider_secret: "durable-provider-secret",
+             provider_timeout_ms: 3_000,
+             minimum_credential_lifetime_seconds: 60,
+             internal_ipv4: "10.20.0.4",
+             external_ipv4: "34.118.200.24",
+             udp_port_range: 50_000..50_031,
+             max_active_sessions: 20
+           ]
+  end
+
+  test "production Voice configuration passes the startup validator" do
+    runtime_config = Config.Reader.read!("config/runtime.exs", env: :prod)
+    voice_config = runtime_config[:discord_clone][DiscordClone.Voice.ICEConfigurationResolver]
+
+    previous_config =
+      Application.get_env(:discord_clone, DiscordClone.Voice.ICEConfigurationResolver)
+
+    Application.put_env(
+      :discord_clone,
+      DiscordClone.Voice.ICEConfigurationResolver,
+      voice_config
+    )
+
+    on_exit(fn ->
+      if previous_config do
+        Application.put_env(
+          :discord_clone,
+          DiscordClone.Voice.ICEConfigurationResolver,
+          previous_config
+        )
+      else
+        Application.delete_env(:discord_clone, DiscordClone.Voice.ICEConfigurationResolver)
+      end
+    end)
+
+    assert :ok = DiscordClone.Voice.ICEConfigurationResolver.validate_static_configuration()
+  end
+
+  test "TURN-only production mode does not require or expose STUN servers" do
+    System.put_env("VOICE_ICE_MODE", "turn_only")
+    System.delete_env("VOICE_STUN_URLS")
+
+    runtime_config = Config.Reader.read!("config/runtime.exs", env: :prod)
+    voice_config = runtime_config[:discord_clone][DiscordClone.Voice.ICEConfigurationResolver]
+
+    assert voice_config[:mode] == :turn_only
+    assert voice_config[:stun_urls] == []
   end
 
   test "production rejects a missing explicit hosted ICE mode" do
@@ -41,6 +97,36 @@ defmodule DiscordClone.RuntimeConfigurationTest do
     assert_raise RuntimeError, ~r/VOICE_ICE_MODE must be standard or turn_only/, fn ->
       Config.Reader.read!("config/runtime.exs", env: :prod)
     end
+  end
+
+  test "production rejects TURN credential lifetimes without setup headroom" do
+    System.put_env("VOICE_TURN_CREDENTIAL_TTL_SECONDS", "119")
+
+    assert_raise RuntimeError,
+                 ~r/VOICE_TURN_CREDENTIAL_TTL_SECONDS must be between 120 and 172800 seconds/,
+                 fn ->
+                   Config.Reader.read!("config/runtime.exs", env: :prod)
+                 end
+  end
+
+  test "production rejects TURN credential lifetimes above Cloudflare's maximum" do
+    System.put_env("VOICE_TURN_CREDENTIAL_TTL_SECONDS", "172801")
+
+    assert_raise RuntimeError,
+                 ~r/VOICE_TURN_CREDENTIAL_TTL_SECONDS must be between 120 and 172800 seconds/,
+                 fn ->
+                   Config.Reader.read!("config/runtime.exs", env: :prod)
+                 end
+  end
+
+  test "production rejects a missing Cloudflare secret before startup" do
+    System.delete_env("CLOUDFLARE_TURN_API_TOKEN")
+
+    assert_raise RuntimeError,
+                 ~r/environment variable CLOUDFLARE_TURN_API_TOKEN is missing/,
+                 fn ->
+                   Config.Reader.read!("config/runtime.exs", env: :prod)
+                 end
   end
 
   test "non-production runtime does not replace the environment-specific listener binding" do
@@ -55,5 +141,6 @@ defmodule DiscordClone.RuntimeConfigurationTest do
     endpoint_config = production_config[:discord_clone][DiscordCloneWeb.Endpoint]
 
     assert endpoint_config[:force_ssl][:rewrite_on] == [:x_forwarded_proto]
+    assert production_config[:discord_clone][:secure_cookies]
   end
 end
