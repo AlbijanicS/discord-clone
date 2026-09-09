@@ -218,10 +218,101 @@ defmodule DiscordClone.AccountsTest do
       %{user: user_fixture()}
     end
 
+    test "failed delivery invalidates only the attempted token and leaves earlier links usable",
+         %{user: user} do
+      earlier_email = unique_user_email()
+
+      earlier_token =
+        extract_user_token(fn url ->
+          Accounts.deliver_user_update_email_instructions(
+            %{user | email: earlier_email},
+            user.email,
+            url
+          )
+        end)
+
+      session_token = Accounts.generate_user_session_token(user)
+      previous_config = Application.fetch_env!(:discord_clone, DiscordClone.Mailer)
+
+      Application.put_env(:discord_clone, DiscordClone.Mailer,
+        adapter: DiscordClone.FailingMailerAdapter,
+        test_pid: self()
+      )
+
+      on_exit(fn -> Application.put_env(:discord_clone, DiscordClone.Mailer, previous_config) end)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:error, :delivery_failed} =
+                   Accounts.deliver_user_update_email_instructions(
+                     %{user | email: unique_user_email()},
+                     user.email,
+                     &"[TOKEN]#{&1}[TOKEN]"
+                   )
+        end)
+
+      assert_receive {:failed_delivery, email, false}
+      [_, failed_token | _] = String.split(email.text_body, "[TOKEN]")
+      assert {:error, :transaction_aborted} = Accounts.update_user_email(user, failed_token)
+      assert Accounts.get_user_by_session_token(session_token)
+      assert {:ok, updated_user} = Accounts.update_user_email(user, earlier_token)
+      assert updated_user.email == earlier_email
+      assert log =~ "Email change delivery failed"
+      refute log =~ "sensitive-provider-response"
+      refute log =~ failed_token
+    end
+
+    test "delivery failure remains retryable if another account action already invalidated the token",
+         %{user: user} do
+      previous_config = Application.fetch_env!(:discord_clone, DiscordClone.Mailer)
+
+      Application.put_env(:discord_clone, DiscordClone.Mailer,
+        adapter: DiscordClone.FailingMailerAdapter,
+        test_pid: self()
+      )
+
+      on_exit(fn -> Application.put_env(:discord_clone, DiscordClone.Mailer, previous_config) end)
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, :delivery_failed} =
+                 Accounts.deliver_user_update_email_instructions(
+                   %{user | email: unique_user_email()},
+                   user.email,
+                   fn token ->
+                     # The URL is built after insertion; model another tab changing its password
+                     # before the delivery attempt reports its failure.
+                     assert {:ok, {_updated_user, _expired_tokens}} =
+                              Accounts.update_user_password(user, %{
+                                password: "a different valid password"
+                              })
+
+                     "[TOKEN]#{token}[TOKEN]"
+                   end
+                 )
+      end)
+
+      assert Accounts.get_user_by_email_and_password(user.email, "a different valid password")
+      assert_receive {:failed_delivery, email, false}
+      [_, token | _] = String.split(email.text_body, "[TOKEN]")
+      assert {:error, :transaction_aborted} = Accounts.update_user_email(user, token)
+    end
+
     test "sends token through notification", %{user: user} do
+      previous_sender = Application.fetch_env!(:discord_clone, :mail_from_address)
+      Application.put_env(:discord_clone, :mail_from_address, "accounts@verified.example.test")
+      on_exit(fn -> Application.put_env(:discord_clone, :mail_from_address, previous_sender) end)
+
       token =
         extract_user_token(fn url ->
-          Accounts.deliver_user_update_email_instructions(user, "current@example.com", url)
+          assert {:ok, email} =
+                   Accounts.deliver_user_update_email_instructions(
+                     user,
+                     "current@example.com",
+                     url
+                   )
+
+          assert email.from == {"DiscordClone", "accounts@verified.example.test"}
+          {:ok, email}
         end)
 
       {:ok, token} = Base.url_decode64(token, padding: false)

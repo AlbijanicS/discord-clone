@@ -7,6 +7,8 @@ defmodule DiscordClone.RuntimeConfigurationTest do
     "DATABASE_URL" => "ecto://placeholder:placeholder@localhost/placeholder",
     "PHX_HOST" => "alpha.example.test",
     "PORT" => "4100",
+    "RESEND_API_KEY" => "fake-resend-key",
+    "MAIL_FROM_ADDRESS" => "accounts@alpha.example.test",
     "SECRET_KEY_BASE" => String.duplicate("placeholder", 8),
     "VOICE_EXTERNAL_IPV4" => "34.118.200.24",
     "VOICE_ICE_MODE" => "standard",
@@ -27,6 +29,47 @@ defmodule DiscordClone.RuntimeConfigurationTest do
         {key, value} -> System.put_env(key, value)
       end)
     end)
+  end
+
+  test "production configures fixed Resend delivery through Req and an explicit sender" do
+    runtime_config = Config.Reader.read!("config/runtime.exs", env: :prod)
+    mailer = runtime_config[:discord_clone][DiscordClone.Mailer]
+    assert mailer[:adapter] == Swoosh.Adapters.Resend
+    assert mailer[:api_key] == "fake-resend-key"
+    assert runtime_config[:discord_clone][:mail_from_address] == "accounts@alpha.example.test"
+
+    assert Config.Reader.read!("config/prod.exs", env: :prod)[:swoosh][:api_client] ==
+             Swoosh.ApiClient.Req
+  end
+
+  test "production requires nonblank mail credentials and sender without exposing values" do
+    for name <- ["RESEND_API_KEY", "MAIL_FROM_ADDRESS"], value <- [nil, "", "  "] do
+      if value, do: System.put_env(name, value), else: System.delete_env(name)
+
+      error =
+        assert_raise RuntimeError, fn -> Config.Reader.read!("config/runtime.exs", env: :prod) end
+
+      assert error.message =~ name
+      refute error.message =~ "fake-resend-key"
+      System.put_env(name, Map.fetch!(@runtime_environment, name))
+    end
+  end
+
+  test "production rejects malformed and placeholder sender addresses" do
+    for sender <- [
+          "contact@example.com",
+          "not-an-address",
+          "Name <sender@example.test>",
+          "sender@example.test\nBcc: other@example.test"
+        ] do
+      System.put_env("MAIL_FROM_ADDRESS", sender)
+
+      assert_raise RuntimeError,
+                   "MAIL_FROM_ADDRESS must be a non-placeholder email address",
+                   fn ->
+                     Config.Reader.read!("config/runtime.exs", env: :prod)
+                   end
+    end
   end
 
   test "production runtime binds Phoenix to IPv4 loopback behind the public HTTPS endpoint" do
@@ -134,6 +177,8 @@ defmodule DiscordClone.RuntimeConfigurationTest do
     endpoint_config = runtime_config[:discord_clone][DiscordCloneWeb.Endpoint]
 
     assert endpoint_config[:http] == [port: 4100]
+    refute runtime_config[:discord_clone][DiscordClone.Mailer]
+    refute runtime_config[:discord_clone][:mail_from_address]
   end
 
   test "production keeps proxy-aware SSL rewriting" do

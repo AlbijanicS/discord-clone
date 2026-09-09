@@ -1,5 +1,5 @@
 defmodule DiscordCloneWeb.UserLive.SettingsTest do
-  use DiscordCloneWeb.ConnCase, async: true
+  use DiscordCloneWeb.ConnCase, async: false
 
   alias DiscordClone.Accounts
   import Phoenix.LiveViewTest
@@ -38,10 +38,124 @@ defmodule DiscordCloneWeb.UserLive.SettingsTest do
     end
   end
 
+  describe "settings event boundaries" do
+    test "expired sudo after opening settings rejects each update", %{conn: conn} do
+      user = set_password(user_fixture())
+      conn = log_in_user(conn, user)
+
+      for {event, attrs} <- [
+            {"update_username", %{"username" => "changed_name"}},
+            {"update_email", %{"email" => unique_user_email()}},
+            {"update_password", %{"password" => "a different valid password"}}
+          ] do
+        {:ok, lv, _html} = live(conn, ~p"/users/settings")
+
+        # Simulate elapsed authentication time without waiting twenty minutes.
+        :sys.replace_state(lv.pid, fn state ->
+          put_in(
+            state.socket.assigns.current_scope.user.authenticated_at,
+            DateTime.add(DateTime.utc_now(:second), -21, :minute)
+          )
+        end)
+
+        render_submit(lv, event, %{"user" => attrs})
+        assert_redirect(lv, ~p"/users/log-in")
+        assert Accounts.get_user!(user.id).username == user.username
+        assert Accounts.get_user!(user.id).email == user.email
+        assert Accounts.get_user_by_email_and_password(user.email, valid_user_password())
+        refute_receive {:email, %Swoosh.Email{subject: "Update email instructions"}}
+      end
+    end
+
+    test "malformed form payloads and unknown events leave settings usable", %{conn: conn} do
+      user = user_fixture()
+      {:ok, lv, _html} = conn |> log_in_user(user) |> live(~p"/users/settings")
+
+      for field <- ["username", "email", "password"],
+          prefix <- ["validate_", "update_"],
+          params <- [
+            %{},
+            %{"user" => nil},
+            %{"user" => []},
+            %{"user" => "bad"},
+            %{"user" => %{}},
+            %{"user" => %{field => %{}}},
+            %{"user" => %{field => []}},
+            %{"user" => %{field => 42}}
+          ] do
+        render_hook(lv, prefix <> field, params)
+        assert has_element?(lv, "#" <> field <> "_form")
+
+        assert has_element?(
+                 lv,
+                 "#flash-error",
+                 "Invalid settings request. Please check the form and try again."
+               )
+
+        refute has_element?(lv, "#password_form[phx-trigger-action]")
+      end
+
+      render_submit(lv, "unknown_settings_action", %{})
+      assert has_element?(lv, "#username_form")
+      assert Accounts.get_user!(user.id).username == user.username
+      assert Accounts.get_user!(user.id).email == user.email
+      refute_receive {:email, %Swoosh.Email{subject: "Update email instructions"}}
+    end
+  end
+
   describe "update email form" do
     setup %{conn: conn} do
       user = user_fixture()
       %{conn: log_in_user(conn, user), user: user}
+    end
+
+    test "reported delivery failure shows a retryable error and retry can succeed", %{
+      conn: conn,
+      user: user
+    } do
+      previous_config = Application.fetch_env!(:discord_clone, DiscordClone.Mailer)
+      on_exit(fn -> Application.put_env(:discord_clone, DiscordClone.Mailer, previous_config) end)
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+      new_email = unique_user_email()
+      email_form = form(lv, "#email_form", %{"user" => %{"email" => new_email}})
+
+      # A later failure must also clear success left over from an earlier request.
+      render_submit(email_form)
+      assert has_element?(lv, "#flash-info", "A link to confirm your email")
+
+      Application.put_env(:discord_clone, DiscordClone.Mailer,
+        adapter: DiscordClone.FailingMailerAdapter,
+        test_pid: self()
+      )
+
+      log = ExUnit.CaptureLog.capture_log(fn -> render_submit(email_form) end)
+
+      assert has_element?(
+               lv,
+               "#flash-error",
+               "Unable to send the confirmation email. Please try again."
+             )
+
+      refute has_element?(lv, "#flash-info")
+      assert has_element?(lv, "#email_form")
+      assert_receive {:failed_delivery, email, false}
+
+      failed_token =
+        email.text_body
+        |> String.split("/users/settings/confirm-email/")
+        |> List.last()
+        |> String.split()
+        |> hd()
+
+      assert {:error, :transaction_aborted} = Accounts.update_user_email(user, failed_token)
+      refute log =~ "sensitive-provider-response"
+      refute log =~ failed_token
+      assert Accounts.get_user!(user.id).email == user.email
+
+      Application.put_env(:discord_clone, DiscordClone.Mailer, previous_config)
+      render_submit(email_form)
+      assert has_element?(lv, "#flash-info", "A link to confirm your email")
+      refute has_element?(lv, "#flash-error")
     end
 
     test "updates the user email", %{conn: conn, user: user} do

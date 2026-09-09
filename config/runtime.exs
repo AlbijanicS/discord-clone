@@ -152,21 +152,16 @@ if config_env() == :prod do
   #
   # Check `Plug.SSL` for all available options in `force_ssl`.
 
-  # ## Configuring the mailer
-  #
-  # In production you need to configure the mailer to use a different adapter.
-  # Here is an example configuration for Mailgun:
-  #
-  #     config :discord_clone, DiscordClone.Mailer,
-  #       adapter: Swoosh.Adapters.Mailgun,
-  #       api_key: System.get_env("MAILGUN_API_KEY"),
-  #       domain: System.get_env("MAILGUN_DOMAIN")
-  #
-  # Most non-SMTP adapters require an API client. Swoosh supports Req, Hackney,
-  # and Finch out-of-the-box. This configuration is typically done at
-  # compile-time in your config/prod.exs:
-  #
-  #     config :swoosh, :api_client, Swoosh.ApiClient.Req
-  #
-  # See https://hexdocs.pm/swoosh/Swoosh.html#module-installation for details.
+  mail_from_address = required_env.("MAIL_FROM_ADDRESS")
+
+  unless Regex.match?(~r/^[^@,;<>\s]+@[^@,;<>\s]+$/, mail_from_address) and
+           String.downcase(mail_from_address) != "contact@example.com" do
+    raise "MAIL_FROM_ADDRESS must be a non-placeholder email address"
+  end
+
+  config :discord_clone, :mail_from_address, mail_from_address
+
+  config :discord_clone, DiscordClone.Mailer,
+    adapter: Swoosh.Adapters.Resend,
+    api_key: required_env.("RESEND_API_KEY")
 end

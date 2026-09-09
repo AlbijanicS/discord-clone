@@ -64,6 +64,8 @@ PHX_HOST=voiceechattest.duckdns.org
 PORT=4000
 DATABASE_URL=<production PostgreSQL URL>
 SECRET_KEY_BASE=<unique output from mix phx.gen.secret>
+RESEND_API_KEY=<Resend sending API key>
+MAIL_FROM_ADDRESS=<sender address at your verified Resend domain>
 POOL_SIZE=5
 RELEASE_DISTRIBUTION=none
 VOICE_ICE_MODE=standard
@@ -75,6 +77,35 @@ CLOUDFLARE_TURN_KEY_ID=<Cloudflare TURN key ID>
 CLOUDFLARE_TURN_API_TOKEN=<Cloudflare TURN key API token>
 PHX_SERVER=true
 ```
+
+Production startup now requires nonblank `RESEND_API_KEY` and
+`MAIL_FROM_ADDRESS`. Provision both before deploying this revision, including
+before running release migration commands. Production uses the fixed Swoosh
+Resend adapter through Req; it cannot fall back to the development mailbox.
+The sender must be a plain email address, not `Name <address>` or the old
+`contact@example.com` placeholder.
+
+Before deployment:
+
+1. Add a domain or subdomain you own in Resend and install the DNS records
+   displayed for SPF and DKIM. Wait for its status to become verified.
+   Follow [Resend domain verification](https://resend.com/docs/dashboard/domains/introduction).
+2. Create a key with **Sending access**, restricted to that domain, following
+   [Resend API key setup](https://resend.com/docs/dashboard/api-keys/introduction).
+   Save it as `RESEND_API_KEY` in the protected environment file above.
+3. Set `MAIL_FROM_ADDRESS` to the intended sender at that verified domain.
+   The sender domain can differ from the application's `PHX_HOST`.
+4. After the separately authorized deployment, use a provisioned account and
+   a recipient inbox you control to request an email change. Verify delivery
+   in Resend and the inbox, then follow the link and verify the account change.
+   Provider acceptance alone does not prove inbox delivery. Startup and
+   `/readyz` do not contact Resend or verify its key/domain; this hosted check
+   is still required.
+
+A reported delivery failure displays a generic retryable error and invalidates
+only that attempt's change token. The log contains `Email change delivery failed`
+without provider bodies, addresses, or tokens. Development retains the local
+mailbox and automated tests use test adapters without real provider credentials.
 
 `VOICE_STUN_URLS` is required in `standard` mode. In `turn_only` mode it is
 ignored and the application supplies only Cloudflare TURN URLs to browsers and

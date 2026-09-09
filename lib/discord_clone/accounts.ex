@@ -3,6 +3,8 @@ defmodule DiscordClone.Accounts do
   The Accounts context.
   """
 
+  require Logger
+
   import Ecto.Query, warn: false
   alias DiscordClone.{Repo, UUIDIdentifier}
 
@@ -302,8 +304,20 @@ defmodule DiscordClone.Accounts do
       when is_function(update_email_url_fun, 1) do
     {encoded_token, user_token} = UserToken.build_email_token(user, "change:#{current_email}")
 
-    Repo.insert!(user_token)
-    UserNotifier.deliver_update_email_instructions(user, update_email_url_fun.(encoded_token))
+    inserted_token = Repo.insert!(user_token)
+
+    case UserNotifier.deliver_update_email_instructions(
+           user,
+           update_email_url_fun.(encoded_token)
+         ) do
+      {:ok, email} ->
+        {:ok, email}
+
+      {:error, _reason} ->
+        Repo.delete_all(from token in UserToken, where: token.id == ^inserted_token.id)
+        Logger.warning("Email change delivery failed")
+        {:error, :delivery_failed}
+    end
   end
 
   @doc """

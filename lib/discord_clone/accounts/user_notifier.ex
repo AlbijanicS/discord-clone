@@ -9,7 +9,7 @@ defmodule DiscordClone.Accounts.UserNotifier do
     email =
       new()
       |> to(recipient)
-      |> from({"DiscordClone", "contact@example.com"})
+      |> from({"DiscordClone", Application.fetch_env!(:discord_clone, :mail_from_address)})
       |> subject(subject)
       |> text_body(body)
 

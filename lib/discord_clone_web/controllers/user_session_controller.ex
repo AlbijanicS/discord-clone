@@ -3,6 +3,7 @@ defmodule DiscordCloneWeb.UserSessionController do
 
   alias DiscordClone.Accounts
   alias DiscordCloneWeb.UserAuth
+  alias DiscordCloneWeb.UserSettingsInputs
 
   def create(conn, params) do
     create(conn, params, "Welcome back!")
@@ -28,17 +29,30 @@ defmodule DiscordCloneWeb.UserSessionController do
     |> redirect(to: ~p"/users/log-in")
   end
 
-  def update_password(conn, %{"user" => user_params} = params) do
+  def update_password(conn, params) do
     user = conn.assigns.current_scope.user
-    true = Accounts.sudo_mode?(user)
-    {:ok, {_user, expired_tokens}} = Accounts.update_user_password(user, user_params)
 
-    # disconnect all existing LiveViews with old sessions
-    UserAuth.disconnect_sessions(expired_tokens)
+    if Accounts.sudo_mode?(user) do
+      with {:ok, user_params} <- UserSettingsInputs.parse(params, "password"),
+           {:ok, {updated_user, expired_tokens}} <-
+             Accounts.update_user_password(user, user_params) do
+        UserAuth.disconnect_sessions(expired_tokens)
 
-    conn
-    |> put_session(:user_return_to, ~p"/users/settings")
-    |> create(params, "Password updated successfully!")
+        conn
+        |> put_session(:user_return_to, ~p"/users/settings")
+        |> put_flash(:info, "Password updated successfully!")
+        |> UserAuth.log_in_user(%{updated_user | authenticated_at: nil})
+      else
+        _invalid ->
+          conn
+          |> put_flash(:error, "Unable to update password. Please check the form and try again.")
+          |> redirect(to: ~p"/users/settings")
+      end
+    else
+      conn
+      |> put_flash(:error, "You must re-authenticate to access this page.")
+      |> redirect(to: ~p"/users/log-in")
+    end
   end
 
   def delete(conn, _params) do

@@ -4,6 +4,7 @@ defmodule DiscordCloneWeb.UserLive.Settings do
   on_mount {DiscordCloneWeb.UserAuth, :require_sudo_mode}
 
   alias DiscordClone.Accounts
+  alias DiscordCloneWeb.UserSettingsInputs
 
   @impl true
   def render(assigns) do
@@ -123,7 +124,42 @@ defmodule DiscordCloneWeb.UserLive.Settings do
   end
 
   @impl true
-  def handle_event("validate_username", %{"user" => user_params}, socket) do
+  def handle_event(event, params, socket) do
+    field =
+      case event do
+        event when event in ["validate_username", "update_username"] -> "username"
+        event when event in ["validate_email", "update_email"] -> "email"
+        event when event in ["validate_password", "update_password"] -> "password"
+        _ -> nil
+      end
+
+    cond do
+      not Accounts.sudo_mode?(socket.assigns.current_scope.user) ->
+        {:noreply,
+         socket
+         |> assign(:trigger_submit, false)
+         |> put_flash(:error, "You must re-authenticate to access this page.")
+         |> redirect(to: ~p"/users/log-in")}
+
+      field != nil ->
+        case UserSettingsInputs.parse(params, field) do
+          {:ok, attrs} -> handle_settings_event(event, %{"user" => attrs}, socket)
+          :error -> invalid_request(socket)
+        end
+
+      true ->
+        invalid_request(socket)
+    end
+  end
+
+  defp invalid_request(socket) do
+    {:noreply,
+     socket
+     |> assign(:trigger_submit, false)
+     |> put_flash(:error, "Invalid settings request. Please check the form and try again.")}
+  end
+
+  defp handle_settings_event("validate_username", %{"user" => user_params}, socket) do
     username_form =
       socket.assigns.current_scope
       |> Accounts.change_user_username(user_params, validate_unique: false)
@@ -133,10 +169,7 @@ defmodule DiscordCloneWeb.UserLive.Settings do
     {:noreply, assign(socket, username_form: username_form)}
   end
 
-  def handle_event("update_username", %{"user" => user_params}, socket) do
-    user = socket.assigns.current_scope.user
-    true = Accounts.sudo_mode?(user)
-
+  defp handle_settings_event("update_username", %{"user" => user_params}, socket) do
     case Accounts.update_user_username(socket.assigns.current_scope, user_params) do
       {:ok, updated_user} ->
         current_scope = %{socket.assigns.current_scope | user: updated_user}
@@ -153,9 +186,7 @@ defmodule DiscordCloneWeb.UserLive.Settings do
     end
   end
 
-  def handle_event("validate_email", params, socket) do
-    %{"user" => user_params} = params
-
+  defp handle_settings_event("validate_email", %{"user" => user_params}, socket) do
     email_form =
       socket.assigns.current_scope.user
       |> Accounts.change_user_email(user_params, validate_unique: false)
@@ -165,30 +196,41 @@ defmodule DiscordCloneWeb.UserLive.Settings do
     {:noreply, assign(socket, email_form: email_form)}
   end
 
-  def handle_event("update_email", params, socket) do
-    %{"user" => user_params} = params
+  defp handle_settings_event("update_email", %{"user" => user_params}, socket) do
     user = socket.assigns.current_scope.user
-    true = Accounts.sudo_mode?(user)
 
     case Accounts.change_user_email(user, user_params) do
       %{valid?: true} = changeset ->
-        Accounts.deliver_user_update_email_instructions(
-          Ecto.Changeset.apply_action!(changeset, :insert),
-          user.email,
-          &url(~p"/users/settings/confirm-email/#{&1}")
-        )
+        result =
+          Accounts.deliver_user_update_email_instructions(
+            Ecto.Changeset.apply_action!(changeset, :insert),
+            user.email,
+            &url(~p"/users/settings/confirm-email/#{&1}")
+          )
 
-        info = "A link to confirm your email change has been sent to the new address."
-        {:noreply, socket |> put_flash(:info, info)}
+        case result do
+          {:ok, _email} ->
+            {:noreply,
+             socket
+             |> clear_flash(:error)
+             |> put_flash(
+               :info,
+               "A link to confirm your email change has been sent to the new address."
+             )}
+
+          {:error, :delivery_failed} ->
+            {:noreply,
+             socket
+             |> clear_flash(:info)
+             |> put_flash(:error, "Unable to send the confirmation email. Please try again.")}
+        end
 
       changeset ->
         {:noreply, assign(socket, :email_form, to_form(changeset, action: :insert))}
     end
   end
 
-  def handle_event("validate_password", params, socket) do
-    %{"user" => user_params} = params
-
+  defp handle_settings_event("validate_password", %{"user" => user_params}, socket) do
     password_form =
       socket.assigns.current_scope.user
       |> Accounts.change_user_password(user_params, hash_password: false)
@@ -198,10 +240,8 @@ defmodule DiscordCloneWeb.UserLive.Settings do
     {:noreply, assign(socket, password_form: password_form)}
   end
 
-  def handle_event("update_password", params, socket) do
-    %{"user" => user_params} = params
+  defp handle_settings_event("update_password", %{"user" => user_params}, socket) do
     user = socket.assigns.current_scope.user
-    true = Accounts.sudo_mode?(user)
 
     case Accounts.change_user_password(user, user_params) do
       %{valid?: true} = changeset ->
