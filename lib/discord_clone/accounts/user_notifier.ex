@@ -9,33 +9,13 @@ defmodule DiscordClone.Accounts.UserNotifier do
     email =
       new()
       |> to(recipient)
-      |> from({"DiscordClone", Application.fetch_env!(:discord_clone, :mail_from_address)})
+      |> from({"DiscordClone", "contact@example.com"})
       |> subject(subject)
       |> text_body(body)
 
     with {:ok, _metadata} <- Mailer.deliver(email) do
       {:ok, email}
     end
-  end
-
-  @doc """
-  Deliver instructions to update a user email.
-  """
-  def deliver_update_email_instructions(user, url) do
-    deliver(user.email, "Update email instructions", """
-
-    ==============================
-
-    Hi #{user.email},
-
-    You can change your email by visiting the URL below:
-
-    #{url}
-
-    If you didn't request this change, please ignore this.
-
-    ==============================
-    """)
   end
 
   @doc """

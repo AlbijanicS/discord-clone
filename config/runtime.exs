@@ -151,17 +151,4 @@ if config_env() == :prod do
   #       force_ssl: [hsts: true]
   #
   # Check `Plug.SSL` for all available options in `force_ssl`.
-
-  mail_from_address = required_env.("MAIL_FROM_ADDRESS")
-
-  unless Regex.match?(~r/^[^@,;<>\s]+@[^@,;<>\s]+$/, mail_from_address) and
-           String.downcase(mail_from_address) != "contact@example.com" do
-    raise "MAIL_FROM_ADDRESS must be a non-placeholder email address"
-  end
-
-  config :discord_clone, :mail_from_address, mail_from_address
-
-  config :discord_clone, DiscordClone.Mailer,
-    adapter: Swoosh.Adapters.Resend,
-    api_key: required_env.("RESEND_API_KEY")
 end

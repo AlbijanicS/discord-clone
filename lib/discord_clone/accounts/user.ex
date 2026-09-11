@@ -36,8 +36,7 @@ defmodule DiscordClone.Accounts.User do
   @doc """
   A user changeset for registration.
 
-  Registration owns account identity fields. Email-only changes still use
-  `email_changeset/3` so generated settings and token flows stay narrow.
+  Registration owns account identity fields.
   """
   def registration_changeset(user, attrs, opts \\ []) do
     user
@@ -58,23 +57,6 @@ defmodule DiscordClone.Accounts.User do
     |> validate_username(opts)
   end
 
-  @doc """
-  A user changeset for registering or changing the email.
-
-  It requires the email to change otherwise an error is added.
-
-  ## Options
-
-    * `:validate_unique` - Set to false if you don't want to validate the
-      uniqueness of the email, useful when displaying live validations.
-      Defaults to `true`.
-  """
-  def email_changeset(user, attrs, opts \\ []) do
-    user
-    |> cast(attrs, [:email])
-    |> validate_email(opts)
-  end
-
   defp validate_email(changeset, opts) do
     changeset =
       changeset
@@ -88,15 +70,6 @@ defmodule DiscordClone.Accounts.User do
       changeset
       |> unsafe_validate_unique(:email, DiscordClone.Repo)
       |> unique_constraint(:email)
-      |> validate_email_changed()
-    else
-      changeset
-    end
-  end
-
-  defp validate_email_changed(changeset) do
-    if get_field(changeset, :email) && get_change(changeset, :email) == nil do
-      add_error(changeset, :email, "did not change")
     else
       changeset
     end

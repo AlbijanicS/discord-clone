@@ -43,7 +43,6 @@ config :discord_clone, DiscordCloneWeb.Endpoint,
 # For production it's recommended to configure a different adapter
 # at the `config/runtime.exs`.
 config :discord_clone, DiscordClone.Mailer, adapter: Swoosh.Adapters.Local
-config :discord_clone, :mail_from_address, "contact@example.com"
 
 # Configure esbuild (the version is required)
 config :esbuild,

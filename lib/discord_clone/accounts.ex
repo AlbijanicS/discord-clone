@@ -3,8 +3,6 @@ defmodule DiscordClone.Accounts do
   The Accounts context.
   """
 
-  require Logger
-
   import Ecto.Query, warn: false
   alias DiscordClone.{Repo, UUIDIdentifier}
 
@@ -142,42 +140,6 @@ defmodule DiscordClone.Accounts do
   end
 
   @doc """
-  Returns an `%Ecto.Changeset{}` for changing the user email.
-
-  See `DiscordClone.Accounts.User.email_changeset/3` for a list of supported options.
-
-  ## Examples
-
-      iex> change_user_email(user)
-      %Ecto.Changeset{data: %User{}}
-
-  """
-  def change_user_email(user, attrs \\ %{}, opts \\ []) do
-    User.email_changeset(user, attrs, opts)
-  end
-
-  @doc """
-  Updates the user email using the given token.
-
-  If the token matches, the user email is updated and the token is deleted.
-  """
-  def update_user_email(user, token) do
-    context = "change:#{user.email}"
-
-    Repo.transact(fn ->
-      with {:ok, query} <- UserToken.verify_change_email_token_query(token, context),
-           %UserToken{sent_to: email} <- Repo.one(query),
-           {:ok, user} <- Repo.update(User.email_changeset(user, %{email: email})),
-           {_count, _result} <-
-             Repo.delete_all(from(UserToken, where: [user_id: ^user.id, context: ^context])) do
-        {:ok, user}
-      else
-        _ -> {:error, :transaction_aborted}
-      end
-    end)
-  end
-
-  @doc """
   Returns an `%Ecto.Changeset{}` for changing the user password.
 
   See `DiscordClone.Accounts.User.password_changeset/3` for a list of supported options.
@@ -288,35 +250,6 @@ defmodule DiscordClone.Accounts do
 
       nil ->
         {:error, :not_found}
-    end
-  end
-
-  @doc ~S"""
-  Delivers the update email instructions to the given user.
-
-  ## Examples
-
-      iex> deliver_user_update_email_instructions(user, current_email, &url(~p"/users/settings/confirm-email/#{&1}"))
-      {:ok, %{to: ..., body: ...}}
-
-  """
-  def deliver_user_update_email_instructions(%User{} = user, current_email, update_email_url_fun)
-      when is_function(update_email_url_fun, 1) do
-    {encoded_token, user_token} = UserToken.build_email_token(user, "change:#{current_email}")
-
-    inserted_token = Repo.insert!(user_token)
-
-    case UserNotifier.deliver_update_email_instructions(
-           user,
-           update_email_url_fun.(encoded_token)
-         ) do
-      {:ok, email} ->
-        {:ok, email}
-
-      {:error, _reason} ->
-        Repo.delete_all(from token in UserToken, where: token.id == ^inserted_token.id)
-        Logger.warning("Email change delivery failed")
-        {:error, :delivery_failed}
     end
   end
 
