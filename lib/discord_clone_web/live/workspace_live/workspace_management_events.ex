@@ -177,8 +177,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.WorkspaceManagementEvents do
 
   def coordinate_integer(value) when is_binary(value) do
     case Integer.parse(value) do
-      {integer, _rest} -> integer
-      :error -> 0
+      {integer, ""} -> integer
+      _invalid -> 0
     end
   end
 

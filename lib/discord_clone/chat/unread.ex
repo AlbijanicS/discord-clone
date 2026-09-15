@@ -192,10 +192,13 @@ defmodule DiscordClone.Chat.Unread do
 
   def subscribe_to_channel_read_state(%Scope{user: %User{id: user_id}}, channel_id) do
     with %Channel{} <- get_member_channel(channel_id, user_id) do
-      Phoenix.PubSub.subscribe(
-        DiscordClone.PubSub,
-        ConversationTopics.read_state(user_id, channel_id)
-      )
+      topic = ConversationTopics.read_state(user_id, channel_id)
+
+      if topic in Registry.keys(DiscordClone.PubSub, self()) do
+        :ok
+      else
+        Phoenix.PubSub.subscribe(DiscordClone.PubSub, topic)
+      end
     else
       nil -> {:error, :not_found}
     end

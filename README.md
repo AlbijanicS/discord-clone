@@ -178,3 +178,35 @@ Ready to run in production? Please [check our deployment guides](https://hexdocs
 * Docs: https://hexdocs.pm/phoenix
 * Forum: https://elixirforum.com/c/phoenix-forum
 * Source: https://github.com/phoenixframework/phoenix
+
+## Automated quality gates
+
+Pull requests and pushes to `master` run `.github/workflows/ci.yml` on Ubuntu
+24.04 with a fresh PostgreSQL 16 service. CI pins the inspected development
+toolchain: Elixir 1.19.5, Erlang/OTP 28.5, and Node 26.0.0. Setup syntax follows
+[setup-beam](https://github.com/erlef/setup-beam) and
+[setup-node](https://github.com/actions/setup-node).
+
+From a clean checkout, install those versions and run PostgreSQL on localhost
+port 5432 with the test-only username/password `postgres`/`postgres` (the role
+needs permission to create the test database). Then run:
+
+```sh
+export MIX_ENV=test
+mix local.hex --force
+mix local.rebar --force
+mix deps.get --check-locked
+mix format --check-formatted
+mix precommit
+git diff --exit-code HEAD --
+mix test --cover
+```
+
+The test alias creates and migrates `discord_clone_test`; no seeds or provider
+credentials are needed. CI always installs locked dependencies, even on a cache
+hit, and caches only dependency sources. `precommit` compiles with warnings as
+errors, runs strict Credo, every existing JavaScript test, and the Elixir suite.
+The initial formatting check prevents its formatter from hiding a bad checkout;
+the diff check also catches lockfile or other tracked changes made by the alias.
+Coverage is a separate step enforcing the existing 85% threshold. Local results
+do not establish that GitHub CI or a hosted microphone demonstration passed.

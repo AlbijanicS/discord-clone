@@ -125,7 +125,9 @@ defmodule DiscordClone.Chat.RuntimeTest do
 
       assert_receive {:DOWN, ^ref, :process, ^live_view_pid, :normal}
       _ = :sys.get_state(workspace_pid)
-      assert_receive {:workspace_user_left, %{workspace_id: ^workspace_id, user_id: ^user_id}}
+
+      assert_receive {:workspace_user_left, %{workspace_id: ^workspace_id, user_id: ^user_id}},
+                     6_000
 
       assert Runtime.online_user_ids(workspace_id) == []
     end
@@ -148,6 +150,37 @@ defmodule DiscordClone.Chat.RuntimeTest do
       _ = :sys.get_state(workspace_pid)
 
       assert Runtime.online_user_ids(workspace_id) == [user_id]
+    end
+
+    test "a delayed replacement connection preserves presence and cancels the old departure" do
+      workspace_id = Ecto.UUID.generate()
+      user_id = Ecto.UUID.generate()
+      old_connection = start_live_view_process()
+      replacement = start_live_view_process()
+
+      assert :ok = Runtime.subscribe_workspace_presence(workspace_id)
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, old_connection)
+      assert_receive {:workspace_user_joined, %{user_id: ^user_id}}
+      server = Runtime.workspace_presence_pid(workspace_id)
+
+      ref = Process.monitor(old_connection)
+      send(old_connection, :stop)
+      assert_receive {:DOWN, ^ref, :process, ^old_connection, :normal}
+      state = :sys.get_state(server)
+      {_timer, old_token} = Map.fetch!(state.pending_left_timers, user_id)
+
+      # A normal navigation can take longer than the former 50 ms grace.
+      # Assert continuity during that gap, rather than racing a fast remount.
+      refute_receive {:workspace_user_left, %{user_id: ^user_id}}, 100
+      assert Runtime.online_user_ids(workspace_id) == [user_id]
+      assert :ok = Runtime.join_workspace_presence(workspace_id, user_id, replacement)
+
+      # Cancellation can race an already-delivered timeout message.
+      send(server, {:broadcast_user_left, user_id, old_token})
+      _ = :sys.get_state(server)
+      assert Runtime.online_user_ids(workspace_id) == [user_id]
+      refute_received {:workspace_user_left, %{user_id: ^user_id}}
+      refute_received {:workspace_user_joined, %{user_id: ^user_id}}
     end
 
     test "listing online user ids does not change runtime state" do
@@ -244,7 +277,8 @@ defmodule DiscordClone.Chat.RuntimeTest do
       _ = :sys.get_state(workspace_pid)
 
       assert_receive {:workspace_user_left,
-                      %{workspace_id: ^workspace_id, user_id: ^user_id} = payload}
+                      %{workspace_id: ^workspace_id, user_id: ^user_id} = payload},
+                     6_000
 
       refute Map.has_key?(payload, :user)
       refute Map.has_key?(payload, :members)

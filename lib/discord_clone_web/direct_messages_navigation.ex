@@ -7,16 +7,16 @@ defmodule DiscordCloneWeb.DirectMessagesNavigation do
   alias DiscordClone.{Chat, Friendships}
 
   def on_mount(:assign_destination, _params, _session, socket) do
+    if Phoenix.LiveView.connected?(socket) do
+      :ok = Chat.subscribe_to_direct_navigation(socket.assigns.current_scope)
+      :ok = Friendships.subscribe(socket.assigns.current_scope)
+    end
+
     {:ok, destinations} =
       Chat.list_direct_conversation_destinations(socket.assigns.current_scope)
 
     {:ok, incoming_requests} =
       Friendships.list_incoming_requests(socket.assigns.current_scope)
-
-    if Phoenix.LiveView.connected?(socket) do
-      :ok = Chat.subscribe_to_direct_navigation(socket.assigns.current_scope)
-      :ok = Friendships.subscribe(socket.assigns.current_scope)
-    end
 
     socket =
       socket

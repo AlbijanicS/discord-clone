@@ -821,7 +821,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMessagesTest do
       assert has_element?(view, "#message-#{message.id}[data-message-row='full']")
       assert has_element?(view, "#message-#{message.id}-author", scope.user.username)
       assert has_element?(view, "#message-#{message.id}-content", "hello from liveview")
-      refute has_element?(view, "#message_content[value='  hello from liveview  ']")
+      refute has_element?(view, "textarea#message_content", "  hello from liveview  ")
 
       assert_push_event(view, "clear_message_composer", %{input_id: "message_content"})
 
@@ -850,7 +850,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMessagesTest do
 
       assert Repo.aggregate(Message, :count) == 0
       assert has_element?(view, "#message-composer-form")
-      refute has_element?(view, "#message_content.input-error")
+      refute has_element?(view, "#message_content.textarea-error")
       refute has_element?(view, "#message-composer-form", "can't be blank")
       refute_push_event(view, "clear_message_composer", %{input_id: _input_id})
       refute_push_event(view, "scroll_channel_messages_to_bottom", %{container_id: _container_id})
@@ -931,7 +931,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMessagesTest do
 
       assert Repo.aggregate(Message, :count) == 0
       assert has_element?(view, "#message-composer-form")
-      assert has_element?(view, "#message_content.input-error[value='#{content}']")
+      assert has_element?(view, "textarea#message_content.textarea-error", content)
 
       assert has_element?(
                view,
@@ -1166,7 +1166,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMessagesTest do
 
       assert has_element?(
                receiver_view,
-               "#message_content.input-error[value='#{too_long_content}']"
+               "textarea#message_content.textarea-error",
+               too_long_content
              )
 
       sender_view
@@ -1183,7 +1184,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMessagesTest do
 
       assert has_element?(
                receiver_view,
-               "#message_content.input-error[value='#{too_long_content}']"
+               "textarea#message_content.textarea-error",
+               too_long_content
              )
     end
 

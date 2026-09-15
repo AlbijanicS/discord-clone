@@ -2,11 +2,14 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
   use DiscordCloneWeb, :live_view
 
   alias DiscordClone.Workspaces
+  alias DiscordCloneWeb.WorkspaceLive.EventInputs
   alias DiscordCloneWeb.WorkspaceLive.Shell
   alias DiscordCloneWeb.WorkspaceLive.WorkspaceManagementEvents
 
   @impl true
   def mount(%{"workspace_id" => workspace_id}, _session, socket) do
+    socket = EventInputs.attach(socket)
+
     case Workspaces.resolve_landing_channel(socket.assigns.current_scope, workspace_id) do
       {:ok, channel} ->
         {:ok, push_navigate(socket, to: ~p"/workspaces/#{workspace_id}/channels/#{channel.id}")}
@@ -140,6 +143,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.Entry do
          |> put_flash(:error, "Channel could not be created.")
          |> push_navigate(to: ~p"/workspaces")}
     end
+  end
+
+  def handle_event(_event, _params, socket) do
+    {:noreply, put_flash(socket, :error, "Action could not be completed.")}
   end
 
   defp redirect_to_workspaces(socket) do

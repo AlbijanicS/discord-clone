@@ -6,11 +6,14 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
   alias DiscordClone.Workspaces
   alias DiscordCloneWeb.WorkspaceLive.MemberActions
   alias DiscordCloneWeb.WorkspaceLive.Presence
+  alias DiscordCloneWeb.WorkspaceLive.EventInputs
   alias DiscordCloneWeb.WorkspaceLive.Shell
   alias DiscordCloneWeb.WorkspaceLive.WorkspaceEvents
 
   @impl true
   def mount(%{"workspace_id" => workspace_id}, _session, socket) do
+    socket = EventInputs.attach(socket)
+
     with {:ok, workspace} <-
            Workspaces.fetch_workspace(socket.assigns.current_scope, workspace_id),
          :ok <- authorize_invite_screen(socket.assigns.current_scope, workspace),
@@ -285,6 +288,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.InviteNew do
   def handle_event("voice_disconnect", params, socket) do
     workspace_id = socket.assigns.selected_workspace.id
     MemberActions.voice_disconnect(socket, params, workspace_id)
+  end
+
+  def handle_event(_event, _params, socket) do
+    {:noreply, put_flash(socket, :error, "Action could not be completed.")}
   end
 
   defp refresh_member_action(socket, %{workspace_id: workspace_id}) do

@@ -70,15 +70,19 @@ voice audio while that tab remains connected.
 _Avoid_: Voice browser, active tab
 
 **Local Mute**:
-A Voice Owner Tab's voluntary microphone-capture state. It stops that tab from
-sending audio without changing the User's Workspace moderation state. Its
-effective muted state is visible in the Voice Channel Roster.
+A Voice Owner Tab's independently selected microphone-mute preference. Effective
+mute is Local Mute OR Local Deafen and stops that tab from sending audio without
+changing the User's Workspace moderation state. Effective mute is visible in
+the Voice Channel Roster.
 _Avoid_: Server mute, moderation mute
 
 **Local Deafen**:
 A Voice Owner Tab's voluntary remote-audio playback state. It silences remote
-audio and enables Local Mute, but does not change Workspace moderation state.
-Its effective deafened state is visible in the Voice Channel Roster.
+audio and forces effective mute without changing the independently selected
+Local Mute preference or Workspace moderation state. Undeafening restores that
+preference. Both controls survive connection transitions and an explicit retry
+of the same intended Channel; explicit leave resets them. Its effective
+deafened state is visible in the Voice Channel Roster.
 _Avoid_: Server deafen, moderation deafen
 
 **Workspace Mute**:
@@ -228,6 +232,9 @@ _Avoid_: Unread range
 - A **Workspace Identifier** points to one **Workspace**
 - A **Workspace** has zero or more **Workspace Members**
 - A **Workspace Member** has one **Workspace Role**
+- Workspace-scoped online presence tolerates a five-second gap between LiveView
+  connections during navigation; reconnecting within that window preserves
+  online state, while a final disconnect becomes offline when it expires.
 - A **Workspace** contains one or more **Channels** when created through the
   public workspace workflow
 - A **Channel** and a **Direct Conversation** are each a **Conversation**

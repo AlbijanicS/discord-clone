@@ -6,7 +6,10 @@ defmodule DiscordClone.Chat.WorkspaceServer do
   alias DiscordClone.Chat.Runtime
   alias DiscordClone.Workspaces.WorkspaceModeration
 
-  @disconnect_grace_ms 50
+  # Live navigation replaces the monitored process and may include a network
+  # round trip plus database-backed mounting. Keep presence through that handoff,
+  # while still expiring a genuinely disconnected user within a bounded window.
+  @disconnect_grace_ms 5_000
 
   def start_link({workspace_id, name}) do
     GenServer.start_link(__MODULE__, workspace_id, name: name)

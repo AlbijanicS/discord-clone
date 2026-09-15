@@ -411,9 +411,6 @@ defmodule DiscordCloneWeb.FriendsLive do
       aria-label="Friends"
       class="hidden min-h-0 bg-base-200/80 shadow-[inset_1px_0_0_rgb(255_255_255/0.04)] xl:flex xl:flex-col"
     >
-      <div class="px-4 py-4 shadow-[0_1px_0_rgb(255_255_255/0.04)]">
-        <p class="text-xs font-semibold uppercase tracking-wide text-base-content/50">Friends</p>
-      </div>
       <div id="friends-list" phx-update="stream" class="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
         <div
           id="friends-list-empty-state"

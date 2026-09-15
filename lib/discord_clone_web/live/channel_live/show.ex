@@ -9,6 +9,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   alias DiscordCloneWeb.WorkspaceLive.MemberActions
   alias DiscordCloneWeb.WorkspaceLive.MemberActionsMenu
   alias DiscordCloneWeb.WorkspaceLive.Presence
+  alias DiscordCloneWeb.WorkspaceLive.EventInputs
   alias DiscordCloneWeb.WorkspaceLive.Shell
   alias DiscordCloneWeb.WorkspaceLive.WorkspaceEvents
   alias DiscordCloneWeb.WorkspaceLive.WorkspaceManagementEvents
@@ -31,12 +32,21 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         _session,
         socket
       ) do
+    socket = EventInputs.attach(socket)
+
     with {:ok, workspace} <-
            Workspaces.fetch_workspace(socket.assigns.current_scope, workspace_id),
          {:ok, channel} <-
            Workspaces.fetch_channel(socket.assigns.current_scope, workspace_id, channel_id),
-         {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
+         :ok <- WorkspaceEvents.subscribe(socket, workspace.id),
+         :ok <- subscribe_to_workspace_messages(socket, workspace.id),
+         :ok <- subscribe_to_workspace_moderation(socket, workspace.id),
+         :ok <- subscribe_to_channel_messages(socket, channel.id),
+         :ok <- subscribe_to_channel_reactions(socket, channel.id),
          {:ok, channels} <- Workspaces.list_channels(socket.assigns.current_scope, workspace_id),
+         :ok <- subscribe_to_channel_read_states(socket, channels),
+         :ok <- subscribe_to_voice_channel_rosters(socket, workspace.id),
+         {:ok, workspaces} <- Workspaces.list_workspaces(socket.assigns.current_scope),
          {:ok, voice_channels} <-
            Workspaces.list_voice_channels(socket.assigns.current_scope, workspace_id),
          {:ok, members} <- Workspaces.list_members(socket.assigns.current_scope, workspace_id),
@@ -49,15 +59,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
          messages = message_window.messages,
          {:ok, reaction_summaries} <- load_reaction_summaries(socket, messages),
          {:ok, channel_runtime_monitor_ref} <- monitor_channel_runtime(socket, channel.id),
-         :ok <- subscribe_to_channel_messages(socket, channel.id),
-         :ok <- subscribe_to_channel_reactions(socket, channel.id),
-         :ok <- subscribe_to_workspace_messages(socket, workspace.id),
-         :ok <- subscribe_to_workspace_moderation(socket, workspace.id),
-         :ok <- subscribe_to_voice_channel_rosters(socket, workspace.id),
          {:ok, voice_channel_rosters} <-
-           Workspaces.list_voice_channel_rosters(socket.assigns.current_scope, workspace_id),
-         :ok <- WorkspaceEvents.subscribe(socket, workspace.id),
-         :ok <- subscribe_to_channel_read_states(socket, channels) do
+           Workspaces.list_voice_channel_rosters(socket.assigns.current_scope, workspace_id) do
       message_rows = MessageRows.annotate(messages)
 
       socket =
@@ -325,7 +328,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                   {user_initial(row.message.user)}
                 </div>
                 <div :if={row.row_kind == :compact} id={"#{dom_id}-spacer"} aria-hidden="true"></div>
-                <div id={"#{dom_id}-body"} class="relative min-w-0 pr-40">
+                <div id={"#{dom_id}-body"} class="relative min-w-0">
                   <div
                     :if={!message_deleted?(row.message)}
                     id={"#{dom_id}-hover-actions"}
@@ -454,7 +457,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                   <div
                     :if={row.row_kind == :full}
                     id={"#{dom_id}-header"}
-                    class="flex min-h-5 flex-wrap items-baseline gap-2 pr-40"
+                    class="flex min-h-5 flex-wrap items-baseline gap-2"
                   >
                     <span
                       id={"#{dom_id}-author"}
@@ -515,7 +518,7 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
           <div
             :if={typing_members != []}
             id="channel-typing-indicator"
-            class="px-6 py-2 text-xs font-medium text-base-content/60 shadow-[0_-1px_0_rgb(255_255_255/0.035)]"
+            class="px-8 py-2 text-xs font-medium text-base-content/60 shadow-[0_-1px_0_rgb(255_255_255/0.035)]"
             aria-live="polite"
           >
             <span
@@ -611,9 +614,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                 </div>
                 <.input
                   field={@message_form[:content]}
-                  type="text"
+                  type="textarea"
                   placeholder={"Message ##{@selected_channel.name}"}
                   autocomplete="off"
+                  rows="1"
                   role="combobox"
                   aria-autocomplete="list"
                   aria-controls="message-mention-autocomplete"
@@ -621,11 +625,18 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
                   aria-activedescendant={@mention_active_option_id}
                   phx-throttle="3000"
                   disabled={current_member_participation_blocked?(@current_member_moderation_state)}
-                  class="w-full appearance-none border-0 bg-transparent px-1 py-2 text-sm leading-5 text-base-content outline-none ring-0 transition placeholder:text-base-content/40 focus:border-0 focus:outline-none focus:ring-0"
-                  error_class="input-error border-0 ring-0"
+                  class="w-full resize-none appearance-none border-0 bg-transparent px-1 py-2 text-sm leading-5 text-base-content outline-none ring-0 transition placeholder:text-base-content/40 focus:border-0 focus:outline-none focus:ring-0"
+                  error_class="textarea-error border-0 ring-0"
                 />
               </div>
             </.form>
+            <p
+              id="message-composer-sending-status"
+              class="mt-2 hidden text-right text-xs font-medium text-base-content/65 phx-submit-loading:block"
+              role="status"
+            >
+              Sending…
+            </p>
             <p
               :if={current_member_participation_blocked?(@current_member_moderation_state)}
               id="message-composer-muted-feedback"
@@ -642,28 +653,12 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   @impl true
   def handle_info({:message_created, message}, socket) do
-    if MessageWindowState.append_selected_channel_message?(socket) do
-      row = MessageRows.annotate_next(socket.assigns.latest_message, message)
-
-      {:noreply,
-       socket
-       |> assign(:latest_message, message)
-       |> ensure_oldest_message(message)
-       |> assign(
-         :message_window_meta,
-         MessageWindowState.latest_window_meta(socket.assigns.message_window_meta, message)
-       )
-       |> put_message_row(row)
-       |> stream_insert(:messages, row)
-       |> MessageWindowState.trim(:older)
-       |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})}
+    # A queued creation can already be in the snapshot, possibly deleted.
+    # Never replay an older fact over a loaded row or move the latest cursor back.
+    if Map.has_key?(socket.assigns.message_rows_by_id, message.id) do
+      {:noreply, socket}
     else
-      {:noreply,
-       assign(
-         socket,
-         :message_window_meta,
-         MessageWindowState.newer_available_meta(socket.assigns.message_window_meta, message)
-       )}
+      append_created_message(socket, message)
     end
   end
 
@@ -1209,9 +1204,14 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   def handle_event("open_workspace_actions", %{"workspace_id" => workspace_id}, socket) do
     {:noreply,
      socket
-     |> assign(:workspace_action_menu_id, workspace_id)
+     |> assign(
+       :workspace_action_menu_id,
+       toggled_menu_id(socket.assigns.workspace_action_menu_id, workspace_id)
+     )
      |> assign(:channel_action_menu_id, nil)
-     |> assign(:context_menu_position, nil)}
+     |> assign(:voice_channel_action_menu_id, nil)
+     |> assign(:context_menu_position, nil)
+     |> refresh_navigation_sidebars(socket.assigns.selected_workspace.id)}
   end
 
   def handle_event("begin_workspace_rename", params, socket) do
@@ -1236,10 +1236,15 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
     socket =
       socket
-      |> assign(:channel_action_menu_id, channel_id)
+      |> assign(
+        :channel_action_menu_id,
+        toggled_menu_id(socket.assigns.channel_action_menu_id, channel_id)
+      )
       |> assign(:workspace_action_menu_id, nil)
+      |> assign(:voice_channel_action_menu_id, nil)
       |> assign(:context_menu_position, nil)
       |> refresh_channel_sidebar(workspace_id, channels)
+      |> refresh_voice_channel_sidebar(workspace_id)
 
     {:noreply, socket}
   end
@@ -1256,11 +1261,13 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       socket
       |> assign(:channel_action_menu_id, channel_id)
       |> assign(:workspace_action_menu_id, nil)
+      |> assign(:voice_channel_action_menu_id, nil)
       |> assign(:context_menu_position, %{
         x: WorkspaceManagementEvents.coordinate_integer(x),
         y: WorkspaceManagementEvents.coordinate_integer(y)
       })
       |> refresh_channel_sidebar(workspace_id, channels)
+      |> refresh_voice_channel_sidebar(workspace_id)
 
     {:noreply, socket}
   end
@@ -1274,10 +1281,12 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
      socket
      |> assign(:workspace_action_menu_id, workspace_id)
      |> assign(:channel_action_menu_id, nil)
+     |> assign(:voice_channel_action_menu_id, nil)
      |> assign(:context_menu_position, %{
        x: WorkspaceManagementEvents.coordinate_integer(x),
        y: WorkspaceManagementEvents.coordinate_integer(y)
-     })}
+     })
+     |> refresh_navigation_sidebars(socket.assigns.selected_workspace.id)}
   end
 
   def handle_event("close_context_menu", _params, socket) do
@@ -1287,8 +1296,9 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       socket
       |> assign(:workspace_action_menu_id, nil)
       |> assign(:channel_action_menu_id, nil)
+      |> assign(:voice_channel_action_menu_id, nil)
       |> assign(:context_menu_position, nil)
-      |> refresh_channel_sidebar(workspace_id)
+      |> refresh_navigation_sidebars(workspace_id)
 
     {:noreply, socket}
   end
@@ -1302,9 +1312,13 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       socket =
         socket
         |> assign(:channel_action_menu_id, nil)
+        |> assign(:workspace_action_menu_id, nil)
+        |> assign(:voice_channel_action_menu_id, nil)
+        |> assign(:context_menu_position, nil)
         |> assign(:renaming_channel_id, channel.id)
         |> assign(:channel_rename_form, channel_form(workspace_id, %{name: channel.name}))
         |> refresh_channel_sidebar(workspace_id, channels)
+        |> refresh_voice_channel_sidebar(workspace_id)
 
       {:noreply, socket}
     else
@@ -1444,12 +1458,24 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
     {:noreply,
      socket
-     |> assign(:voice_channel_action_menu_id, voice_channel_id)
-     |> refresh_voice_channel_sidebar(workspace_id)}
+     |> assign(
+       :voice_channel_action_menu_id,
+       toggled_menu_id(socket.assigns.voice_channel_action_menu_id, voice_channel_id)
+     )
+     |> assign(:workspace_action_menu_id, nil)
+     |> assign(:channel_action_menu_id, nil)
+     |> assign(:context_menu_position, nil)
+     |> refresh_navigation_sidebars(workspace_id)}
   end
 
   def handle_event("close_voice_channel_context_menu", _params, socket) do
-    {:noreply, assign(socket, :voice_channel_action_menu_id, nil)}
+    {:noreply,
+     socket
+     |> assign(:workspace_action_menu_id, nil)
+     |> assign(:channel_action_menu_id, nil)
+     |> assign(:voice_channel_action_menu_id, nil)
+     |> assign(:context_menu_position, nil)
+     |> refresh_navigation_sidebars(socket.assigns.selected_workspace.id)}
   end
 
   def handle_event("create_voice_channel", %{"voice_channel" => params}, socket) do
@@ -1490,12 +1516,15 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
         {:noreply,
          socket
          |> assign(:voice_channel_action_menu_id, nil)
+         |> assign(:workspace_action_menu_id, nil)
+         |> assign(:channel_action_menu_id, nil)
+         |> assign(:context_menu_position, nil)
          |> assign(:renaming_voice_channel_id, voice_channel.id)
          |> assign(
            :voice_channel_rename_form,
            voice_channel_form(workspace_id, %{name: voice_channel.name})
          )
-         |> refresh_voice_channel_sidebar(workspace_id)}
+         |> refresh_navigation_sidebars(workspace_id)}
 
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "Voice channel could not be renamed.")}
@@ -1553,6 +1582,36 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "Voice channel could not be deleted.")}
+    end
+  end
+
+  def handle_event(_event, _params, socket) do
+    {:noreply, put_flash(socket, :error, "Action could not be completed.")}
+  end
+
+  defp append_created_message(socket, message) do
+    if MessageWindowState.append_selected_channel_message?(socket) do
+      row = MessageRows.annotate_next(socket.assigns.latest_message, message)
+
+      {:noreply,
+       socket
+       |> assign(:latest_message, message)
+       |> ensure_oldest_message(message)
+       |> assign(
+         :message_window_meta,
+         MessageWindowState.latest_window_meta(socket.assigns.message_window_meta, message)
+       )
+       |> put_message_row(row)
+       |> stream_insert(:messages, row)
+       |> MessageWindowState.trim(:older)
+       |> push_event("scroll_channel_messages_to_bottom", %{container_id: "channel-messages"})}
+    else
+      {:noreply,
+       assign(
+         socket,
+         :message_window_meta,
+         MessageWindowState.newer_available_meta(socket.assigns.message_window_meta, message)
+       )}
     end
   end
 
@@ -2581,17 +2640,10 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   defp maybe_refresh_selected_channel_read_state(socket, _channel_id, _payload), do: socket
 
-  defp refresh_selected_channel_read_state(socket, payload) do
-    case payload do
-      %{unread_count: unread_count} when unread_count > 0 ->
-        socket
-        |> assign(:selected_channel_read_summary, payload)
-        |> assign(:unread_divider_seq, unread_divider_seq(payload))
-        |> restream_visible_message_rows()
-
-      _payload ->
-        clear_selected_channel_unread_ui(socket)
-    end
+  defp refresh_selected_channel_read_state(socket, _payload) do
+    socket
+    |> recalculate_selected_channel_unread_ui()
+    |> restream_visible_message_rows()
   end
 
   defp start_typing(socket) do
@@ -2632,6 +2684,8 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
   end
 
   defp refresh_channel_sidebar(socket, workspace_id, channels) do
+    :ok = subscribe_to_channel_read_states(socket, channels)
+
     socket =
       case Chat.list_unread_counts(socket.assigns.current_scope, workspace_id) do
         {:ok, channel_unread_counts} ->
@@ -2642,6 +2696,12 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
       end
 
     stream(socket, :channels, channels, reset: true)
+  end
+
+  defp refresh_navigation_sidebars(socket, workspace_id) do
+    socket
+    |> refresh_channel_sidebar(workspace_id)
+    |> refresh_voice_channel_sidebar(workspace_id)
   end
 
   defp refresh_voice_channel_sidebar(socket, workspace_id) do
@@ -2715,6 +2775,9 @@ defmodule DiscordCloneWeb.ChannelLive.Show do
 
   defp skip_to_latest_action?(%{has_newer?: has_newer?}), do: has_newer?
   defp skip_to_latest_action?(_meta), do: false
+
+  defp toggled_menu_id(menu_id, menu_id), do: nil
+  defp toggled_menu_id(_current_menu_id, menu_id), do: menu_id
 
   defp compact_time(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%H:%M")
 

@@ -173,14 +173,14 @@ defmodule DiscordCloneWeb.ChannelLive.ShowTest do
       assert has_element?(view, "#message-reply-target-author", scope.user.username)
       assert has_element?(view, "#message-reply-target-content", "…")
       assert has_element?(view, "#message-reply-target-cancel[aria-label='Cancel reply']")
-      assert has_element?(view, "#message_content[value='draft reply']")
+      assert has_element?(view, "textarea#message_content", "draft reply")
 
       view
       |> element("#message-reply-target-cancel")
       |> render_click()
 
       refute has_element?(view, "#message-reply-target")
-      assert has_element?(view, "#message_content[value='draft reply']")
+      assert has_element?(view, "textarea#message_content", "draft reply")
     end
 
     test "sends a flat reply, renders its direct-parent preview, and clears the target", %{
@@ -245,7 +245,7 @@ defmodule DiscordCloneWeb.ChannelLive.ShowTest do
       |> render_submit()
 
       assert has_element?(view, "#message-reply-target[data-message-id='#{parent.id}']")
-      assert has_element?(view, "#message_content[value='#{oversized_draft}']")
+      assert has_element?(view, "textarea#message_content", oversized_draft)
       assert Repo.aggregate(Message, :count) == 1
     end
   end
@@ -368,7 +368,7 @@ defmodule DiscordCloneWeb.ChannelLive.ShowTest do
       {:ok, _deleted_parent} = Chat.delete_message(scope, parent.id)
 
       refute has_element?(view, "#message-reply-target")
-      assert has_element?(view, "#message_content[value='carefully written draft']")
+      assert has_element?(view, "textarea#message_content", "carefully written draft")
       assert has_element?(view, "#flash-error", "reply target was deleted")
     end
 
@@ -397,7 +397,7 @@ defmodule DiscordCloneWeb.ChannelLive.ShowTest do
       |> render_submit()
 
       refute has_element?(view, "#message-reply-target")
-      assert has_element?(view, "#message_content[value='draft sent during deletion']")
+      assert has_element?(view, "textarea#message_content", "draft sent during deletion")
       assert has_element?(view, "#flash-error", "reply target was deleted")
       refute Repo.get_by(Message, content: "draft sent during deletion")
     end

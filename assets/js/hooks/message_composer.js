@@ -5,6 +5,16 @@ const MessageComposer = {
     this.mentionsEnabled = this.el.dataset.mentionsEnabled !== "false"
     this.input = this.el.querySelector("input, textarea")
 
+    this.resizeComposer = () => {
+      if (!this.input || this.input.tagName !== "TEXTAREA") {
+        return
+      }
+
+      this.input.style.height = "auto"
+      this.input.style.height = `${Math.min(this.input.scrollHeight, 176)}px`
+      this.input.style.overflowY = this.input.scrollHeight > 176 ? "auto" : "hidden"
+    }
+
     this.pushMentionQuery = () => {
       if (!this.input) {
         return
@@ -19,6 +29,8 @@ const MessageComposer = {
     }
 
     this.handleInput = () => {
+      this.resizeComposer()
+
       if (this.mentionsEnabled) {
         this.pushMentionQuery()
       }
@@ -40,12 +52,25 @@ const MessageComposer = {
     this.handleKeydown = event => {
       const autocomplete = this.el.querySelector("#message-mention-autocomplete")
 
-      if (!autocomplete || !["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(event.key)) {
+      if (
+        autocomplete &&
+          !event.shiftKey &&
+          ["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(event.key)
+      ) {
+        event.preventDefault()
+        this.pushEvent("mention_keydown", {key: event.key})
         return
       }
 
-      event.preventDefault()
-      this.pushEvent("mention_keydown", {key: event.key})
+      if (
+        event.key === "Enter" &&
+        !event.shiftKey &&
+        !event.isComposing &&
+        this.input?.value.trim() !== ""
+      ) {
+        event.preventDefault()
+        this.el.requestSubmit()
+      }
     }
 
     this.handleBlur = () => {
@@ -53,6 +78,7 @@ const MessageComposer = {
     }
 
     if (this.input) {
+      this.resizeComposer()
       this.input.addEventListener("input", this.handleInput)
       this.input.addEventListener("keydown", this.handleKeydown)
       this.input.addEventListener("blur", this.handleBlur)
@@ -66,6 +92,7 @@ const MessageComposer = {
       }
 
       input.value = ""
+      this.resizeComposer()
       input.dispatchEvent(new Event("input", {bubbles: true}))
     })
 
@@ -78,6 +105,7 @@ const MessageComposer = {
         }
 
         input.value = content
+        this.resizeComposer()
         input.focus()
         input.setSelectionRange(before_cursor.length, before_cursor.length)
       })

@@ -22,17 +22,28 @@ function eventTarget() {
   }
 }
 
-function mountComposer({mentionsEnabled}) {
+function mountComposer({mentionsEnabled, inputType = "INPUT", autocompleteOpen = false}) {
   const input = {
     ...eventTarget(),
     selectionStart: 5,
+    scrollHeight: 42,
+    style: {},
+    tagName: inputType,
     value: "hello",
   }
   const pushedEvents = []
+  let submitCount = 0
   const el = {
     dataset: {mentionsEnabled},
+    requestSubmit() {
+      submitCount += 1
+    },
     querySelector(selector) {
-      return selector === "input, textarea" ? input : null
+      if (selector === "input, textarea") {
+        return input
+      }
+
+      return selector === "#message-mention-autocomplete" && autocompleteOpen ? {} : null
     },
   }
   const hook = {
@@ -46,7 +57,7 @@ function mountComposer({mentionsEnabled}) {
 
   hook.mounted()
 
-  return {hook, input, pushedEvents}
+  return {hook, input, pushedEvents, submitCount: () => submitCount}
 }
 
 test("a Direct Message composer does not push Workspace mention queries", () => {
@@ -70,5 +81,72 @@ test("a Workspace composer keeps mention queries enabled", () => {
     },
     {name: "message_typing", payload: {}},
   ])
+  hook.destroyed()
+})
+
+test("Enter submits a non-empty multiline composer while Shift+Enter keeps writing", () => {
+  const {hook, input, submitCount} = mountComposer({
+    mentionsEnabled: "true",
+    inputType: "TEXTAREA",
+  })
+
+  input.value = "A considered message"
+  let enterPrevented = false
+  input.dispatch("keydown", {
+    isComposing: false,
+    key: "Enter",
+    preventDefault() {
+      enterPrevented = true
+    },
+    shiftKey: false,
+  })
+
+  assert.equal(enterPrevented, true)
+  assert.equal(submitCount(), 1)
+
+  input.dispatch("keydown", {
+    isComposing: false,
+    key: "Enter",
+    preventDefault() {
+      throw new Error("Shift+Enter must preserve the newline")
+    },
+    shiftKey: true,
+  })
+
+  assert.equal(submitCount(), 1)
+  hook.destroyed()
+})
+
+test("Shift+Enter preserves a newline while mention suggestions are open", () => {
+  const {hook, pushedEvents, submitCount} = mountComposer({
+    mentionsEnabled: "true",
+    inputType: "TEXTAREA",
+    autocompleteOpen: true,
+  })
+
+  let newlinePrevented = false
+  hook.input.dispatch("keydown", {
+    isComposing: false,
+    key: "Enter",
+    preventDefault() {
+      newlinePrevented = true
+    },
+    shiftKey: true,
+  })
+
+  assert.equal(newlinePrevented, false)
+  assert.equal(submitCount(), 0)
+  assert.deepEqual(pushedEvents, [])
+  hook.destroyed()
+})
+
+test("a multiline composer grows to its content cap", () => {
+  const {hook, input} = mountComposer({mentionsEnabled: "false", inputType: "TEXTAREA"})
+
+  input.scrollHeight = 240
+  input.dispatch("input")
+
+  assert.equal(input.style.height, "176px")
+  assert.equal(input.style.overflowY, "auto")
   hook.destroyed()
 })

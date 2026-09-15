@@ -946,7 +946,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMembersTest do
       _ = :sys.get_state(workspace_server)
 
       assert_receive {:workspace_user_left,
-                      %{workspace_id: ^workspace_id, user_id: ^sender_user_id}}
+                      %{workspace_id: ^workspace_id, user_id: ^sender_user_id}},
+                     6_000
 
       assert has_element?(
                receiver_view,
@@ -1023,7 +1024,8 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeMembersTest do
       _ = :sys.get_state(workspace_server)
 
       assert_receive {:workspace_user_left,
-                      %{workspace_id: ^workspace_id, user_id: ^sender_user_id}}
+                      %{workspace_id: ^workspace_id, user_id: ^sender_user_id}},
+                     6_000
 
       assert has_element?(
                receiver_view,

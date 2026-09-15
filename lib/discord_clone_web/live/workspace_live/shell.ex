@@ -61,9 +61,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
 
       <aside
         id="channel-sidebar"
-        class="hidden min-h-0 flex-col bg-base-200 shadow-[inset_-1px_0_0_rgb(255_255_255/0.04)] lg:flex"
+        class="flex min-h-0 flex-col border-b border-base-300/60 bg-base-200 shadow-[inset_-1px_0_0_rgb(255_255_255/0.04)] lg:border-b-0 lg:border-r"
       >
-        <div class="min-h-0 flex-1 overflow-y-auto p-4">
+        <div class="min-h-0 flex-1 overflow-y-auto px-3 py-4">
           <%= if @selected_workspace do %>
             <div class="mb-4">
               <div class="relative flex items-center justify-between gap-2">
@@ -88,6 +88,10 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                   </p>
                 <% end %>
                 <button
+                  :if={
+                    not (@renaming_workspace_id == @selected_workspace.id &&
+                           not is_nil(@workspace_rename_form))
+                  }
                   id={"workspace-#{@selected_workspace.id}-actions"}
                   type="button"
                   class="btn btn-square btn-xs btn-ghost shrink-0 transition hover:scale-105"
@@ -237,6 +241,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                     {channel_unread_count(@channel_unread_counts, channel, @selected_channel)}
                   </span>
                   <button
+                    :if={not (@renaming_channel_id == channel.id && not is_nil(@channel_rename_form))}
                     id={"channel-#{channel.id}-actions"}
                     type="button"
                     class="btn btn-square btn-xs btn-ghost absolute right-1 top-1/2 -translate-y-1/2 opacity-70 transition hover:opacity-100"
@@ -354,6 +359,12 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                     No voice channels yet.
                   </div>
                   <div :for={{dom_id, voice_channel} <- @voice_channel_stream || []} id={dom_id}>
+                    <% roster_members =
+                      roster_members(
+                        @voice_channel_rosters,
+                        @member_by_user_id,
+                        voice_channel.id
+                      ) %>
                     <div
                       id={"voice-channel-#{voice_channel.id}"}
                       data-voice-channel-row
@@ -382,26 +393,21 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                           data-voice-channel-id={voice_channel.id}
                           data-voice-channel-name={voice_channel.name}
                           data-workspace-id={@selected_workspace.id}
-                          aria-label={"Join voice channel #{voice_channel.name}"}
+                          aria-label={
+                            "Join voice channel #{voice_channel.name}, #{voice_channel_occupancy_label(roster_members)}"
+                          }
                           aria-pressed="false"
-                          class="min-w-0 flex-1 truncate rounded-md py-2 pl-3 pr-10 text-left transition hover:bg-base-300"
+                          class="flex min-w-0 flex-1 items-center gap-2 rounded-md py-2 pl-3 pr-10 text-left transition hover:bg-base-300"
                         >
-                          <.icon name="hero-speaker-wave" class="mr-2 inline size-4" />{voice_channel.name}
-                          <span
-                            id={"voice-channel-#{voice_channel.id}-active-indicator"}
-                            phx-hook="VoiceChannelIndicator"
-                            phx-update="ignore"
-                            data-voice-channel-id={voice_channel.id}
-                            class="ml-2 inline-flex rounded-full bg-success/15 px-1.5 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide text-success"
-                            hidden
-                          >
-                            Active
-                          </span>
+                          <.icon name="hero-speaker-wave" class="size-4 shrink-0" />
+                          <span class="min-w-0 flex-1 truncate">{voice_channel.name}</span>
                         </button>
                       <% end %>
                       <button
                         :if={
                           @voice_channel_form &&
+                            not (@renaming_voice_channel_id == voice_channel.id &&
+                                   not is_nil(@voice_channel_rename_form)) &&
                             (can_rename_voice_channel?(@selected_workspace, @current_scope) ||
                                can_delete_voice_channel?(@selected_workspace, @current_scope))
                         }
@@ -447,20 +453,18 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                     </div>
                     <div
                       id={"voice-channel-#{voice_channel.id}-roster"}
-                      class="ml-4 space-y-1 pb-2 pt-1"
-                      aria-label={"#{voice_channel.name} Voice Channel Roster"}
+                      class="ml-5 space-y-1 pb-2 pt-1"
+                      aria-label={"#{voice_channel.name} Voice Channel Roster: #{voice_channel_occupancy_label(roster_members)}"}
+                      role="list"
                     >
                       <div
                         :for={
                           %{user_id: user_id, user: user} = member <-
-                            roster_members(
-                              @voice_channel_rosters,
-                              @member_by_user_id,
-                              voice_channel.id
-                            )
+                            visible_voice_roster_members(roster_members)
                         }
                         id={"voice-channel-#{voice_channel.id}-roster-member-#{user_id}"}
-                        class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1 text-sm text-base-content/80 transition hover:bg-base-300/60"
+                        class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1 text-sm text-base-content/80"
+                        role="listitem"
                       >
                         <span
                           id={"voice-channel-#{voice_channel.id}-roster-member-#{user_id}-avatar"}
@@ -518,6 +522,14 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
                           </div>
                         </details>
                       </div>
+                      <p
+                        :if={voice_roster_overflow_count(roster_members) > 0}
+                        id={"voice-channel-#{voice_channel.id}-roster-overflow"}
+                        class="px-2 py-1 text-xs font-semibold text-base-content/55"
+                        role="listitem"
+                      >
+                        +{voice_roster_overflow_count(roster_members)} more
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -575,13 +587,6 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
               <p class="truncate text-xs text-base-content/50">{@current_scope.user.email}</p>
             </div>
             <.link
-              href={~p"/users/settings"}
-              class="btn btn-square btn-xs btn-ghost"
-              aria-label="Settings"
-            >
-              <.icon name="hero-cog-6-tooth" class="size-4" />
-            </.link>
-            <.link
               href={~p"/users/log-out"}
               method="delete"
               data-voice-logout
@@ -598,7 +603,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
         <%= case @main_state do %>
           <% :channel -> %>
             <header class="bg-base-100/95 px-6 py-4 shadow-[0_1px_0_rgb(255_255_255/0.04),0_10px_28px_rgb(0_0_0/0.08)]">
-              <p id="selected-channel-title" class="text-sm font-semibold">
+              <p id="selected-channel-title" class="min-w-0 truncate text-sm font-semibold">
                 # {@selected_channel.name}
               </p>
             </header>
@@ -808,7 +813,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
         <div
           id="workspace-members"
           phx-update="stream"
-          class="min-h-0 flex-1 space-y-1 overflow-y-auto p-3"
+          class="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-3"
         >
           <%= for {dom_id, item} <- @member_stream do %>
             <div
@@ -1031,11 +1036,11 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
 
   defp workspace_shell_class(true),
     do:
-      "fixed inset-0 grid min-h-screen overflow-hidden bg-base-100 lg:grid-cols-[14rem_18rem_minmax(0,1fr)] xl:grid-cols-[14rem_18rem_minmax(0,1fr)_16rem]"
+      "fixed inset-0 grid min-h-screen grid-cols-1 grid-rows-[auto_minmax(10rem,30vh)_minmax(0,1fr)] overflow-hidden bg-base-100 lg:grid-cols-[var(--app-sidebar-expanded-width)_var(--app-sidebar-width)_minmax(0,1fr)] lg:grid-rows-1 xl:grid-cols-[var(--app-sidebar-expanded-width)_var(--app-sidebar-width)_minmax(0,1fr)_var(--app-member-panel-width)]"
 
   defp workspace_shell_class(_show_workspace_form?),
     do:
-      "fixed inset-0 grid min-h-screen overflow-hidden bg-base-100 lg:grid-cols-[5rem_18rem_minmax(0,1fr)] xl:grid-cols-[5rem_18rem_minmax(0,1fr)_16rem]"
+      "fixed inset-0 grid min-h-screen grid-cols-1 grid-rows-[auto_minmax(10rem,30vh)_minmax(0,1fr)] overflow-hidden bg-base-100 lg:grid-cols-[var(--app-rail-width)_var(--app-sidebar-width)_minmax(0,1fr)] lg:grid-rows-1 xl:grid-cols-[var(--app-rail-width)_var(--app-sidebar-width)_minmax(0,1fr)_var(--app-member-panel-width)]"
 
   defp context_menu_style(%{x: x, y: y}), do: "left: #{x}px; top: #{y}px;"
   defp context_menu_style(_position), do: nil
@@ -1079,6 +1084,14 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
     end)
   end
 
+  defp visible_voice_roster_members(roster_members), do: Enum.take(roster_members, 4)
+
+  defp voice_roster_overflow_count(roster_members), do: max(length(roster_members) - 4, 0)
+
+  defp voice_channel_occupancy_label([]), do: "Empty"
+  defp voice_channel_occupancy_label([_member]), do: "1 person"
+  defp voice_channel_occupancy_label(roster_members), do: "#{length(roster_members)} people"
+
   defp roster_member_actions(current_scope, workspace, member_by_user_id, user_id) do
     case Map.get(member_by_user_id, user_id) do
       nil ->
@@ -1104,6 +1117,6 @@ defmodule DiscordCloneWeb.WorkspaceLive.Shell do
     MapSet.member?(online_user_ids, member.user.id)
   end
 
-  defp main_class(:channel), do: "flex min-h-0 flex-col bg-base-100"
+  defp main_class(:channel), do: "flex min-h-0 min-w-0 flex-col bg-base-100"
   defp main_class(_state), do: "min-h-0 overflow-auto bg-base-100 p-6"
 end

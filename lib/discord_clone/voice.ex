@@ -56,7 +56,13 @@ defmodule DiscordClone.Voice do
   @spec subscribe_to_voice_channel_roster(term()) :: :ok | {:error, :not_found}
   def subscribe_to_voice_channel_roster(voice_channel_id) do
     UUIDIdentifier.cast_or(voice_channel_id, {:error, :not_found}, fn voice_channel_id ->
-      Phoenix.PubSub.subscribe(DiscordClone.PubSub, voice_channel_roster_topic(voice_channel_id))
+      topic = voice_channel_roster_topic(voice_channel_id)
+
+      if topic in Registry.keys(DiscordClone.PubSub, self()) do
+        :ok
+      else
+        Phoenix.PubSub.subscribe(DiscordClone.PubSub, topic)
+      end
     end)
   end
 

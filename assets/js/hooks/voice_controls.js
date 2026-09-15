@@ -49,6 +49,7 @@ export function createVoiceControls(controller) {
 
     renderState(state) {
       this.currentState = state
+      const muted = state.muted ?? state.status === "muted"
       const audioBlocked = state.audioPlayback === "blocked"
       const visible = ["requesting", "capturing", "joining", "connected", "interrupted", "muted"].includes(state.status) || state.error || audioBlocked
       const channel = this.el.querySelector("[data-voice-controls-channel]")
@@ -64,8 +65,8 @@ export function createVoiceControls(controller) {
       channel.textContent = state.channelName || "Voice Channel"
       status.textContent = railStatusMessage(state)
       status.setAttribute("aria-live", state.error ? "off" : "polite")
-      mute.textContent = state.status === "muted" ? "Unmute" : "Mute"
-      mute.setAttribute("aria-pressed", String(state.status === "muted"))
+      mute.textContent = muted ? "Unmute" : "Mute"
+      mute.setAttribute("aria-pressed", String(muted))
       deafen.textContent = state.deafened === true ? "Undeafen" : "Deafen"
       deafen.setAttribute("aria-pressed", String(state.deafened === true))
 
@@ -80,20 +81,21 @@ export function createVoiceControls(controller) {
 
 function railStatusMessage(state) {
   if (state.audioPlayback === "blocked") return "Audio is ready — select Enable audio to hear it."
-  if (state.status === "requesting") return "Allow microphone access"
-  if (state.status === "joining" || state.status === "capturing") return "Joining voice…"
-  if (state.status === "connected" || state.status === "muted") return "Connected"
-  if (state.status === "interrupted") return "Connection interrupted"
-  if (state.status === "connection_failed") return "Couldn’t connect — try again"
-  if (state.status === "connection_lost") return "Connection lost — try again"
-  if (state.status === "incompatible_audio_output_slots") return "This browser could not prepare group audio. Try again after checking browser support."
-  if (state.status === "permission_denied") return "Microphone permission was denied. Check browser settings, then retry."
-  if (state.status === "no_device") return "No microphone was found. Connect an input, then retry."
-  if (state.status === "insecure_context") return "Microphone capture needs HTTPS outside localhost."
-  if (state.status === "unsupported") return "This browser does not support microphone capture."
-  if (state.status === "externally_ended") return "Microphone capture ended unexpectedly. Retry to reconnect."
-  if (state.status === "taken_over") return "Voice moved to another tab"
-  if (state.status === "unknown_error") return "Microphone capture could not start. Retry to try again."
+  const status = state.connectionStatus || state.status
+  if (status === "requesting") return "Allow microphone access"
+  if (status === "joining" || status === "capturing") return "Joining voice…"
+  if (status === "connected" || status === "muted") return "Connected"
+  if (status === "interrupted") return "Connection interrupted"
+  if (status === "connection_failed") return "Couldn’t connect — try again"
+  if (status === "connection_lost") return "Connection lost — try again"
+  if (status === "incompatible_audio_output_slots") return "This browser could not prepare group audio. Try again after checking browser support."
+  if (status === "permission_denied") return "Microphone permission was denied. Check browser settings, then retry."
+  if (status === "no_device") return "No microphone was found. Connect an input, then retry."
+  if (status === "insecure_context") return "Microphone capture needs HTTPS outside localhost."
+  if (status === "unsupported") return "This browser does not support microphone capture."
+  if (status === "externally_ended") return "Microphone capture ended unexpectedly. Retry to reconnect."
+  if (status === "taken_over") return "Voice moved to another tab"
+  if (status === "unknown_error") return "Microphone capture could not start. Retry to try again."
   return "Voice is not connected"
 }
 

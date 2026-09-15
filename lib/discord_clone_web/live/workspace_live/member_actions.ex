@@ -140,7 +140,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.MemberActions do
       scope,
       workspace_id,
       target_user_id,
-      Map.fetch!(params, "timeout_duration")
+      Map.get(params, "timeout_duration")
     )
   end
 

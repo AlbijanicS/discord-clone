@@ -21,7 +21,7 @@ config :discord_clone, DiscordCloneWeb.Endpoint,
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
   url: [
     scheme: "https",
-    host: "192.168.1.42",
+    host: "192.168.100.137",
     port: 4001
   ],
   http: [ip: {0, 0, 0, 0}],
@@ -32,7 +32,7 @@ config :discord_clone, DiscordCloneWeb.Endpoint,
     certfile: "priv/cert/lan.pem"
   ],
   check_origin: [
-    "//192.168.1.42:4001",
+    "//192.168.100.137:4001",
     "//localhost:4001"
   ],
   check_origin: false,

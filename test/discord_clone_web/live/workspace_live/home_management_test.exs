@@ -34,12 +34,7 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
 
       assert has_element?(
                view,
-               "#voice-channel-#{voice_channel.id}-active-indicator[phx-hook='VoiceChannelIndicator'][phx-update='ignore'][hidden]"
-             )
-
-      assert has_element?(
-               view,
-               "#voice-channel-#{voice_channel.id}-join[type='button'][aria-label='Join voice channel lobby'][aria-pressed='false'][data-workspace-id='#{workspace.id}']"
+               "#voice-channel-#{voice_channel.id}-join[type='button'][aria-label='Join voice channel lobby, Empty'][aria-pressed='false'][data-workspace-id='#{workspace.id}']"
              )
 
       refute has_element?(view, "#voice-channel-local-state")
@@ -180,6 +175,62 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
              )
 
       assert :ok = Voice.leave(first_voice_channel.id, second_voice_session_id)
+    end
+
+    test "keeps a Voice Channel roster scannable at its visible-member boundary", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, voice_channel} =
+        Workspaces.create_voice_channel(scope, workspace.id, %{name: "Lobby"})
+
+      member_scopes = Enum.map(1..5, fn _ -> user_scope_fixture() end)
+      Enum.each(member_scopes, &add_workspace_member!(workspace, &1))
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      voice_session_ids =
+        Enum.map(member_scopes, fn member_scope ->
+          assert {:ok, %{voice_session_id: voice_session_id}} =
+                   Voice.join(
+                     voice_channel.id,
+                     member_scope.user.id,
+                     "boundary-#{member_scope.user.id}",
+                     self()
+                   )
+
+          voice_session_id
+        end)
+
+      assert has_element?(
+               view,
+               "#voice-channel-#{voice_channel.id}-join[aria-label='Join voice channel lobby, 5 people']"
+             )
+
+      refute has_element?(view, "#voice-channel-#{voice_channel.id}-occupancy")
+
+      member_scopes
+      |> Enum.take(4)
+      |> Enum.each(fn member_scope ->
+        assert has_element?(
+                 view,
+                 "#voice-channel-#{voice_channel.id}-roster-member-#{member_scope.user.id}"
+               )
+      end)
+
+      fifth_member_scope = Enum.at(member_scopes, 4)
+
+      refute has_element?(
+               view,
+               "#voice-channel-#{voice_channel.id}-roster-member-#{fifth_member_scope.user.id}"
+             )
+
+      assert has_element?(view, "#voice-channel-#{voice_channel.id}-roster-overflow", "+1 more")
+
+      Enum.each(voice_session_ids, &Voice.leave(voice_channel.id, &1))
     end
 
     test "shows Voice Disconnect only for permitted roster targets", %{
@@ -335,6 +386,70 @@ defmodule DiscordCloneWeb.WorkspaceLive.HomeManagementTest do
       assert has_element?(view, "#voice-channel-#{voice_channel.id}-delete[phx-confirm]")
       view |> element("#voice-channel-#{voice_channel.id}-delete") |> render_click()
       refute has_element?(view, "#voice-channel-#{voice_channel.id}")
+    end
+
+    test "keeps one action menu open and removes its trigger while renaming", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, workspace} = Workspaces.create_workspace(scope, %{name: "Foundry"})
+
+      {:ok, voice_channel} =
+        Workspaces.create_voice_channel(scope, workspace.id, %{name: "Lobby"})
+
+      {:ok, view, _html} =
+        live(conn, ~p"/workspaces/#{workspace.id}/channels/#{workspace.default_channel_id}")
+
+      view
+      |> element("#channel-#{workspace.default_channel_id}-actions")
+      |> render_click()
+
+      assert has_element?(view, "#channel-#{workspace.default_channel_id}-menu")
+
+      view
+      |> element("#voice-channel-#{voice_channel.id}-actions")
+      |> render_click()
+
+      refute has_element?(view, "#channel-#{workspace.default_channel_id}-menu")
+      assert has_element?(view, "#voice-channel-#{voice_channel.id}-menu")
+
+      render_hook(view, "close_voice_channel_context_menu")
+
+      refute has_element?(view, "#voice-channel-#{voice_channel.id}-menu")
+
+      view
+      |> element("#voice-channel-#{voice_channel.id}-actions")
+      |> render_click()
+
+      assert has_element?(view, "#voice-channel-#{voice_channel.id}-menu")
+
+      view
+      |> element("#voice-channel-#{voice_channel.id}-actions")
+      |> render_click()
+
+      refute has_element?(view, "#voice-channel-#{voice_channel.id}-menu")
+
+      view
+      |> element("#voice-channel-#{voice_channel.id}-actions")
+      |> render_click()
+
+      view
+      |> element("#voice-channel-#{voice_channel.id}-rename")
+      |> render_click()
+
+      assert has_element?(view, "#voice-channel-#{voice_channel.id}-rename-form")
+      refute has_element?(view, "#voice-channel-#{voice_channel.id}-actions")
+
+      view
+      |> element("#channel-#{workspace.default_channel_id}-actions")
+      |> render_click()
+
+      view
+      |> element("#channel-#{workspace.default_channel_id}-rename")
+      |> render_click()
+
+      assert has_element?(view, "#channel-#{workspace.default_channel_id}-rename-form")
+      refute has_element?(view, "#channel-#{workspace.default_channel_id}-actions")
     end
 
     test "shows and opens the workspace create action from a selected channel", %{

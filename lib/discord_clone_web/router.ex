@@ -24,12 +24,6 @@ defmodule DiscordCloneWeb.Router do
     get "/readyz", HealthController, :ready
   end
 
-  scope "/", DiscordCloneWeb do
-    pipe_through :browser
-
-    get "/", PageController, :home
-  end
-
   # Other scopes may use custom stacks.
   # scope "/api", DiscordCloneWeb do
   #   pipe_through :api
@@ -88,6 +82,7 @@ defmodule DiscordCloneWeb.Router do
 
     live_session :current_user,
       on_mount: [{DiscordCloneWeb.UserAuth, :mount_current_scope}] do
+      live "/", UserLive.Login, :new
       live "/users/log-in", UserLive.Login, :new
     end
 

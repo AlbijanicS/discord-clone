@@ -123,7 +123,7 @@ defmodule DiscordCloneWeb.ChannelLive.MentionInteractionTest do
         content: "Before @alice_member and after"
       })
 
-      assert has_element?(view, "#message_content[value='Before @alice_member and after']")
+      assert has_element?(view, "textarea#message_content", "Before @alice_member and after")
       assert has_element?(view, "#message-reply-target[data-message-id='#{parent.id}']")
       refute has_element?(view, "#message-mention-autocomplete")
     end

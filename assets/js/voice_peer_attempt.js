@@ -22,6 +22,7 @@ export function createVoicePeerAttempt({
   setTimeoutFn = globalThis.setTimeout,
   clearTimeoutFn = globalThis.clearTimeout,
 } = {}) {
+  let localVoiceState = {muted: false, deafened: false}
   let active = false
   let answerApplied = false
   let aggregatePlaybackStream = null
@@ -42,6 +43,10 @@ export function createVoicePeerAttempt({
   let controlPlaneInterrupted = false
   let lastRouteCategory = null
   let statsGeneration = 0
+
+  function publishLocalVoiceState() {
+    if (active && signalingSessionId) signaling?.sendLocalVoiceState?.(localVoiceState)
+  }
 
   function fail(error = "connection_failed") {
     if (!active) return
@@ -120,6 +125,7 @@ export function createVoicePeerAttempt({
     clearTimeoutFn(renewalAckTimeout)
     renewalAckTimeout = null
     controlPlaneInterrupted = false
+    publishLocalVoiceState()
     setRenewalDeadline()
     publishConnectionState()
   }
@@ -344,6 +350,7 @@ export function createVoicePeerAttempt({
 
         const admission = voiceAdmission(joined)
         signalingSessionId = admission.signalingSessionId
+        publishLocalVoiceState()
         currentNegotiationId = negotiationId()
 
         signaling.onServerIce(receiveServerIce)
@@ -414,7 +421,8 @@ export function createVoicePeerAttempt({
     },
 
     updateLocalVoiceState(state) {
-      if (active) signaling?.sendLocalVoiceState?.(state)
+      localVoiceState = {muted: state.muted === true, deafened: state.deafened === true}
+      publishLocalVoiceState()
     },
   }
 }

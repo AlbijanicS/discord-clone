@@ -17,7 +17,7 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
       <aside
         id="workspace-sidebar"
         aria-label="Global destinations"
-        class="flex min-h-0 min-w-0 flex-col items-center overflow-x-hidden bg-base-300 p-3 shadow-[inset_-1px_0_0_rgb(255_255_255/0.03)]"
+        class="flex h-full min-h-0 min-w-0 self-stretch flex-col items-center overflow-x-hidden bg-base-300 p-3 shadow-[inset_-1px_0_0_rgb(255_255_255/0.03)]"
       >
         <.link
           id="global-direct-messages-destination"
@@ -25,9 +25,9 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
           aria-label="Direct Messages"
           title="Direct Messages"
           class={[
-            "relative mb-3 flex size-12 shrink-0 items-center justify-center rounded-2xl",
+            "relative flex size-12 shrink-0 items-center justify-center rounded-2xl",
             "bg-primary text-primary-content shadow-sm ring-1 ring-primary/40 transition duration-200",
-            "hover:-translate-y-0.5 hover:rounded-xl hover:shadow-md focus-visible:outline-none",
+            "hover:shadow-md focus-visible:outline-none",
             "focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-300",
             "phx-click-loading:pointer-events-none phx-click-loading:animate-pulse"
           ]}
@@ -43,13 +43,13 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
           </span>
         </.link>
 
-        <div id="activity-preview-anchor" class="group relative mb-3 shrink-0">
+        <div id="activity-preview-anchor" class="group relative shrink-0">
           <.link
             id="global-activity-bell"
             navigate={~p"/activity"}
             class={[
-              "relative flex size-9 items-center justify-center rounded-xl text-base-content/60 transition",
-              "hover:scale-105 hover:bg-base-100 hover:text-base-content focus-visible:bg-base-100",
+              "relative flex size-12 items-center justify-center rounded-2xl text-base-content/60 transition",
+              "hover:bg-base-100 hover:text-base-content focus-visible:bg-base-100",
               "focus-visible:text-base-content focus-visible:outline-none focus-visible:ring-2",
               "focus-visible:ring-primary/60"
             ]}
@@ -169,7 +169,7 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
         >
         </div>
 
-        <div class="mb-3 h-px w-8 shrink-0 bg-base-content/15" aria-hidden="true"></div>
+        <div class="h-px w-8 shrink-0 bg-base-content/15" aria-hidden="true"></div>
 
         <div
           id="workspaces"
@@ -187,7 +187,8 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
               phx-hook={selected_workspace?(workspace, @selected_workspace) && "ContextMenu"}
               title={workspace.name}
               class={[
-                "flex size-12 shrink-0 items-center justify-center rounded-lg text-base font-bold shadow-sm ring-1 transition hover:-translate-y-0.5",
+                "flex size-12 shrink-0 items-center justify-center rounded-2xl text-base font-bold shadow-sm ring-1 transition duration-200",
+                "hover:shadow-md",
                 selected_workspace?(workspace, @selected_workspace) &&
                   "bg-primary text-primary-content ring-primary",
                 !selected_workspace?(workspace, @selected_workspace) &&
@@ -299,7 +300,7 @@ defmodule DiscordCloneWeb.GlobalDestinationRail do
         data-voice-controls-panel
         aria-label="Voice Connection Panel"
         hidden
-        class="mx-3 mb-2.5 overflow-hidden rounded-xl border border-primary/20 bg-gradient-to-br from-base-100 via-base-100 to-primary/10 p-3 text-base-content shadow-[0_-8px_24px_rgb(0_0_0/0.12)] ring-1 ring-white/5"
+        class="overflow-hidden border-b border-primary/20 bg-base-200 p-3 text-base-content"
       >
         <div class="flex items-center gap-2.5">
           <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary ring-1 ring-primary/25">

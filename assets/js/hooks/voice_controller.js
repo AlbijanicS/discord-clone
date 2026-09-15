@@ -13,11 +13,24 @@ export function createVoiceController({
   let currentState = idleState()
   let currentClaim = null
   let activeConnection = null
-  let statusBeforeMute = null
+  let localMuted = false
+  let deafened = false
+  let connectionStatus = "idle"
   const listeners = new Set()
 
+  // Keep the legacy muted presentation while lifecycle and control intent stay independent.
   function publish(nextState) {
-    currentState = nextState
+    connectionStatus = nextState.status
+    const muted = localMuted || deafened
+    currentState = {
+      ...nextState,
+      connectionStatus,
+      localMuted,
+      muted,
+      deafened,
+      status: muted && ["capturing", "connected", "interrupted"].includes(connectionStatus)
+        ? "muted" : connectionStatus,
+    }
     listeners.forEach(listener => listener(currentState))
   }
 
@@ -34,15 +47,22 @@ export function createVoiceController({
   }
 
   function closeConnection() {
-    activeConnection?.leave?.()
+    const connection = activeConnection
     activeConnection = null
+    connection?.leave?.()
   }
 
-  function publishLocalVoiceState(state = currentState) {
+  function publishLocalVoiceState() {
     activeConnection?.updateLocalVoiceState?.({
-      muted: state.status === "muted",
-      deafened: state.deafened === true,
+      muted: localMuted || deafened,
+      deafened,
     })
+  }
+
+  function applyControls() {
+    audioTracks.forEach(track => track.enabled = !(localMuted || deafened))
+    activeConnection?.setDeafened?.(deafened)
+    publishLocalVoiceState()
   }
 
   function releaseForTakeover() {
@@ -97,12 +117,12 @@ export function createVoiceController({
     publish({...channel, status: "requesting"})
 
     if (!mediaDevices?.getUserMedia) {
-      publish(failureState(channel, "unsupported"))
+      publish(failureState(currentState, "unsupported"))
       return Promise.resolve()
     }
 
     if (secureContext === false) {
-      publish(failureState(channel, "insecure_context"))
+      publish(failureState(currentState, "insecure_context"))
       return Promise.resolve()
     }
 
@@ -118,17 +138,18 @@ export function createVoiceController({
         const liveTrack = tracks.find(track => track?.readyState !== "ended")
         if (!liveTrack) {
           stopTracks(tracks)
-          publish(failureState(channel, "no_device"))
+          publish(failureState(currentState, "no_device"))
           return
         }
 
         audioTracks = tracks
         audioTracks.forEach(track => track.addEventListener?.("ended", handleTrackEnded))
-        publish({...channel, status: "capturing"})
+        publish({...currentState, status: "capturing"})
+        applyControls()
         startConnection(channel, liveTrack, request)
       })
       .catch(error => {
-        if (request === activeRequest) publish(failureState(channel, failureFor(error)))
+        if (request === activeRequest) publish(failureState(currentState, failureFor(error)))
       })
   }
 
@@ -145,35 +166,44 @@ export function createVoiceController({
 
         activeConnection = null
         clearCapture()
-        publish(error === "incompatible_audio_output_slots"
-          ? failureState(channel, error)
-          : idleState())
+        if (error === "incompatible_audio_output_slots") {
+          publish(failureState(currentState, error))
+        } else {
+          localMuted = false
+          deafened = false
+          publish(idleState())
+        }
       },
       onState(status) {
         if (connection !== activeConnection || request !== activeRequest) return
-        publish({...channel, status})
+        publish({...currentState, status})
+        applyControls()
       },
       onCue({channelId, cue}) {
+        if (connection !== activeConnection || request !== activeRequest) return
         if (channelId === currentState.channelId && ownsLocalCapture()) cuePlayer(cue)
       },
       onPlayback(outcome) {
         if (connection !== activeConnection || request !== activeRequest) return
 
-        if (outcome === "blocked") publish({...currentState, audioPlayback: "blocked"})
+        if (outcome === "blocked") publish({...currentState, status: connectionStatus, audioPlayback: "blocked"})
         if (outcome === "playing") {
           const {audioPlayback: _audioPlayback, ...state} = currentState
-          publish(state)
+          publish({...state, status: connectionStatus})
         }
       },
     })
 
     activeConnection = connection
-    publish({...channel, status: "joining"})
+    publish({...currentState, status: "joining"})
+    applyControls()
     connection?.connect?.({channelId: channel.channelId, track})?.catch?.(() => {
       if (connection !== activeConnection || request !== activeRequest) return
 
       closeConnection()
       clearCapture()
+      localMuted = false
+      deafened = false
       publish(idleState())
     })
   }
@@ -207,7 +237,9 @@ export function createVoiceController({
       if (!currentState.retryable || !currentState.channelId) return Promise.resolve()
 
       const channel = normalizeChannel(currentState)
-      this.leave()
+      activeRequest += 1
+      closeConnection()
+      clearCapture()
       return startCapture(channel)
     },
 
@@ -217,34 +249,19 @@ export function createVoiceController({
     },
 
     toggleMute() {
-      if (["capturing", "connected", "interrupted"].includes(currentState.status)) {
-        statusBeforeMute = currentState.status
-        audioTracks.forEach(track => track.enabled = false)
-        const state = {...currentState, status: "muted"}
-        publish(state)
-        publishLocalVoiceState(state)
-      } else if (currentState.status === "muted" && currentState.deafened !== true) {
-        audioTracks.forEach(track => track.enabled = true)
-        const state = {...currentState, status: statusBeforeMute || "capturing"}
-        publish(state)
-        publishLocalVoiceState(state)
-        statusBeforeMute = null
-      }
+      if (!ownsLocalCapture() || deafened) return
+
+      localMuted = !localMuted
+      publish({...currentState, status: connectionStatus})
+      applyControls()
     },
 
     toggleDeafen() {
-      if (!["capturing", "connected", "interrupted", "muted"].includes(currentState.status)) return
+      if (!ownsLocalCapture()) return
 
-      const deafened = currentState.deafened !== true
-      if (deafened) {
-        statusBeforeMute = currentState.status === "muted" ? statusBeforeMute : currentState.status
-        audioTracks.forEach(track => track.enabled = false)
-      }
-
-      activeConnection?.setDeafened?.(deafened)
-      const state = {...currentState, deafened, status: deafened ? "muted" : currentState.status}
-      publish(state)
-      publishLocalVoiceState(state)
+      deafened = !deafened
+      publish({...currentState, status: connectionStatus})
+      applyControls()
     },
 
     leave() {
@@ -252,6 +269,8 @@ export function createVoiceController({
       currentClaim = null
       closeConnection()
       clearCapture()
+      localMuted = false
+      deafened = false
       publish(idleState())
     },
 
@@ -340,7 +359,7 @@ function failureFor(error) {
 }
 
 function idleState() {
-  return {channelId: null, channelName: null, status: "idle", workspaceId: null}
+  return {channelId: null, channelName: null, status: "idle", connectionStatus: "idle", localMuted: false, muted: false, deafened: false, workspaceId: null}
 }
 
 const voiceController = createVoiceController()

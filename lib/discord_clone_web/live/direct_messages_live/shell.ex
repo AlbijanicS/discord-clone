@@ -39,18 +39,6 @@ defmodule DiscordCloneWeb.DirectMessagesLive.Shell do
       >
         <nav class="space-y-1 border-b border-base-300/70 p-4" aria-label="Friends">
           <.link
-            id="direct-messages-friends-link"
-            navigate={~p"/direct-messages"}
-            aria-current={if(@current_action == :friends, do: "page")}
-            class={[
-              navigation_class(@current_action == :friends),
-              "phx-click-loading:pointer-events-none phx-click-loading:animate-pulse"
-            ]}
-          >
-            <.icon name="hero-user-group" class="size-5" />
-            <span class="flex-1">Friends</span>
-          </.link>
-          <.link
             id="direct-messages-requests-link"
             navigate={~p"/direct-messages/requests"}
             aria-current={if(@current_action == :requests, do: "page")}
@@ -201,11 +189,11 @@ defmodule DiscordCloneWeb.DirectMessagesLive.Shell do
 
   defp direct_messages_shell_class(true),
     do:
-      "fixed inset-0 grid min-h-screen grid-cols-1 grid-rows-[auto_minmax(12rem,36vh)_minmax(0,1fr)] overflow-hidden bg-base-100 lg:grid-cols-[5rem_20rem_minmax(0,1fr)] lg:grid-rows-1 xl:grid-cols-[5rem_20rem_minmax(0,1fr)_16rem]"
+      "fixed inset-0 grid min-h-screen grid-cols-1 grid-rows-[auto_minmax(12rem,36vh)_minmax(0,1fr)] overflow-hidden bg-base-100 lg:grid-cols-[var(--app-rail-width)_var(--app-sidebar-width)_minmax(0,1fr)] lg:grid-rows-1 xl:grid-cols-[var(--app-rail-width)_var(--app-sidebar-width)_minmax(0,1fr)_var(--app-member-panel-width)]"
 
   defp direct_messages_shell_class(false),
     do:
-      "fixed inset-0 grid min-h-screen grid-cols-1 grid-rows-[auto_minmax(12rem,36vh)_minmax(0,1fr)] overflow-hidden bg-base-100 lg:grid-cols-[5rem_20rem_minmax(0,1fr)] lg:grid-rows-1"
+      "fixed inset-0 grid min-h-screen grid-cols-1 grid-rows-[auto_minmax(12rem,36vh)_minmax(0,1fr)] overflow-hidden bg-base-100 lg:grid-cols-[var(--app-rail-width)_var(--app-sidebar-width)_minmax(0,1fr)] lg:grid-rows-1"
 
   defp participant_initial(user) do
     user.username |> String.first() |> String.upcase()

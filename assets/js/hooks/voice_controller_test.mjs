@@ -134,13 +134,13 @@ test("a Voice Channel click requests capture, mutes, unmutes, and leaves without
   const microphoneTrack = track()
   const secondaryTrack = track()
 
-  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", workspaceId: null})
+  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", connectionStatus: "idle", localMuted: false, muted: false, deafened: false, workspaceId: null})
 
   const join = controller.join({id: "voice-1", name: "lobby", workspaceId: "workspace-1"})
   assert.deepEqual(controller.state(), {
     channelId: "voice-1",
     channelName: "lobby",
-    status: "requesting",
+    status: "requesting", connectionStatus: "requesting", localMuted: false, muted: false, deafened: false,
     workspaceId: "workspace-1",
   })
 
@@ -163,7 +163,7 @@ test("a Voice Channel click requests capture, mutes, unmutes, and leaves without
   assert.equal(microphoneTrack.enabled, true)
 
   controller.leave()
-  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", workspaceId: null})
+  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", connectionStatus: "idle", localMuted: false, muted: false, deafened: false, workspaceId: null})
   assert.equal(microphoneTrack.stopped, true)
   assert.equal(secondaryTrack.stopped, true)
 })
@@ -180,7 +180,7 @@ test("leaving while permission is pending stops a late stream instead of restori
   capture.resolve(stream(microphoneTrack))
   await join
 
-  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", workspaceId: null})
+  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", connectionStatus: "idle", localMuted: false, muted: false, deafened: false, workspaceId: null})
   assert.equal(microphoneTrack.stopped, true)
 })
 
@@ -200,7 +200,7 @@ test("a denied browser permission keeps the selected Voice Channel and offers a 
     channelName: "lobby",
     error: "permission_denied",
     retryable: true,
-    status: "permission_denied",
+    status: "permission_denied", connectionStatus: "permission_denied", localMuted: false, muted: false, deafened: false,
     workspaceId: "workspace-1",
   })
   assert.equal(connectionAttempts, 0)
@@ -258,10 +258,10 @@ test("a rejected connection attempt releases capture even without a failure call
   await new Promise(resolve => setImmediate(resolve))
 
   assert.equal(microphoneTrack.stopped, true)
-  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", workspaceId: null})
+  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", connectionStatus: "idle", localMuted: false, muted: false, deafened: false, workspaceId: null})
 })
 
-test("Local Deafen silences playback, enables Local Mute, and undeafens without resuming transmission", async () => {
+test("Local Deafen silences playback and restores an unmuted microphone", async () => {
   const microphoneTrack = track()
   const localStates = []
   const playbackStates = []
@@ -285,15 +285,15 @@ test("Local Deafen silences playback, enables Local Mute, and undeafens without 
   assert.equal(controller.state().status, "muted")
   assert.equal(controller.state().deafened, true)
   assert.equal(microphoneTrack.enabled, false)
-  assert.deepEqual(playbackStates, [true])
+  assert.equal(playbackStates.at(-1), true)
   assert.deepEqual(localStates.at(-1), {muted: true, deafened: true})
 
   controller.toggleDeafen()
-  assert.equal(controller.state().status, "muted")
+  assert.equal(controller.state().status, "connected")
   assert.equal(controller.state().deafened, false)
-  assert.equal(microphoneTrack.enabled, false)
-  assert.deepEqual(playbackStates, [true, false])
-  assert.deepEqual(localStates.at(-1), {muted: true, deafened: false})
+  assert.equal(microphoneTrack.enabled, true)
+  assert.equal(playbackStates.at(-1), false)
+  assert.deepEqual(localStates.at(-1), {muted: false, deafened: false})
 })
 
 test("local mute and unmute keep the established Voice connection and capture request", async () => {
@@ -461,7 +461,7 @@ test("a terminal connection failure releases controller-owned capture and return
   attempt.onFailure("connection_failed")
 
   assert.equal(microphoneTrack.stopped, true)
-  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", workspaceId: null})
+  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", connectionStatus: "idle", localMuted: false, muted: false, deafened: false, workspaceId: null})
 })
 
 test("a four-slot compatibility failure releases capture and preserves an explicit retry", async () => {
@@ -484,7 +484,7 @@ test("a four-slot compatibility failure releases capture and preserves an explic
     channelName: "lobby",
     error: "incompatible_audio_output_slots",
     retryable: true,
-    status: "incompatible_audio_output_slots",
+    status: "incompatible_audio_output_slots", connectionStatus: "incompatible_audio_output_slots", localMuted: false, muted: false, deafened: false,
     workspaceId: "workspace-1",
   })
 })
@@ -632,7 +632,7 @@ test("rejoining an active Voice Channel is idempotent and switching stops old tr
   assert.equal(firstTrack.stopped, true)
   second.resolve(stream(secondTrack))
   await switchJoin
-  assert.deepEqual(controller.state(), {channelId: "voice-2", channelName: "standup", status: "capturing", workspaceId: "workspace-1"})
+  assert.deepEqual(controller.state(), {channelId: "voice-2", channelName: "standup", status: "capturing", connectionStatus: "capturing", localMuted: false, muted: false, deafened: false, workspaceId: "workspace-1"})
 })
 
 test("conflicting Voice Channel clicks do not create more permission requests while one is pending", async () => {
@@ -665,7 +665,7 @@ test("an externally ended track and repeated teardown release all local ownershi
     channelName: "lobby",
     error: "externally_ended",
     retryable: true,
-    status: "externally_ended",
+    status: "externally_ended", connectionStatus: "externally_ended", localMuted: false, muted: false, deafened: false,
     workspaceId: "workspace-1",
   })
   assert.equal(microphoneTrack.stopped, true)
@@ -673,7 +673,7 @@ test("an externally ended track and repeated teardown release all local ownershi
 
   controller.teardown()
   controller.teardown()
-  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", workspaceId: null})
+  assert.deepEqual(controller.state(), {channelId: null, channelName: null, status: "idle", connectionStatus: "idle", localMuted: false, muted: false, deafened: false, workspaceId: null})
 })
 
 test("a newer Voice Owner Tab claim releases active capture and explains the takeover", async () => {
@@ -701,7 +701,7 @@ test("a newer Voice Owner Tab claim releases active capture and explains the tak
     channelName: "lobby",
     error: "taken_over",
     retryable: false,
-    status: "taken_over",
+    status: "taken_over", connectionStatus: "taken_over", localMuted: false, muted: false, deafened: false,
     workspaceId: "workspace-1",
   })
   assert.equal(second.state().status, "capturing")
@@ -806,4 +806,201 @@ test("older claims and unavailable tab coordination leave local capture safe and
   deliverClaim({tabId: "tab-a", timestamp: 99})
   assert.equal(controller.state().status, "capturing")
   assert.equal(microphoneTrack.stopped, false)
+})
+
+for (const initiallyMuted of [false, true]) {
+  test(`deafen survives interruption and recovery, restoring mute=${initiallyMuted}`, async () => {
+    const microphone = track()
+    const roster = []
+    const playback = []
+    let attempt
+    const controller = createVoiceController({
+      tabCoordination: null,
+      mediaDevices: {getUserMedia: async () => stream(microphone)},
+      connectionFactory(options) {
+        attempt = options
+        return {
+          leave() {},
+          setDeafened(value) { playback.push(value) },
+          updateLocalVoiceState(value) { roster.push(value) },
+        }
+      },
+    })
+    await controller.join({id: "voice-1", name: "lobby"})
+    attempt.onState("connected")
+    if (initiallyMuted) controller.toggleMute()
+    controller.toggleDeafen()
+    attempt.onPlayback("blocked")
+    attempt.onState("interrupted")
+    assert.equal(controller.state().deafened, true)
+    assert.equal(controller.state().connectionStatus, "interrupted")
+    assert.equal(controller.state().audioPlayback, "blocked")
+    assert.equal(microphone.enabled, false)
+    attempt.onState("connected")
+    assert.deepEqual(roster.at(-1), {muted: true, deafened: true})
+    assert.equal(playback.at(-1), true)
+    controller.toggleDeafen()
+    assert.equal(controller.state().status, initiallyMuted ? "muted" : "connected")
+    assert.equal(microphone.enabled, !initiallyMuted)
+    assert.equal(playback.at(-1), false)
+    assert.deepEqual(roster.at(-1), {muted: initiallyMuted, deafened: false})
+    controller.leave()
+  })
+}
+
+for (const initiallyMuted of [false, true]) {
+  test(`joining, ended-track retry, stale callbacks, and leave preserve the intended controls (mute=${initiallyMuted})`, async () => {
+    const captures = []
+    const attempts = []
+    const microphones = []
+    const cues = []
+    let takeover
+    const controller = createVoiceController({
+      tabId: "tab-a",
+      now: () => 1,
+      tabCoordination: {publish() {}, subscribe(listener) { takeover = listener }},
+      cuePlayer: cue => cues.push(cue),
+      mediaDevices: {getUserMedia() { const capture = deferred(); captures.push(capture); return capture.promise }},
+      connectionFactory(options) {
+        const attempt = {options, playback: [], roster: [], leaves: 0,
+          leave() { this.leaves += 1 },
+          setDeafened(value) { this.playback.push(value) },
+          updateLocalVoiceState(value) { this.roster.push(value) },
+        }
+        attempts.push(attempt)
+        return attempt
+      },
+    })
+    const join = controller.join({id: "voice-1", name: "lobby"})
+    if (initiallyMuted) controller.toggleMute()
+    controller.toggleDeafen()
+    const first = track()
+    microphones.push(first)
+    captures[0].resolve(stream(first))
+    await join
+    assert.equal(controller.state().connectionStatus, "joining")
+    assert.equal(first.enabled, false)
+    assert.equal(attempts[0].playback.at(-1), true)
+    first.end()
+    assert.equal(first.stopped, true)
+    assert.equal(controller.state().retryable, true)
+    const retry = controller.retry()
+    const second = track()
+    microphones.push(second)
+    captures[1].resolve(stream(second))
+    await retry
+    for (const callback of [
+      () => attempts[0].options.onState("connected"),
+      () => attempts[0].options.onPlayback("blocked"),
+      () => attempts[0].options.onCue({channelId: "voice-1", cue: "join"}),
+      () => attempts[0].options.onFailure("connection_lost"),
+    ]) callback()
+    assert.equal(controller.state().connectionStatus, "joining")
+    assert.equal(controller.state().audioPlayback, undefined)
+    assert.equal(second.stopped, false)
+    assert.equal(second.enabled, false)
+    assert.equal(attempts[1].playback.at(-1), true)
+    assert.deepEqual(attempts[1].roster.at(-1), {muted: true, deafened: true})
+    assert.deepEqual(cues, [])
+    attempts[1].options.onState("connected")
+    controller.toggleDeafen()
+    assert.equal(second.enabled, !initiallyMuted)
+    assert.equal(controller.state().localMuted, initiallyMuted)
+    controller.toggleDeafen()
+    takeover({tabId: "tab-b", timestamp: 2})
+    assert.equal(controller.state().status, "taken_over")
+    assert.equal(second.stopped, true)
+    attempts[1].options.onState("connected")
+    assert.equal(controller.state().status, "taken_over")
+    controller.leave()
+    assert.equal(controller.state().muted, false)
+    assert.equal(controller.state().deafened, false)
+    const freshJoin = controller.join({id: "voice-1", name: "lobby"})
+    const third = track()
+    microphones.push(third)
+    captures[2].resolve(stream(third))
+    await freshJoin
+    assert.equal(third.enabled, true)
+    assert.equal(attempts[2].playback.at(-1), false)
+    controller.leave()
+    assert.ok(microphones.every(microphone => microphone.stopped))
+    assert.ok(attempts.every(attempt => attempt.leaves === 1))
+  })
+}
+
+test("the real peer publishes controls at admission and signaling recovery and keeps newly attached audio deafened", async () => {
+  const admission = deferred()
+  const roster = []
+  const handlers = new Map()
+  const timers = new Map()
+  let acknowledge
+  const microphone = track()
+  const audio = {muted: false, play: async () => {}, pause() {}}
+  const peer = {
+    transceivers: [],
+    connectionState: "new",
+    addEventListener(event, callback) { handlers.set(event, callback) },
+    addTransceiver(...args) { const value = addTransceiver(...args); this.transceivers.push(value); return value },
+    close() {},
+    createOffer: async () => ({type: "offer", sdp: "browser-offer"}),
+    async setLocalDescription(description) { this.localDescription = description },
+    async setRemoteDescription() {},
+  }
+  let connectionReady
+  const controller = createVoiceController({
+    tabCoordination: null,
+    mediaDevices: {getUserMedia: async () => stream(microphone)},
+    audioElementFactory: () => audio,
+    connectionFactory(options) {
+      const attempt = createVoicePeerAttempt({
+        ...options,
+        PeerConnection: class { constructor() { return peer } },
+        negotiationId: () => "browser-negotiation",
+        setTimeoutFn(callback, delay) { const token = {}; timers.set(token, {callback, delay}); return token },
+        clearTimeoutFn(token) { timers.delete(token) },
+        signaling: {
+          joinVoiceChannel: () => admission.promise,
+          leave() {}, onClose() {}, onServerIce() {},
+          sendLocalVoiceState(state) { roster.push(state) },
+          renewVoiceSession() { return {receive(status, callback) { if (status === "ok") acknowledge = callback; return this }} },
+          sendOffer: async () => ({signaling_session_id: "server-session", negotiation_id: "browser-negotiation", description: {type: "answer", sdp: "server-answer"}}),
+        },
+      })
+      return {...attempt, connect(args) { connectionReady = attempt.connect(args); return connectionReady }}
+    },
+  })
+  await controller.join({id: "voice-1", name: "lobby"})
+  controller.toggleDeafen()
+  assert.deepEqual(roster, [])
+  admission.resolve(disabledAdmission())
+  await connectionReady
+  assert.deepEqual(roster.at(-1), {muted: true, deafened: true})
+  peer.connectionState = "connected"
+  handlers.get("connectionstatechange")()
+  const transceiver = peer.transceivers[1]
+  handlers.get("track")({track: transceiver.receiver.track, transceiver})
+  await Promise.resolve()
+  assert.equal(audio.muted, true)
+  assert.equal(microphone.enabled, false)
+  assert.equal(controller.state().connectionStatus, "connected")
+  const fire = delay => {
+    const [token, timer] = [...timers].find(([, timer]) => timer.delay === delay)
+    timers.delete(token)
+    timer.callback()
+  }
+  fire(30_000)
+  fire(10_000)
+  assert.equal(controller.state().connectionStatus, "interrupted")
+  controller.toggleDeafen()
+  controller.toggleMute()
+  const beforeRecovery = roster.length
+  acknowledge({signaling_session_id: "server-session"})
+  assert.ok(roster.length > beforeRecovery)
+  assert.deepEqual(roster.at(-1), {muted: true, deafened: false})
+  assert.equal(controller.state().connectionStatus, "connected")
+  assert.equal(microphone.enabled, false)
+  assert.equal(audio.muted, false)
+  controller.leave()
+  assert.equal(timers.size, 0)
+  assert.equal(audio.srcObject, null)
 })

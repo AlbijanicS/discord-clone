@@ -28,7 +28,6 @@ import ChannelMessages from "./hooks/channel_messages"
 import ClipboardCopy from "./hooks/clipboard_copy"
 import MessageActionsMenu from "./hooks/message_actions_menu"
 import MessageComposer from "./hooks/message_composer"
-import VoiceChannelIndicator from "./hooks/voice_channel_indicator"
 import VoiceControls from "./hooks/voice_controls"
 import VoiceWorkspaceBadge from "./hooks/voice_workspace_badge"
 import VoiceLifecycle from "./hooks/voice_lifecycle"
@@ -42,7 +41,6 @@ const Hooks = {
   ClipboardCopy,
   MessageActionsMenu,
   MessageComposer,
-  VoiceChannelIndicator,
   VoiceControls,
   VoiceWorkspaceBadge,
   VoiceLifecycle,

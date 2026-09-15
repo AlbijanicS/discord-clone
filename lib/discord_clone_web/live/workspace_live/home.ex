@@ -2,11 +2,22 @@ defmodule DiscordCloneWeb.WorkspaceLive.Home do
   use DiscordCloneWeb, :live_view
 
   alias DiscordClone.Workspaces
+  alias DiscordCloneWeb.WorkspaceLive.EventInputs
   alias DiscordCloneWeb.WorkspaceLive.Shell
   alias DiscordCloneWeb.WorkspaceLive.WorkspaceManagementEvents
 
   @impl true
   def mount(_params, _session, socket) do
+    socket = EventInputs.attach(socket)
+
+    {:ok, discovered_workspaces} = Workspaces.list_workspaces(socket.assigns.current_scope)
+
+    if connected?(socket) do
+      Enum.each(discovered_workspaces, fn workspace ->
+        Workspaces.subscribe_to_workspace_moderation(socket.assigns.current_scope, workspace.id)
+      end)
+    end
+
     {:ok, workspaces} = Workspaces.list_workspaces(socket.assigns.current_scope)
 
     socket =
@@ -20,6 +31,13 @@ defmodule DiscordCloneWeb.WorkspaceLive.Home do
 
     {:ok, socket}
   end
+
+  @impl true
+  def handle_info({:workspace_access_revoked, _payload}, socket) do
+    {:noreply, WorkspaceManagementEvents.restream_workspaces(socket)}
+  end
+
+  def handle_info(_event, socket), do: {:noreply, socket}
 
   @impl true
   def render(assigns) do
@@ -50,5 +68,9 @@ defmodule DiscordCloneWeb.WorkspaceLive.Home do
 
   def handle_event("create_workspace", params, socket) do
     WorkspaceManagementEvents.create_workspace(socket, params)
+  end
+
+  def handle_event(_event, _params, socket) do
+    {:noreply, put_flash(socket, :error, "Action could not be completed.")}
   end
 end

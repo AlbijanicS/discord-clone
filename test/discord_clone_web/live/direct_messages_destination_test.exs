@@ -19,6 +19,10 @@ defmodule DiscordCloneWeb.DirectMessagesDestinationTest do
 
     assert has_element?(workspace_view, "#global-destination-rail")
 
+    assert has_element?(workspace_view, "#workspace-sidebar[class*='overflow-x-hidden']")
+    assert has_element?(workspace_view, "#workspaces[class*='flex-1']")
+    refute has_element?(workspace_view, "#workspaces[class*='py-2']")
+
     assert has_element?(
              workspace_view,
              "#channel-sidebar #global-voice-controls[phx-hook='VoiceControls'][phx-update='ignore']"
@@ -51,7 +55,7 @@ defmodule DiscordCloneWeb.DirectMessagesDestinationTest do
 
     assert has_element?(
              workspace_view,
-             "#workspace-#{workspace.id}-voice-badge[phx-hook='VoiceWorkspaceBadge'][phx-update='ignore'][aria-controls='global-voice-connection-panel'][aria-expanded='false'][hidden]"
+             "#workspace-#{workspace.id}-voice-badge[phx-hook='VoiceWorkspaceBadge'][phx-update='ignore'][aria-controls='global-voice-connection-panel'][aria-expanded='false'][class*='-right-1'][class*='-top-1'][hidden]"
            )
 
     assert has_element?(
@@ -60,6 +64,13 @@ defmodule DiscordCloneWeb.DirectMessagesDestinationTest do
            )
 
     assert has_element?(workspace_view, "#workspaces [data-workspace-id='#{workspace.id}']")
+
+    assert has_element?(workspace_view, "#workspace-#{workspace.id}[class*='rounded-2xl']")
+
+    refute has_element?(
+             workspace_view,
+             "#workspace-#{workspace.id}[class*='hover:-translate-y-0.5']"
+           )
 
     {:ok, direct_view, _html} = live(conn, ~p"/direct-messages")
 

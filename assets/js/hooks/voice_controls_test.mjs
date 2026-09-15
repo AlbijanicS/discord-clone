@@ -169,3 +169,16 @@ test("the panel distinguishes an interrupted connection while retaining ordinary
   assert.equal(mounted.localActions.hidden, false)
   mounted.hook.destroyed()
 })
+
+test("muted controls show the actual joining and interrupted lifecycle", () => {
+  const mounted = mountVoiceControls({status: "joining", connectionStatus: "joining", muted: true, deafened: true})
+  assert.equal(mounted.status.textContent, "Joining voice…")
+  assert.equal(mounted.mute["aria-pressed"], "true")
+  assert.equal(mounted.deafen["aria-pressed"], "true")
+  mounted.emit({status: "muted", connectionStatus: "interrupted", muted: true, deafened: true})
+  assert.equal(mounted.status.textContent, "Connection interrupted")
+  assert.equal(mounted.mute.textContent, "Unmute")
+  mounted.emit({status: "muted", connectionStatus: "connected", muted: true, deafened: true})
+  assert.equal(mounted.status.textContent, "Connected")
+  mounted.hook.destroyed()
+})
